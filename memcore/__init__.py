@@ -6,6 +6,16 @@
 from __future__ import annotations
 
 from .config import MemoryConfig
+from .chat_output import (
+    ChatOutputConfig,
+    ChatOutputMode,
+    ChatOutputParseResult,
+    ChatOutputStatus,
+    StreamingSpeechParser,
+    build_chat_output_contract_prompt,
+    parse_chat_output,
+    segment_speech,
+)
 from .embedding.base import EmbeddingProvider
 from .embedding.hashed import HashedEmbeddingProvider
 from .embedding.http import HTTPEmbeddingProvider
@@ -38,6 +48,14 @@ __all__ = [
     "MemorySystem",
     # 配置 / 命名空间
     "MemoryConfig",
+    "ChatOutputConfig",
+    "ChatOutputMode",
+    "ChatOutputParseResult",
+    "ChatOutputStatus",
+    "StreamingSpeechParser",
+    "build_chat_output_contract_prompt",
+    "parse_chat_output",
+    "segment_speech",
     "Namespace",
     "Actor",
     # 契约

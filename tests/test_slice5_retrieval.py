@@ -13,6 +13,7 @@ from memcore import (
     MemoryConfig,
     MemorySystem,
     Namespace,
+    NamespaceError,
     SQLiteMemoryStore,
 )
 from memcore.llm.base import LLMClient, LLMRequest, LLMResult, TaskType
@@ -91,6 +92,67 @@ class ExplicitRetrieve(unittest.TestCase):
         mem = _mem(store, index, emb, conversation="c1", llm=ReadLLM(verifier_match=False), config=cfg)
         mem.record_user_turn("我最喜欢喝可乐", timestamp=1000)
         self.assertTrue(any("可乐" in s for s in mem.retrieve("可乐", keywords=["可乐"])))
+        store.close()
+
+    def test_update_turn_metadata_reindexes_raw_tags(self) -> None:
+        store, index, emb = _shared_backends()
+        mem = _mem(store, index, emb, conversation="c1", config=MemoryConfig(enable_verifier=False))
+        rec = mem.record_user_turn("我最近在看一只波动很大的股票", timestamp=1000, source_id="m1")
+        out = mem.update_turn_metadata(
+            rec["source_id"],
+            {
+                "keywords": ["英伟达", "风险偏好"],
+                "categories": ["preference"],
+                "mood_tags": ["warm"],  # 默认 flavor 关,应被清空
+                "importance": 0.9,
+            },
+        )
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["status"], "updated")
+        self.assertEqual(out["index_status"], "indexed")
+        self.assertEqual(out["memory_metadata"]["mood_tags"], [])
+        stored = store.get_record_by_source_id("m1")
+        self.assertEqual(stored["memory_metadata"]["keywords"], ["英伟达", "风险偏好"])
+        hits = mem.retrieve("英伟达", keywords=["英伟达"])
+        self.assertTrue(any("波动很大的股票" in s for s in hits))  # 不是原文命中,是 metadata tag 命中
+        store.close()
+
+    def test_update_turn_metadata_not_found_is_structured(self) -> None:
+        store, index, emb = _shared_backends()
+        mem = _mem(store, index, emb, conversation="c1")
+        out = mem.update_turn_metadata("missing", {"keywords": ["x"]})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["status"], "not_found")
+        self.assertEqual(out["reason"], "source_id_not_found_or_not_raw")
+        store.close()
+
+    def test_update_turn_metadata_rejects_cross_namespace_source_id(self) -> None:
+        store, index, emb = _shared_backends()
+        mem_u1 = _mem(store, index, emb, conversation="c1")
+        mem_u1.record_user_turn("u1 私密原文", timestamp=1000, source_id="s1")
+        mem_u2 = MemorySystem(
+            llm=ReadLLM(),
+            namespace=Namespace(user_id="u2", conversation_id="c1"),
+            timezone="Asia/Shanghai",
+            store=store,
+            index=index,
+            embedding=emb,
+        )
+
+        with self.assertRaises(NamespaceError):
+            mem_u2.update_turn_metadata("s1", {"keywords": ["污染"]})
+        self.assertEqual(store.get_record_by_source_id("s1")["memory_metadata"]["keywords"], [])
+        store.close()
+
+    def test_update_turn_metadata_rejects_cross_conversation_source_id(self) -> None:
+        store, index, emb = _shared_backends()
+        mem_c1 = _mem(store, index, emb, conversation="c1")
+        mem_c1.record_user_turn("c1 私密原文", timestamp=1000, source_id="s1")
+        mem_c2 = _mem(store, index, emb, conversation="c2")
+
+        with self.assertRaises(NamespaceError):
+            mem_c2.update_turn_metadata("s1", {"keywords": ["污染"]})
+        self.assertEqual(store.get_record_by_source_id("s1")["memory_metadata"]["keywords"], [])
         store.close()
 
 

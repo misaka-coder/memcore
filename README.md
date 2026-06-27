@@ -33,6 +33,7 @@
 - **importance 衰减 ✅**:`enable_importance_decay` 开启后,长期记忆可见窗口按"随时间衰减的重要度"排序(久未强化的记忆淡出),衰减对**全部**候选生效、不静默截断。
 - 可配置:`visible_memory_scope`(conversation/user)、`enable_pre_retrieval`、`enable_verifier`、`enable_flavor`、`enable_importance_decay`。
 - 压缩重试:`llm_max_retries` 会传给注入的 `LLMClient`;最终仍失败时压缩层不标记已完成,下一轮继续重试。
+- **Chat Output Adapter 设计草案**:标准 JSON 输出契约、`speech` 流式解析、普通文本尽力分段、raw metadata 回写流程见 `docs/chat_output_adapter_v1.md`。
 
 核心 + 评测台 + 时间线 + embedding 三路 + outbox 自愈 + 打包(专有授权)+ importance 衰减 均已完成。
 可选后续(按需):陪伴 flavor、大语料 BM25 可扩展后端 —— 见设计文档 §15。

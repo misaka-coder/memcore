@@ -77,6 +77,21 @@ class OutboxResilience(unittest.TestCase):
         self.assertEqual(out["repaired"], 0)
         self.assertEqual({r["source_id"] for r in self.store.list_pending_index()}, {"s1"})  # 仍 pending,不丢
 
+    def test_update_turn_metadata_pending_when_index_down_then_heals(self) -> None:
+        mem = self._mem()
+        self.index.fail = False
+        mem.record_user_turn("先安全落库", timestamp=1000, source_id="s1")
+        self.index.fail = True
+        out = mem.update_turn_metadata("s1", {"keywords": ["补标签"]})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["status"], "pending")
+        self.assertEqual({r["source_id"] for r in self.store.list_pending_index()}, {"s1"})
+        self.assertEqual(self.store.get_record_by_source_id("s1")["memory_metadata"]["keywords"], ["补标签"])
+        self.index.fail = False
+        healed = mem.reindex_pending()
+        self.assertEqual(healed["repaired"], 1)
+        self.assertEqual(self.store.list_pending_index(), [])
+
     def test_compaction_summary_survives_index_down_then_heals(self) -> None:
         cfg = MemoryConfig(raw_trigger_count=4, summary_batch_size=2, episodic_compact_trigger_count=99)
         mem = self._mem(llm=_SummaryLLM(), config=cfg)

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import unittest
 
-from memcore import Namespace, SQLiteMemoryStore
+from memcore import Namespace, NamespaceError, SQLiteMemoryStore
 from memcore.namespace import Actor
 
 
@@ -53,6 +53,19 @@ class WriteAndIdempotency(StoreSliceBase):
         got = self.store.get_record_by_source_id(rec["source_id"])
         self.assertEqual(got["memory_metadata"]["keywords"], ["可乐"])
 
+    def test_update_message_memory_metadata_sets_pending(self) -> None:
+        self.store.add_message(namespace=self.ns, role="user", content="x", timestamp=100, source_id="s1")
+        self.store.set_index_status("s1", "indexed")
+        updated = self.store.update_message_memory_metadata(
+            namespace=self.ns,
+            source_id="s1",
+            memory_metadata={"keywords": ["英伟达"], "importance": 0.8},
+        )
+        self.assertIsNotNone(updated)
+        self.assertEqual(updated["memory_metadata"]["keywords"], ["英伟达"])
+        self.assertEqual(updated["index_status"], "pending")  # metadata 变了,raw index 必须重建
+        self.assertEqual({r["source_id"] for r in self.store.list_pending_index()}, {"s1"})
+
 
 class Isolation(StoreSliceBase):
     def test_hard_isolation_between_users(self) -> None:
@@ -70,6 +83,26 @@ class Isolation(StoreSliceBase):
         got = self.store.get_record_by_source_id(rec["source_id"])
         self.assertEqual(got["actor_id"], "qq-123")
         self.assertEqual(got["actor_display_name"], "张三")
+
+    def test_update_message_memory_metadata_rejects_cross_user(self) -> None:
+        other = Namespace(user_id="u2", tenant_id="t1", domain_id="fin", conversation_id="c1")
+        self.store.add_message(namespace=self.ns, role="user", content="u1 私密", timestamp=100, source_id="s1")
+        with self.assertRaises(NamespaceError):
+            self.store.update_message_memory_metadata(
+                namespace=other,
+                source_id="s1",
+                memory_metadata={"keywords": ["污染"]},
+            )
+
+    def test_update_message_memory_metadata_rejects_cross_conversation(self) -> None:
+        other = Namespace(user_id="u1", tenant_id="t1", domain_id="fin", conversation_id="c2")
+        self.store.add_message(namespace=self.ns, role="user", content="c1 私密", timestamp=100, source_id="s1")
+        with self.assertRaises(NamespaceError):
+            self.store.update_message_memory_metadata(
+                namespace=other,
+                source_id="s1",
+                memory_metadata={"keywords": ["污染"]},
+            )
 
 
 class WindowsAndCompaction(StoreSliceBase):

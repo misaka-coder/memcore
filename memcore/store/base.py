@@ -46,6 +46,13 @@ class MemoryStore(ABC):
         """outbox 状态机:pending / indexed(向量 upsert 成功后置 indexed)。"""
         raise NotImplementedError
 
+    @abstractmethod
+    def update_message_memory_metadata(
+        self, *, namespace: Namespace, source_id: str, memory_metadata: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """更新 raw message 的 memory_metadata,并置回 pending 等待 raw index 重建。找不到返回 None。"""
+        raise NotImplementedError
+
     # --- 读(可见三层窗口 + 检索回取) ---
     @abstractmethod
     def get_record_by_source_id(self, source_id: str) -> dict[str, Any] | None:

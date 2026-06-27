@@ -224,6 +224,62 @@ class MemorySystem:
                 failed += 1
         return {"scanned": len(pending), "repaired": repaired, "failed": failed}
 
+    def update_turn_metadata(self, source_id: str, memory_metadata: dict[str, Any] | None) -> dict[str, Any]:
+        """回写 raw turn 的 memory_metadata,并重建 raw 向量索引。
+
+        用于 Chat Output Adapter:先安全记录用户原文,等聊天模型 final JSON 出来后,
+        再把模型本人给出的 memory_metadata 回写到该 raw message。
+        """
+        sid = str(source_id or "").strip()
+        if not sid:
+            return {
+                "ok": False,
+                "status": "not_found",
+                "source_id": "",
+                "memory_metadata": {},
+                "index_status": "",
+                "reason": "source_id_required",
+            }
+        metadata = coerce_memory_metadata(
+            memory_metadata,
+            categories=self.config.categories,
+            enable_flavor=self.config.enable_flavor,
+        ).to_dict()
+        rec = self.store.update_message_memory_metadata(
+            namespace=self.namespace, source_id=sid, memory_metadata=metadata
+        )
+        if rec is None:
+            return {
+                "ok": False,
+                "status": "not_found",
+                "source_id": sid,
+                "memory_metadata": metadata,
+                "index_status": "",
+                "reason": "source_id_not_found_or_not_raw",
+            }
+        try:
+            self.index.upsert([build_raw_entry(rec)])
+            self.store.set_index_status(sid, "indexed")
+            rec["index_status"] = "indexed"
+            return {
+                "ok": True,
+                "status": "updated",
+                "source_id": sid,
+                "memory_metadata": metadata,
+                "index_status": "indexed",
+                "reason": "",
+            }
+        except Exception as exc:
+            self.store.set_index_status(sid, "pending")
+            return {
+                "ok": False,
+                "status": "pending",
+                "source_id": sid,
+                "memory_metadata": metadata,
+                "index_status": "pending",
+                "reason": str(exc) or exc.__class__.__name__,
+            }
+
     def embedding_status(self) -> dict[str, Any]:
         return {
             "provider": self.embedding.name,

@@ -344,6 +344,30 @@ class SQLiteMemoryStore(MemoryStore):
                 if cur.rowcount:
                     return
 
+    def update_message_memory_metadata(
+        self, *, namespace: Namespace, source_id: str, memory_metadata: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        sid = str(source_id or "").strip()
+        if not sid:
+            return None
+        with self._lock, self._conn:
+            existing = self._conn.execute("SELECT * FROM messages WHERE source_id = ?", (sid,)).fetchone()
+            if existing is None:
+                return None
+            self._assert_namespace_owner(existing, namespace, id_label=f"message source_id={sid!r}")
+            cur = self._conn.execute(
+                """
+                UPDATE messages
+                SET memory_metadata_json = ?, index_status = 'pending'
+                WHERE source_id = ?
+                """,
+                (json.dumps(memory_metadata or {}, ensure_ascii=False), sid),
+            )
+            if not cur.rowcount:
+                return None
+            row = self._conn.execute("SELECT * FROM messages WHERE source_id = ?", (sid,)).fetchone()
+            return self._row_to_record(row, "messages") if row is not None else None
+
     # --- 读 ---
 
     def get_record_by_source_id(self, source_id: str) -> dict[str, Any] | None:
