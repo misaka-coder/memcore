@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "memcore"
+version = "0.1.0"
+description = "Domain-agnostic layered memory core: working/episodic/semantic memory, time-anchored, hybrid retrieval with router/verifier."
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = ["memory", "llm", "retrieval", "rag", "embeddings", "long-term-memory", "agents"]
+license = "LicenseRef-Proprietary"
+license-files = ["LICENSE"]
+# 专有许可,默认保留所有权利;商用需单独授权(见 LICENSE / README「授权」)。
+# tzdata: time anchoring resolves IANA timezones via zoneinfo; Windows lacks a system tz db.
+# Heavy backends (chroma / sentence-transformers) stay optional extras.
+dependencies = ["tzdata"]
+
+[project.optional-dependencies]
+chroma = ["chromadb>=0.4"]
+huggingface = ["sentence-transformers>=2.2"]
+dev = ["pytest>=7", "ruff>=0.15", "build>=1.2"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["memcore*"]
+
+[tool.setuptools.package-data]
+memcore = ["py.typed"]

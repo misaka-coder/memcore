@@ -1,0 +1,74 @@
+"""memcore —— 领域无关、可扩展、可授权的分层记忆内核。
+
+公共入口。后续切片只在此追加导出,不改既有契约名(字段契约焊死)。
+"""
+
+from __future__ import annotations
+
+from .config import MemoryConfig
+from .embedding.base import EmbeddingProvider
+from .embedding.hashed import HashedEmbeddingProvider
+from .embedding.http import HTTPEmbeddingProvider
+from .embedding.verify import verify_embedding
+from .errors import ConfigError, MemcoreError, NamespaceError, PromptError, SchemaError
+from .prompts import PromptOverrides
+from .index.base import VectorIndex
+from .index.memory_index import InMemoryVectorIndex
+from .index.rrf import fuse_with_rrf
+from .llm.base import LLMClient, LLMRequest, LLMResult, ResponseFormat, TaskType
+from .memory_system import MemorySystem
+from .namespace import Actor, Namespace
+from .schema import (
+    DEFAULT_CATEGORIES,
+    MOOD_TAGS,
+    SUBJECT_SCOPES,
+    MemoryMetadata,
+    SemanticRecord,
+    SummaryRecord,
+    coerce_memory_metadata,
+)
+from .store.base import MemoryStore
+from .store.sqlite_store import SQLiteMemoryStore
+
+__version__ = "0.1.0"
+
+__all__ = [
+    "__version__",
+    # 门面
+    "MemorySystem",
+    # 配置 / 命名空间
+    "MemoryConfig",
+    "Namespace",
+    "Actor",
+    # 契约
+    "MemoryMetadata",
+    "SummaryRecord",
+    "SemanticRecord",
+    "coerce_memory_metadata",
+    "DEFAULT_CATEGORIES",
+    "SUBJECT_SCOPES",
+    "MOOD_TAGS",
+    # 接口
+    "LLMClient",
+    "LLMRequest",
+    "LLMResult",
+    "TaskType",
+    "ResponseFormat",
+    "MemoryStore",
+    "SQLiteMemoryStore",
+    "VectorIndex",
+    "InMemoryVectorIndex",
+    "fuse_with_rrf",
+    "EmbeddingProvider",
+    "HashedEmbeddingProvider",
+    "HTTPEmbeddingProvider",
+    "verify_embedding",
+    # 异常
+    "MemcoreError",
+    "ConfigError",
+    "SchemaError",
+    "NamespaceError",
+    "PromptError",
+    # 提示词治理
+    "PromptOverrides",
+]

@@ -1,0 +1,268 @@
+"""切片 4 单测:写侧压缩链(raw→摘要→语义)+ 强化合并 + outbox 索引。
+
+用 CannedLLM 替代真实模型,让压缩链在无网络下可单测。
+"""
+
+from __future__ import annotations
+
+import unittest
+
+from memcore import (
+    HashedEmbeddingProvider,
+    InMemoryVectorIndex,
+    MemoryConfig,
+    MemorySystem,
+    Namespace,
+    SQLiteMemoryStore,
+)
+from memcore.compaction import Compaction
+from memcore.llm.base import LLMClient, LLMRequest, LLMResult, TaskType
+
+
+class CannedLLM(LLMClient):
+    """按 task_type 返回固定 JSON;语义/强化共享 recurring_topics 以触发重叠合并。"""
+
+    def call(self, request: LLMRequest) -> LLMResult:
+        if request.task_type == TaskType.SUMMARY:
+            data = {
+                "diary_summary": "复习了微积分",
+                "period_label": "夜间学习",
+                "event_type": "学习",
+                "importance": 0.7,
+                "key_events": ["泰勒展开"],
+                "core_facts": ["用户在复习高数"],
+                "memory_metadata": {"keywords": ["学习"], "categories": ["plan_goal"], "importance": 0.7},
+            }
+        elif request.task_type == TaskType.SEMANTIC:
+            data = {
+                "semantic_summary": "用户长期在推进学习",
+                "importance": 0.8,
+                "stable_facts": ["持续关注学习"],
+                "recurring_topics": ["学习", "复习"],
+                "important_people": [],
+                "open_loops": [],
+                "memory_metadata": {"keywords": ["学习"], "importance": 0.8},
+            }
+        elif request.task_type == TaskType.REINFORCEMENT:
+            data = {
+                "semantic_summary": "用户长期在推进学习(已融合)",
+                "importance": 0.85,
+                "stable_facts": ["持续关注学习"],
+                "recurring_topics": ["学习", "复习"],
+                "important_people": [],
+                "open_loops": [],
+            }
+        else:
+            data = {}
+        return LLMResult(ok=True, data=data, attempts=1)
+
+
+class FailThenSummaryLLM(CannedLLM):
+    def __init__(self) -> None:
+        self.summary_calls = 0
+
+    def call(self, request: LLMRequest) -> LLMResult:
+        if request.task_type == TaskType.SUMMARY:
+            self.summary_calls += 1
+            if self.summary_calls == 1:
+                return LLMResult(ok=False, data=None, error="temporary failure", attempts=1)
+        return super().call(request)
+
+
+class FailThenSemanticLLM(CannedLLM):
+    def __init__(self) -> None:
+        self.semantic_calls = 0
+
+    def call(self, request: LLMRequest) -> LLMResult:
+        if request.task_type == TaskType.SEMANTIC:
+            self.semantic_calls += 1
+            if self.semantic_calls == 1:
+                return LLMResult(ok=False, data=None, error="temporary failure", attempts=1)
+        return super().call(request)
+
+
+class CapturingLLM(CannedLLM):
+    def __init__(self) -> None:
+        self.requests: list[LLMRequest] = []
+
+    def call(self, request: LLMRequest) -> LLMResult:
+        self.requests.append(request)
+        return super().call(request)
+
+
+class SummaryCycleViaFacade(unittest.TestCase):
+    def test_raw_compacts_to_summary_with_differential(self) -> None:
+        cfg = MemoryConfig(raw_trigger_count=4, summary_batch_size=2, episodic_compact_trigger_count=99)
+        mem = MemorySystem(
+            llm=CannedLLM(),
+            namespace=Namespace(user_id="u1", conversation_id="c1"),
+            timezone="Asia/Shanghai",
+            config=cfg,
+            embedding=HashedEmbeddingProvider(),
+        )
+        for i in range(4):
+            mem.record_user_turn(f"消息{i}", timestamp=1000 + i)
+        out = mem.compact_due()
+        self.assertEqual(out["summaries_created"], 1)
+        # 触发 4 → 总结最老 2 → 剩 2(差值关系)
+        remaining = mem.store.get_unsummarized_messages(namespace=mem.namespace)
+        self.assertEqual(len(remaining), 2)
+        # 摘要进了向量索引,且 outbox 置 indexed
+        visible = mem.store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10)
+        self.assertEqual(len(visible), 1)
+        self.assertEqual(visible[0]["index_status"], "indexed")
+
+    def test_raw_is_indexed_on_record(self) -> None:
+        mem = MemorySystem(
+            llm=CannedLLM(),
+            namespace=Namespace(user_id="u1", conversation_id="c1"),
+            timezone="Asia/Shanghai",
+            embedding=HashedEmbeddingProvider(),
+        )
+        rec = mem.record_user_turn("在吗", timestamp=1000)
+        self.assertEqual(rec["index_status"], "indexed")  # 返回值与 store 同步
+        self.assertEqual(mem.store.get_record_by_source_id(rec["source_id"])["index_status"], "indexed")
+        self.assertEqual(mem.index.count(), 1)
+
+    def test_raw_metadata_is_coerced_before_indexing(self) -> None:
+        mem = MemorySystem(
+            llm=CannedLLM(),
+            namespace=Namespace(user_id="u1", conversation_id="c1"),
+            timezone="Asia/Shanghai",
+            embedding=HashedEmbeddingProvider(),
+            enable_flavor=False,
+        )
+        rec = mem.record_user_turn(
+            "在吗",
+            timestamp=1000,
+            memory_metadata={
+                "keywords": ["可乐", "饮料", "可乐", "a", "b", "c"],
+                "categories": ["not_a_category"],
+                "mood_tags": ["warm"],
+                "importance": "oops",
+            },
+        )
+        metadata = rec["memory_metadata"]
+        self.assertEqual(metadata["categories"], [])
+        self.assertEqual(metadata["mood_tags"], [])
+        self.assertEqual(metadata["importance"], 0.0)
+        self.assertEqual(len(metadata["keywords"]), 4)
+        self.assertEqual(mem.store.get_record_by_source_id(rec["source_id"])["index_status"], "indexed")
+
+    def test_summary_failure_keeps_raw_for_retry(self) -> None:
+        cfg = MemoryConfig(raw_trigger_count=2, summary_batch_size=1, episodic_compact_trigger_count=99)
+        llm = FailThenSummaryLLM()
+        mem = MemorySystem(
+            llm=llm,
+            namespace=Namespace(user_id="u1", conversation_id="c1"),
+            timezone="Asia/Shanghai",
+            config=cfg,
+            embedding=HashedEmbeddingProvider(),
+        )
+        mem.record_user_turn("第一条重要事实", timestamp=1000)
+        mem.record_user_turn("第二条重要事实", timestamp=1001)
+
+        first = mem.compact_due()
+        self.assertEqual(first["summaries_created"], 0)
+        self.assertEqual(first["summary_retry_pending"], 1)
+        self.assertEqual(len(mem.store.get_unsummarized_messages(namespace=mem.namespace)), 2)
+        self.assertEqual(mem.store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10), [])
+
+        second = mem.compact_due()
+        self.assertEqual(second["summaries_created"], 1)
+        self.assertEqual(len(mem.store.get_unsummarized_messages(namespace=mem.namespace)), 1)
+
+    def test_compaction_passes_configured_llm_retries(self) -> None:
+        cfg = MemoryConfig(
+            raw_trigger_count=2,
+            summary_batch_size=1,
+            episodic_compact_trigger_count=99,
+            llm_max_retries=4,
+        )
+        llm = CapturingLLM()
+        mem = MemorySystem(
+            llm=llm,
+            namespace=Namespace(user_id="u1", conversation_id="c1"),
+            timezone="Asia/Shanghai",
+            config=cfg,
+            embedding=HashedEmbeddingProvider(),
+        )
+        mem.record_user_turn("第一条重要事实", timestamp=1000)
+        mem.record_user_turn("第二条重要事实", timestamp=1001)
+
+        mem.compact_due()
+
+        summary_requests = [req for req in llm.requests if req.task_type == TaskType.SUMMARY]
+        self.assertEqual(len(summary_requests), 1)
+        self.assertEqual(summary_requests[0].max_retries, 4)
+
+
+class SemanticAndReinforcement(unittest.TestCase):
+    def setUp(self) -> None:
+        self.store = SQLiteMemoryStore(":memory:")
+        self.index = InMemoryVectorIndex(embedding=HashedEmbeddingProvider())
+        self.ns = Namespace(user_id="u1", conversation_id="c1")
+        self.cfg = MemoryConfig(episodic_compact_trigger_count=2, episodic_compact_batch_size=1)
+        self.compaction = Compaction(
+            store=self.store, index=self.index, llm=CannedLLM(), config=self.cfg, timezone="Asia/Shanghai"
+        )
+
+    def tearDown(self) -> None:
+        self.store.close()
+
+    def test_episodic_compacts_to_semantic_and_reinforces(self) -> None:
+        for i in range(4):
+            self.store.add_summary(
+                namespace=self.ns,
+                record={
+                    "summary_id": f"ep{i}",
+                    "timestamp": 100 + i,
+                    "period_start_ts": 100 + i,
+                    "period_end_ts": 100 + i,
+                    "diary_summary": f"第{i}段",
+                    "core_facts": [f"事实{i}"],
+                },
+            )
+        out = self.compaction.run_due(namespace=self.ns)
+        # 第一条语义新建,后续重叠(共享 recurring_topics)被融合
+        self.assertEqual(out["semantic_created"], 1)
+        self.assertGreaterEqual(out["reinforced"], 1)
+        recent = self.store.get_recent_semantic_summaries(namespace=self.ns, limit=10)
+        self.assertEqual(len(recent), 1)  # 都融进同一条
+        self.assertGreater(recent[0]["reinforcement_count"], 1)
+        self.assertEqual(recent[0]["index_status"], "indexed")
+
+    def test_no_pending_index_left_after_compaction(self) -> None:
+        for i in range(2):
+            self.store.add_summary(namespace=self.ns, record={"summary_id": f"ep{i}", "timestamp": 100 + i})
+        self.compaction.run_due(namespace=self.ns)
+        # 新建的语义记忆都已 indexed(原始 ep 摘要是直接塞库的,本测试只关心语义层)
+        pending_semantic = [r for r in self.store.list_pending_index() if r["entry_type"] == "semantic_summary"]
+        self.assertEqual(pending_semantic, [])
+
+    def test_semantic_failure_keeps_episodic_for_retry(self) -> None:
+        compaction = Compaction(
+            store=self.store,
+            index=self.index,
+            llm=FailThenSemanticLLM(),
+            config=self.cfg,
+            timezone="Asia/Shanghai",
+        )
+        for i in range(2):
+            self.store.add_summary(
+                namespace=self.ns,
+                record={"summary_id": f"ep{i}", "timestamp": 100 + i, "diary_summary": f"第{i}段"},
+            )
+
+        first = compaction.run_due(namespace=self.ns)
+        self.assertEqual(first["semantic_created"], 0)
+        self.assertEqual(first["semantic_retry_pending"], 1)
+        self.assertEqual(len(self.store.get_uncompacted_episodic_summaries(namespace=self.ns)), 2)
+
+        second = compaction.run_due(namespace=self.ns)
+        self.assertEqual(second["semantic_created"], 1)
+        self.assertEqual(len(self.store.get_uncompacted_episodic_summaries(namespace=self.ns)), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

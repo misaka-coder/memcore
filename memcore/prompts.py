@@ -1,0 +1,176 @@
+"""记忆压缩链的承重提示词(焊死骨架 + 人格文本插槽)。
+
+覆盖 summary / semantic / reinforcement(写侧)与 router / verifier(读侧)。
+焊死的是:"你就是当前角色整理自己的记忆 + 不许编造 + 只输出 JSON + 字段固定 + importance 是 0-1 数字 +
+时间锚点(相对转绝对)"。可配置的只有 persona_text(填进 [CHARACTER MEMORY SELF] 插槽)。
+
+提示词治理:焊死骨架 + 校验插槽 —— 见 PromptOverrides 与 _weld,插槽只能补充、不可移除骨架。
+具体的人格内容由接入方运行时通过 PromptOverrides 注入,不内置于本库。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from .errors import PromptError
+
+MEMORY_TIME_ANCHOR_RULES = (
+    "[时间锚点规则]\n"
+    "记录里的日期、时间范围都是真实时间锚点。整理任何会入库的记忆字段时,遇到"
+    "“今天/明天/昨天/最近/刚才/这段时间”等相对时间,必须按源消息或源摘要的时间锚点"
+    "改写为绝对日期或绝对日期范围,不要在入库字段里留下未锚定的相对时间。"
+)
+
+# 插槽文本上限:领域插槽只能补充,不能塞进一整套替代提示词。
+MAX_SLOT_CHARS = 4000
+
+
+@dataclass(frozen=True)
+class PromptOverrides:
+    """提示词治理:只暴露"可补充的领域插槽",焊死骨架(契约 + 时间锚点)永远不可被外部移除。
+
+    - persona_text:角色身份文本,填进 [CHARACTER MEMORY SELF]。
+    - extra_*_guidance:各任务的领域补充指引,只追加在骨架之后,不能改写骨架。
+    构造时校验类型与长度;非法直接报错(让"写坏"在接口层提交不进来)。
+    """
+
+    persona_text: str = ""
+    extra_summary_guidance: str = ""
+    extra_semantic_guidance: str = ""
+    extra_reinforcement_guidance: str = ""
+
+    def __post_init__(self) -> None:
+        for name in (
+            "persona_text",
+            "extra_summary_guidance",
+            "extra_semantic_guidance",
+            "extra_reinforcement_guidance",
+        ):
+            value = getattr(self, name)
+            if not isinstance(value, str):
+                raise PromptError(f"{name} must be a string, got {type(value).__name__}")
+            if len(value) > MAX_SLOT_CHARS:
+                raise PromptError(f"{name} too long ({len(value)} > {MAX_SLOT_CHARS}); slots may only supplement")
+
+
+def _weld(base_system: str, *, persona_text: str = "", extra_guidance: str = "") -> str:
+    """焊死骨架装配:base(契约)永远在前,时间锚点永远在后;插槽只能填在中间(只增不改)。"""
+    parts = [base_system.rstrip()]
+    persona = str(persona_text or "").strip()
+    if persona:
+        parts.append(
+            "[CHARACTER MEMORY SELF]\n"
+            "下面是你此刻的身份与表达侧面;整理记忆时就按这个身份记。"
+            "角色设定只决定记忆口吻、在意点和情感余温,不是事实本身。\n"
+            f"{persona}"
+        )
+    extra = str(extra_guidance or "").strip()
+    if extra:
+        parts.append(f"[领域补充指引(只补充,不得改写以上任何规则与字段契约)]\n{extra}")
+    parts.append(MEMORY_TIME_ANCHOR_RULES)
+    return "\n\n".join(parts)
+
+
+SUMMARY_SYSTEM = (
+    "你就是当前角色,正在整理自己较早的一段记忆。请严格输出 JSON。\n"
+    "字段固定为 diary_summary, period_label, event_type, importance, key_events, core_facts, memory_metadata。\n"
+    "diary_summary 是你的日记式回忆,可带一点语气和心情。\n"
+    "core_facts 要客观、稳定、适合后续检索;不要把角色设定当成事实写进去。\n"
+    "memory_metadata 只用于检索入库:keywords 0-4 个短词,subject_scopes 从 user/assistant/other 选,"
+    "categories 从固定枚举选,mood_tags 0-3 个情感余温(温度关闭时留空)。\n"
+    "不要编造对话里没有出现的事实。importance 必须是 0.0 到 1.0 之间的数字,不要写“高/中/低”。\n"
+    "key_events 和 core_facts 必须是 JSON 数组。只输出一个合法 JSON 对象,不要解释或代码块。"
+)
+
+SUMMARY_USER_TEMPLATE = (
+    "请总结下面这段较早的 {batch_size} 条对话:\n{transcript}\n\n"
+    "要求:简洁、连贯、适合后续记忆检索。再次强调:importance 只能是数字。"
+)
+
+SEMANTIC_SYSTEM = (
+    "你就是当前角色,正在把阶段回忆沉淀成长期记忆。请把收到的较早阶段摘要进一步压缩成更稳定的语义记忆,"
+    "并严格输出 JSON。\n"
+    "字段固定为 semantic_summary, importance, stable_facts, recurring_topics, important_people, open_loops, memory_metadata。\n"
+    "stable_facts 要稳定、客观、适合长期保留;不要把角色设定写进去。\n"
+    "recurring_topics 抓反复出现的话题;important_people 只留明显重要或反复出现的人;open_loops 记仍在推进的事项。\n"
+    "不要编造摘要里没有的长期结论。importance 必须是 0.0 到 1.0 之间的数字。\n"
+    "stable_facts/recurring_topics/important_people/open_loops 必须是 JSON 数组。只输出一个合法 JSON 对象。"
+)
+
+SEMANTIC_USER_TEMPLATE = (
+    "请把下面这组更早的阶段摘要,再压缩成一条长期语义记忆:\n{source_text}\n\n"
+    "要求:保留长期稳定事实、反复话题、重要人物和未完成线索;不要写成流水账。importance 只能是 0 到 1 的数字。"
+)
+
+REINFORCEMENT_SYSTEM = (
+    "你就是当前角色,正在重新整理一条自己的长期记忆。你会收到一条已有长期语义记忆,以及一组新的阶段摘要压缩结果。\n"
+    "如果它们明显属于同一长期主线,请输出一条融合后的长期语义记忆,严格输出 JSON,字段同语义记忆。\n"
+    "尽量保留已有稳定事实,同时自然吸收新近重复出现的内容。不要因为新内容只出现一次就推翻旧的稳定印象。\n"
+    "不要写成流水账。importance 必须是 0.0 到 1.0 之间的数字。各列表字段必须是 JSON 数组。只输出一个合法 JSON 对象。"
+)
+
+REINFORCEMENT_USER_TEMPLATE = (
+    "已有长期语义记忆:\n{existing_text}\n\n新的阶段摘要压缩结果:\n{incoming_text}\n\n"
+    "请输出融合后的长期记忆,尽量保留旧的稳定信息,同时吸收新的重复线索。"
+)
+
+
+ROUTER_SYSTEM = (
+    "你是前置记忆路由器,只判断当前消息是否需要触发记忆检索。\n"
+    "必须输出 NDJSON,每行一个合法 JSON 对象,不要输出任何解释。\n"
+    '第一行输出 decision 事件:{"type":"decision","need_retrieval":true|false}。\n'
+    "只有 need_retrieval=true 时,第二行才输出 query 事件:"
+    '{"type":"query","rewritten_query":"简短搜索短句","keywords":["..."],"time_hint":null}。\n'
+    "判断要点:用户在向过去要事实(记得/之前/上次/约定过/我的偏好/旧计划/叫什么来着)→ true;"
+    "只是接当前话题、当下闲聊、陈述新事实而不要求回忆 → false。\n"
+    "rewritten_query 保留实体/动作/时间线索,写成陈述短句,不要写“请查找…”。keywords 具体可检索。"
+)
+
+ROUTER_USER_TEMPLATE = "最近上下文:\n{recent_context}\n\n当前消息:\n{current_message}"
+
+VERIFIER_SYSTEM = (
+    "你是记忆检索校验器,只判断检索到的片段是否足以回答用户问题。\n"
+    "必须输出 NDJSON,每行一个合法 JSON 对象,不要输出解释。\n"
+    '第一行 decision 事件:{"type":"decision","match_result":"match|mismatch"}。\n'
+    '若 match,第二行 selection 事件:{"type":"selection","selected_indexes":[1,2]}'
+    "(编号从 1 开始,对应展示的片段)。\n"
+    "只选对回答当前问题有直接帮助的片段;若片段只是重复用户提问或没有新事实,判 mismatch。"
+)
+
+VERIFIER_USER_TEMPLATE = "用户问题:\n{query}\n\n检索到的记忆片段(编号从 1 开始):\n{snippets}"
+
+
+def build_router_prompts(*, recent_context: str, current_message: str) -> tuple[str, str]:
+    return (ROUTER_SYSTEM, ROUTER_USER_TEMPLATE.format(recent_context=recent_context, current_message=current_message))
+
+
+def build_verifier_prompts(*, query: str, snippets_text: str) -> tuple[str, str]:
+    return (VERIFIER_SYSTEM, VERIFIER_USER_TEMPLATE.format(query=query, snippets=snippets_text))
+
+
+def build_summary_prompts(
+    *, transcript: str, batch_size: int, overrides: PromptOverrides | None = None
+) -> tuple[str, str]:
+    ov = overrides or PromptOverrides()
+    return (
+        _weld(SUMMARY_SYSTEM, persona_text=ov.persona_text, extra_guidance=ov.extra_summary_guidance),
+        SUMMARY_USER_TEMPLATE.format(transcript=transcript, batch_size=int(batch_size)),
+    )
+
+
+def build_semantic_prompts(*, source_text: str, overrides: PromptOverrides | None = None) -> tuple[str, str]:
+    ov = overrides or PromptOverrides()
+    return (
+        _weld(SEMANTIC_SYSTEM, persona_text=ov.persona_text, extra_guidance=ov.extra_semantic_guidance),
+        SEMANTIC_USER_TEMPLATE.format(source_text=source_text),
+    )
+
+
+def build_reinforcement_prompts(
+    *, existing_text: str, incoming_text: str, overrides: PromptOverrides | None = None
+) -> tuple[str, str]:
+    ov = overrides or PromptOverrides()
+    return (
+        _weld(REINFORCEMENT_SYSTEM, persona_text=ov.persona_text, extra_guidance=ov.extra_reinforcement_guidance),
+        REINFORCEMENT_USER_TEMPLATE.format(existing_text=existing_text, incoming_text=incoming_text),
+    )

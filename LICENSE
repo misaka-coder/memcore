@@ -1,0 +1,31 @@
+memcore — Proprietary License
+Copyright (c) 2026 misaka. All Rights Reserved.
+
+This software and its source code (the "Software") are proprietary and
+confidential. No license, right, or permission is granted by default.
+
+Without a separate, written commercial license agreement signed by the
+copyright holder, you MAY NOT:
+
+  - use the Software for any purpose (including evaluation in production);
+  - copy, reproduce, or store the Software except as strictly required to
+    review a copy explicitly provided to you;
+  - modify, adapt, translate, or create derivative works;
+  - distribute, sublicense, sell, rent, lease, or otherwise make the
+    Software available to any third party;
+  - remove or alter any proprietary notices.
+
+Commercial use requires a separate license. The scope, fees, and terms of
+any such use are defined solely by a written agreement with the copyright
+holder. Contact the copyright holder to obtain a commercial license.
+
+An open-source edition, if any, will be released separately and under its
+own clearly stated license; this file does not grant any open-source rights.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF
+OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

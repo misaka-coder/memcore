@@ -1,0 +1,4 @@
+# 统一用 LF,避免跨平台 CRLF 噪音(交付库该在 Win/Linux/macOS 一致)。
+* text=auto eol=lf
+*.png binary
+*.whl binary
