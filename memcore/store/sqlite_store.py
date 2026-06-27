@@ -418,15 +418,18 @@ class SQLiteMemoryStore(MemoryStore):
         return [self._row_to_record(r, "summaries") for r in rows]
 
     def get_recent_semantic_summaries(
-        self, *, namespace: Namespace, limit: int, cross_conversation: bool = False
+        self, *, namespace: Namespace, limit: int | None = None, cross_conversation: bool = False
     ) -> list[dict[str, Any]]:
         scope_clause, params = self._scope_clause(namespace, with_conversation=not cross_conversation)
+        sql = (
+            f"SELECT * FROM semantic_summaries WHERE {scope_clause} "
+            "ORDER BY last_reinforced_ts DESC, importance DESC, timestamp DESC"
+        )
+        if limit is not None:  # limit=None 取全部(供衰减排序对完整候选集生效,不预截断)
+            sql += " LIMIT ?"
+            params = [*params, int(limit)]
         with self._lock:
-            rows = self._conn.execute(
-                f"SELECT * FROM semantic_summaries WHERE {scope_clause} "
-                f"ORDER BY last_reinforced_ts DESC, importance DESC, timestamp DESC LIMIT ?",
-                [*params, int(limit)],
-            ).fetchall()
+            rows = self._conn.execute(sql, params).fetchall()
         return [self._row_to_record(r, "semantic_summaries") for r in rows]
 
     def get_uncompacted_episodic_summaries(

@@ -29,11 +29,13 @@
 - **embedding 三条路 + 自检 ✅**:`HuggingFaceEmbeddingProvider`(本地 BGE-M3)/ `HTTPEmbeddingProvider`(OpenAI 兼容 API,纯 stdlib 零依赖)/ `HashedEmbeddingProvider`(仅测试)。
   `verify_embedding()` 自检语义是否真有效(近义词应明显更近),hashed/弱模型会被响亮标记。**不捆绑任何模型权重。**
 - **outbox 自愈 ✅**:向量后端故障时记录仍安全落库(pending),`reindex_pending()` 恢复后补齐索引,记录/压缩都不被向量故障阻断。
-- 可配置:`visible_memory_scope`(conversation/user)、`enable_pre_retrieval`、`enable_verifier`、`enable_flavor`。
+- **提示词治理 ✅**:焊死骨架 + 校验插槽(`PromptOverrides`);插槽只能补充、不可移除契约/时间锚点。
+- **importance 衰减 ✅**:`enable_importance_decay` 开启后,长期记忆可见窗口按"随时间衰减的重要度"排序(久未强化的记忆淡出),衰减对**全部**候选生效、不静默截断。
+- 可配置:`visible_memory_scope`(conversation/user)、`enable_pre_retrieval`、`enable_verifier`、`enable_flavor`、`enable_importance_decay`。
 - 压缩重试:`llm_max_retries` 会传给注入的 `LLMClient`;最终仍失败时压缩层不标记已完成,下一轮继续重试。
 
-下一步:**切片 6(提示词治理)** —— 焊死/插槽校验、可覆盖。
-后续(温度/命名空间收尾 → 评测台回归 → 打包)见设计文档 §15。
+核心 + 评测台 + 时间线 + embedding 三路 + outbox 自愈 + 打包(专有授权)+ importance 衰减 均已完成。
+可选后续(按需):陪伴 flavor、大语料 BM25 可扩展后端 —— 见设计文档 §15。
 
 ## 端到端用法
 

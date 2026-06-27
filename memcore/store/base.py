@@ -69,8 +69,9 @@ class MemoryStore(ABC):
 
     @abstractmethod
     def get_recent_semantic_summaries(
-        self, *, namespace: Namespace, limit: int, cross_conversation: bool = False
+        self, *, namespace: Namespace, limit: int | None = None, cross_conversation: bool = False
     ) -> list[dict[str, Any]]:
+        """limit=None 取全部(供衰减排序对完整候选集生效,不按 recency 预截断)。"""
         raise NotImplementedError
 
     @abstractmethod

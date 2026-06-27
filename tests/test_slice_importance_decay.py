@@ -82,6 +82,34 @@ class VisibleWindowDecay(unittest.TestCase):
         # 衰减:A 0.9*0.5^(30/90)=~0.71 > B 0.5 → A 先,体现"重要度按新鲜度加权"。
         self.assertEqual(self._semantic_order(decay=True), ["A", "B"])
 
+    def test_decay_ranks_full_candidate_set_no_recency_truncation(self) -> None:
+        # 复现 review:很多条"新但低重要度" + 一条"旧但高重要度"。
+        # 旧高价值的那条即使在 recency 窗口之外,衰减后仍应能进可见窗口(不被静默截断)。
+        for i in range(12):  # 远超 semantic_visible_limit,且都比 HIGH_OLD 新
+            self.store.add_semantic_summary(
+                namespace=self.ns,
+                record={
+                    "semantic_id": f"low{i}",
+                    "timestamp": self.now - i,
+                    "last_reinforced_ts": self.now - i,
+                    "importance": 0.1,
+                    "semantic_summary": f"低{i}",
+                },
+            )
+        self.store.add_semantic_summary(
+            namespace=self.ns,
+            record={
+                "semantic_id": "HIGH_OLD",
+                "timestamp": self.now - 20 * _DAY,
+                "last_reinforced_ts": self.now - 20 * _DAY,
+                "importance": 0.95,
+                "semantic_summary": "旧但很重要",
+            },
+        )
+        order = self._semantic_order(decay=True)
+        # HIGH_OLD 衰减后 0.95*0.5^(20/90)≈0.81,远高于 0.1 → 必须出现在可见窗口里
+        self.assertIn("HIGH_OLD", order)
+
 
 class ConfigValidation(unittest.TestCase):
     def test_half_life_must_be_positive(self) -> None:

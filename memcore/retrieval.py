@@ -106,12 +106,11 @@ class ReadPipeline:
         limit = self.config.semantic_visible_limit
         if not self.config.enable_importance_decay:
             return self.store.get_recent_semantic_summaries(namespace=namespace, limit=limit, cross_conversation=cross)
-        # 衰减模式:多取一些候选,按"随时间衰减的重要度"重排,取前 N(久未强化的高重要度记忆会淡出)。
+        # 衰减模式:对**全部**长期记忆按"随时间衰减的重要度"重排后取前 N。
+        # 不按 recency 预截断候选——否则旧但衰减后仍高价值的记忆会被静默排除。
         from .decay import decayed_importance
 
-        pool = self.store.get_recent_semantic_summaries(
-            namespace=namespace, limit=max(limit * 4, limit), cross_conversation=cross
-        )
+        pool = self.store.get_recent_semantic_summaries(namespace=namespace, limit=None, cross_conversation=cross)
         hl = self.config.importance_half_life_days
 
         def score(record: dict[str, Any]) -> float:
