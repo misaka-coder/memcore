@@ -77,9 +77,7 @@ class ReadPipeline:
         episodic = self.store.get_visible_episodic_summaries(
             namespace=namespace, limit=self.config.episodic_visible_max, cross_conversation=cross
         )
-        semantic = self.store.get_recent_semantic_summaries(
-            namespace=namespace, limit=self.config.semantic_visible_limit, cross_conversation=cross
-        )
+        semantic = self._visible_semantic(namespace=namespace, cross=cross, now_ts=now_ts)
 
         visible_ids = set(exclude_source_ids or [])
         visible_ids |= {str(r.get("source_id")) for r in raw}
@@ -103,6 +101,25 @@ class ReadPipeline:
             "retrieved_snippets": retrieved,
             "router": router,
         }
+
+    def _visible_semantic(self, *, namespace: Namespace, cross: bool, now_ts: int) -> list[dict[str, Any]]:
+        limit = self.config.semantic_visible_limit
+        if not self.config.enable_importance_decay:
+            return self.store.get_recent_semantic_summaries(namespace=namespace, limit=limit, cross_conversation=cross)
+        # 衰减模式:多取一些候选,按"随时间衰减的重要度"重排,取前 N(久未强化的高重要度记忆会淡出)。
+        from .decay import decayed_importance
+
+        pool = self.store.get_recent_semantic_summaries(
+            namespace=namespace, limit=max(limit * 4, limit), cross_conversation=cross
+        )
+        hl = self.config.importance_half_life_days
+
+        def score(record: dict[str, Any]) -> float:
+            anchor = int(record.get("last_reinforced_ts") or record.get("timestamp") or 0)
+            age = max(0, int(now_ts) - anchor)
+            return decayed_importance(record.get("importance", 0.0), age_seconds=age, half_life_days=hl)
+
+        return sorted(pool, key=score, reverse=True)[:limit]
 
     def retrieve(
         self,

@@ -49,7 +49,8 @@ class MemoryConfig:
 
     # --- 开关 ---
     enable_flavor: bool = False  # 温度层(mood/口吻);默认关 = 纯事实
-    enable_importance_decay: bool = False  # 可选:长期记忆 importance 随时间衰减(分期实现)
+    enable_importance_decay: bool = False  # 开启后:长期记忆可见窗口按"随时间衰减的重要度"排序,而非纯recency
+    importance_half_life_days: float = 90.0  # 衰减半衰期(天):越久未强化,重要度按指数减半
 
     def __post_init__(self) -> None:
         self.validate()
@@ -86,6 +87,11 @@ class MemoryConfig:
             raise ConfigError(
                 "episodic_compact_batch_size must be < episodic_compact_trigger_count "
                 f"(got {self.episodic_compact_batch_size} >= {self.episodic_compact_trigger_count})"
+            )
+
+        if not isinstance(self.importance_half_life_days, (int, float)) or self.importance_half_life_days <= 0:
+            raise ConfigError(
+                f"importance_half_life_days must be a positive number, got {self.importance_half_life_days!r}"
             )
 
         if self.visible_memory_scope not in ("conversation", "user"):
