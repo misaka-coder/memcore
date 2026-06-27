@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -85,6 +86,7 @@ class MemorySystem:
         self._read = ReadPipeline(
             store=self.store, index=self.index, llm=self.llm, config=self.config, timezone=self.timezone
         )
+        self._compact_executor: ThreadPoolExecutor | None = None  # 懒建,单 worker 串行后台压缩
 
     @staticmethod
     def _resolve_overrides(prompt_overrides: PromptOverrides | None, persona_text: str) -> PromptOverrides:
@@ -160,7 +162,24 @@ class MemorySystem:
         )
 
     def compact_due(self) -> dict[str, int]:
+        """同步压缩(阻塞调用方直到完成)。简单/单用户/测试用;高并发请用 compact_due_background。"""
         return self._compaction.run_due(namespace=self.namespace)
+
+    def compact_due_background(self) -> Future:
+        """异步压缩:提交到单 worker 后台线程,立刻返回 Future,不阻塞调用方(对齐 Akane 的异步压缩)。
+
+        单 worker = 所有压缩串行,不会压垮 LLM/库;同 namespace 还有 Compaction 内部锁兜底。
+        Future.result() 可取压缩统计;fire-and-forget 直接忽略即可。用完调 close() 收线程。
+        """
+        if self._compact_executor is None:
+            self._compact_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="memcore-compact")
+        return self._compact_executor.submit(self._compaction.run_due, namespace=self.namespace)
+
+    def close(self, *, wait: bool = True) -> None:
+        """收掉后台压缩线程。store/index 生命周期由调用方自理。"""
+        if self._compact_executor is not None:
+            self._compact_executor.shutdown(wait=wait)
+            self._compact_executor = None
 
     def acquaintance_note(self, *, now_ts: int | None = None, cross_conversation: bool = True) -> str:
         """(opt-in,陪伴向)相处时间感:"第一次聊天是哪天、到今天认识第几天"。

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import math
+import threading
 from collections import Counter
 from typing import Any
 
@@ -59,25 +60,38 @@ class InMemoryVectorIndex(VectorIndex):
     def __init__(self, *, embedding: EmbeddingProvider) -> None:
         self.embedding = embedding
         self._entries: dict[str, dict[str, Any]] = {}
+        self._lock = threading.RLock()  # 后台压缩线程会写入,保证线程安全
 
     def upsert(self, entries: list[dict[str, Any]]) -> None:
+        prepared = []
         for entry in entries:
             source_id = str(entry.get("source_id") or "").strip()
             if not source_id:
                 continue
             text = str(entry.get("text") or "")
             metadata = entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {}
-            self._entries[source_id] = {
-                "source_id": source_id,
-                "document": text,
-                "metadata": dict(metadata),
-                "vector": self.embedding.embed_text(text),
-            }
+            # embed 在锁外算(可能较慢),只在写 dict 时加锁。
+            prepared.append(
+                (
+                    source_id,
+                    {
+                        "source_id": source_id,
+                        "document": text,
+                        "metadata": dict(metadata),
+                        "vector": self.embedding.embed_text(text),
+                    },
+                )
+            )
+        with self._lock:
+            for source_id, record in prepared:
+                self._entries[source_id] = record
 
     def semantic_search(self, *, query_text: str, where: dict[str, Any], n_results: int = 8) -> list[dict[str, Any]]:
         query_vec = self.embedding.embed_text(str(query_text or ""))
+        with self._lock:
+            snapshot = list(self._entries.values())
         hits: list[dict[str, Any]] = []
-        for entry in self._entries.values():
+        for entry in snapshot:
             if not _match_where(entry["metadata"], where):
                 continue
             hits.append(
@@ -99,7 +113,9 @@ class InMemoryVectorIndex(VectorIndex):
         where: dict[str, Any],
         n_results: int = 8,
     ) -> list[dict[str, Any]]:
-        candidates = [e for e in self._entries.values() if _match_where(e["metadata"], where)]
+        with self._lock:
+            snapshot = list(self._entries.values())
+        candidates = [e for e in snapshot if _match_where(e["metadata"], where)]
         if not candidates:
             return []
 
@@ -159,8 +175,10 @@ class InMemoryVectorIndex(VectorIndex):
         return score
 
     def delete(self, source_ids: list[str]) -> None:
-        for source_id in source_ids:
-            self._entries.pop(str(source_id), None)
+        with self._lock:
+            for source_id in source_ids:
+                self._entries.pop(str(source_id), None)
 
     def count(self) -> int:
-        return len(self._entries)
+        with self._lock:
+            return len(self._entries)

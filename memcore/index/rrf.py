@@ -19,11 +19,8 @@ def fuse_with_rrf(
     semantic_map = {hit["source_id"]: hit for hit in semantic_hits}
     keyword_map = {hit["source_id"]: hit for hit in keyword_hits}
 
-    all_ids: list[str] = []
-    for bucket in (semantic_hits, keyword_hits):
-        for hit in bucket:
-            if hit["source_id"] not in all_ids:
-                all_ids.append(hit["source_id"])
+    # dict.fromkeys 保序去重,O(1) 成员判断(避免 list 的 O(n²))。
+    all_ids = list(dict.fromkeys(hit["source_id"] for bucket in (semantic_hits, keyword_hits) for hit in bucket))
 
     fused: list[dict[str, Any]] = []
     for source_id in all_ids:
