@@ -244,11 +244,10 @@ class ReadPipeline:
     ) -> list[dict[str, Any]]:
         stages = self._build_stages(requested)
         stop = self.config.relaxation_stop_candidate_count
-        selected = [h for h in hits if self._match_filters(h, stages[-1])]  # 默认最宽
-        for stage in stages:
-            matching = [h for h in hits if self._match_filters(h, stage)]
-            selected = matching
-            if len(matching) >= stop:
+        selected: list[dict[str, Any]] = []
+        for stage in stages:  # strict→最宽逐级放宽,候选够了就停;循环必至少跑一轮
+            selected = [h for h in hits if self._match_filters(h, stage)]
+            if len(selected) >= stop:
                 break
         return selected
 

@@ -16,6 +16,26 @@ from .base import VectorIndex
 from .memory_index import _keyword_doc_text
 
 
+def _to_chroma_where(where: dict[str, Any] | None) -> dict[str, Any] | None:
+    """把 memcore 的 where(多顶层键隐式 AND、单字段多操作符)翻成 Chroma 严格语法。
+
+    Chroma(0.5+)要求:多条件必须显式 $and;一个字段 dict 只能含一个操作符。
+    例:{"u":"x","ts":{"$gte":a,"$lte":b}} → {"$and":[{"u":"x"},{"ts":{"$gte":a}},{"ts":{"$lte":b}}]}
+    """
+    if not where:
+        return None
+    clauses: list[dict[str, Any]] = []
+    for key, cond in where.items():
+        if isinstance(cond, dict):
+            for op, val in cond.items():  # 每个操作符拆成独立子句
+                clauses.append({key: {op: val}})
+        else:
+            clauses.append({key: cond})
+    if not clauses:
+        return None
+    return clauses[0] if len(clauses) == 1 else {"$and": clauses}
+
+
 class ChromaVectorIndex(VectorIndex):
     def __init__(self, *, base_dir: str, embedding: EmbeddingProvider) -> None:
         try:
@@ -54,7 +74,7 @@ class ChromaVectorIndex(VectorIndex):
         result = self._collection.query(
             query_embeddings=self.embedding.embed_texts([str(query_text or "")]),
             n_results=max(1, int(n_results)),
-            where=where or None,
+            where=_to_chroma_where(where),
             include=["documents", "metadatas", "distances"],
         )
         hits: list[dict[str, Any]] = []
@@ -82,7 +102,7 @@ class ChromaVectorIndex(VectorIndex):
     ) -> list[dict[str, Any]]:
         import math
 
-        got = self._collection.get(where=where or None, include=["documents", "metadatas"])
+        got = self._collection.get(where=_to_chroma_where(where), include=["documents", "metadatas"])
         ids = got.get("ids") or []
         documents = got.get("documents") or []
         metadatas = got.get("metadatas") or []
