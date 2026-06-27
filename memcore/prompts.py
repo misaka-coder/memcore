@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .errors import PromptError
+from .schema import MOOD_TAGS
 
 MEMORY_TIME_ANCHOR_RULES = (
     "[时间锚点规则]\n"
@@ -53,8 +54,21 @@ class PromptOverrides:
                 raise PromptError(f"{name} too long ({len(value)} > {MAX_SLOT_CHARS}); slots may only supplement")
 
 
-def _weld(base_system: str, *, persona_text: str = "", extra_guidance: str = "") -> str:
-    """焊死骨架装配:base(契约)永远在前,时间锚点永远在后;插槽只能填在中间(只增不改)。"""
+def _mood_instruction() -> str:
+    """温度启用时注入:让模型在 mood_tags 写情感余温。枚举取自焊死的 MOOD_TAGS。"""
+    return (
+        "[情感温度(已启用)]\n"
+        "在 memory_metadata.mood_tags 里写 0-3 个你记住这件事时的情感余温,只能从固定枚举里选:"
+        f"{' / '.join(MOOD_TAGS)}。\n"
+        "mood_tags 是你的记忆感受,不要污染 core_facts / stable_facts 等客观字段。"
+    )
+
+
+def _weld(base_system: str, *, persona_text: str = "", extra_guidance: str = "", enable_flavor: bool = False) -> str:
+    """焊死骨架装配:base(契约)永远在前,时间锚点永远在后;插槽/温度只能填在中间(只增不改)。
+
+    enable_flavor 动态决定是否注入 mood 指令——温度关闭时三层提示词一个字都不提 mood。
+    """
     parts = [base_system.rstrip()]
     persona = str(persona_text or "").strip()
     if persona:
@@ -64,6 +78,8 @@ def _weld(base_system: str, *, persona_text: str = "", extra_guidance: str = "")
             "角色设定只决定记忆口吻、在意点和情感余温,不是事实本身。\n"
             f"{persona}"
         )
+    if enable_flavor:
+        parts.append(_mood_instruction())
     extra = str(extra_guidance or "").strip()
     if extra:
         parts.append(f"[领域补充指引(只补充,不得改写以上任何规则与字段契约)]\n{extra}")
@@ -77,7 +93,7 @@ SUMMARY_SYSTEM = (
     "diary_summary 是你的日记式回忆,可带一点语气和心情。\n"
     "core_facts 要客观、稳定、适合后续检索;不要把角色设定当成事实写进去。\n"
     "memory_metadata 只用于检索入库:keywords 0-4 个短词,subject_scopes 从 user/assistant/other 选,"
-    "categories 从固定枚举选,mood_tags 0-3 个情感余温(温度关闭时留空)。\n"
+    "categories 从固定枚举选。\n"
     "不要编造对话里没有出现的事实。importance 必须是 0.0 到 1.0 之间的数字,不要写“高/中/低”。\n"
     "key_events 和 core_facts 必须是 JSON 数组。只输出一个合法 JSON 对象,不要解释或代码块。"
 )
@@ -149,28 +165,45 @@ def build_verifier_prompts(*, query: str, snippets_text: str) -> tuple[str, str]
 
 
 def build_summary_prompts(
-    *, transcript: str, batch_size: int, overrides: PromptOverrides | None = None
+    *, transcript: str, batch_size: int, overrides: PromptOverrides | None = None, enable_flavor: bool = False
 ) -> tuple[str, str]:
     ov = overrides or PromptOverrides()
     return (
-        _weld(SUMMARY_SYSTEM, persona_text=ov.persona_text, extra_guidance=ov.extra_summary_guidance),
+        _weld(
+            SUMMARY_SYSTEM,
+            persona_text=ov.persona_text,
+            extra_guidance=ov.extra_summary_guidance,
+            enable_flavor=enable_flavor,
+        ),
         SUMMARY_USER_TEMPLATE.format(transcript=transcript, batch_size=int(batch_size)),
     )
 
 
-def build_semantic_prompts(*, source_text: str, overrides: PromptOverrides | None = None) -> tuple[str, str]:
+def build_semantic_prompts(
+    *, source_text: str, overrides: PromptOverrides | None = None, enable_flavor: bool = False
+) -> tuple[str, str]:
     ov = overrides or PromptOverrides()
     return (
-        _weld(SEMANTIC_SYSTEM, persona_text=ov.persona_text, extra_guidance=ov.extra_semantic_guidance),
+        _weld(
+            SEMANTIC_SYSTEM,
+            persona_text=ov.persona_text,
+            extra_guidance=ov.extra_semantic_guidance,
+            enable_flavor=enable_flavor,
+        ),
         SEMANTIC_USER_TEMPLATE.format(source_text=source_text),
     )
 
 
 def build_reinforcement_prompts(
-    *, existing_text: str, incoming_text: str, overrides: PromptOverrides | None = None
+    *, existing_text: str, incoming_text: str, overrides: PromptOverrides | None = None, enable_flavor: bool = False
 ) -> tuple[str, str]:
     ov = overrides or PromptOverrides()
     return (
-        _weld(REINFORCEMENT_SYSTEM, persona_text=ov.persona_text, extra_guidance=ov.extra_reinforcement_guidance),
+        _weld(
+            REINFORCEMENT_SYSTEM,
+            persona_text=ov.persona_text,
+            extra_guidance=ov.extra_reinforcement_guidance,
+            enable_flavor=enable_flavor,
+        ),
         REINFORCEMENT_USER_TEMPLATE.format(existing_text=existing_text, incoming_text=incoming_text),
     )

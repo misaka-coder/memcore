@@ -78,6 +78,7 @@ class Compaction:
                     transcript=self._render_transcript(batch),
                     batch_size=len(batch),
                     overrides=self.overrides,
+                    enable_flavor=self.config.enable_flavor,
                 ),
                 fallback={"diary_summary": "", "importance": 0.3, "key_events": [], "core_facts": []},
             )
@@ -120,7 +121,11 @@ class Compaction:
             batch = eps[: cfg.episodic_compact_batch_size]
             call = self._call_json(
                 TaskType.SEMANTIC,
-                *build_semantic_prompts(source_text=self._render_episodes(batch), overrides=self.overrides),
+                *build_semantic_prompts(
+                    source_text=self._render_episodes(batch),
+                    overrides=self.overrides,
+                    enable_flavor=self.config.enable_flavor,
+                ),
                 fallback={"semantic_summary": "", "importance": 0.4, "stable_facts": []},
             )
             if not call.ok or not _has_semantic_content(call.data):
@@ -197,6 +202,7 @@ class Compaction:
                 existing_text=_render_semantic_text(target),
                 incoming_text=_render_semantic_text(incoming),
                 overrides=self.overrides,
+                enable_flavor=self.config.enable_flavor,
             ),
             fallback=fallback,
         )
