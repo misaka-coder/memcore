@@ -162,6 +162,27 @@ class MemorySystem:
     def compact_due(self) -> dict[str, int]:
         return self._compaction.run_due(namespace=self.namespace)
 
+    def acquaintance_note(self, *, now_ts: int | None = None, cross_conversation: bool = True) -> str:
+        """(opt-in,陪伴向)相处时间感:"第一次聊天是哪天、到今天认识第几天"。
+
+        无历史返回 ""。其它领域(金融/客服)不调用即可,不强加。
+        """
+        first = self.store.get_first_message_timestamp(namespace=self.namespace, cross_conversation=cross_conversation)
+        if not first:
+            return ""
+        tz = ZoneInfo(self.timezone)
+        from datetime import datetime
+
+        now = int(now_ts or time.time())
+        first_date = datetime.fromtimestamp(first, tz).date()
+        now_date = datetime.fromtimestamp(now, tz).date()
+        days = max(1, (now_date - first_date).days + 1)
+        return (
+            f"按本地留下的记录,你和该用户第一次留下对话是在 {first_date.isoformat()};到今天是认识的第 {days} 天。"
+            "这是一条相处时间线索,只在谈到初识/陪伴/纪念/久未联系时自然带入,不必每轮报数,"
+            "也不要把『首次留下记录』夸张成你能证明的现实起点。"
+        )
+
     def reindex_pending(self, *, limit: int = 100) -> dict[str, int]:
         """outbox 自愈:把 index_status=pending 的记录补做向量 upsert。可定期/启动时调用。"""
         from .index.entry_builder import build_raw_entry, build_semantic_entry, build_summary_entry

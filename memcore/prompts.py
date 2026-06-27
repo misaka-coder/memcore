@@ -165,9 +165,24 @@ def build_verifier_prompts(*, query: str, snippets_text: str) -> tuple[str, str]
 
 
 def build_summary_prompts(
-    *, transcript: str, batch_size: int, overrides: PromptOverrides | None = None, enable_flavor: bool = False
+    *,
+    transcript: str,
+    batch_size: int,
+    overrides: PromptOverrides | None = None,
+    enable_flavor: bool = False,
+    reference_summary_text: str = "",
 ) -> tuple[str, str]:
     ov = overrides or PromptOverrides()
+    user = SUMMARY_USER_TEMPLATE.format(transcript=transcript, batch_size=int(batch_size))
+    reference = str(reference_summary_text or "").strip()
+    if reference:
+        # 既有摘要作参考:保持人物/项目/时间线/口吻一致,并避免与既有摘要冲突;但不引入新事实。
+        user = (
+            f"{user}\n\n"
+            "可参考的既有阶段摘要(仅用于保持人物关系、项目脉络、时间线、记忆口吻一致,"
+            "并避免与既有摘要相互冲突;不要把参考里出现、但本段对话没出现的内容写成本段的新事实):\n"
+            f"{reference}"
+        )
     return (
         _weld(
             SUMMARY_SYSTEM,
@@ -175,7 +190,7 @@ def build_summary_prompts(
             extra_guidance=ov.extra_summary_guidance,
             enable_flavor=enable_flavor,
         ),
-        SUMMARY_USER_TEMPLATE.format(transcript=transcript, batch_size=int(batch_size)),
+        user,
     )
 
 

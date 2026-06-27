@@ -79,6 +79,7 @@ class Compaction:
                     batch_size=len(batch),
                     overrides=self.overrides,
                     enable_flavor=self.config.enable_flavor,
+                    reference_summary_text=self._render_reference_summaries(namespace),
                 ),
                 fallback={"diary_summary": "", "importance": 0.3, "key_events": [], "core_facts": []},
             )
@@ -255,6 +256,19 @@ class Compaction:
             self.store.set_index_status(source_id, "indexed")
         except Exception:
             return
+
+    def _render_reference_summaries(self, namespace: Namespace) -> str:
+        """取本会话最近的既有阶段摘要作参考,帮新摘要与旧摘要保持一致、避免冲突。"""
+        existing = self.store.get_visible_episodic_summaries(
+            namespace=namespace, limit=self.config.episodic_visible_max
+        )
+        lines = []
+        for s in existing:
+            diary = normalize_text(s.get("diary_summary"))
+            facts = "; ".join(str(f) for f in (s.get("core_facts") or []))
+            label = str(s.get("date_label") or "")
+            lines.append(f"- [{label}] {diary}" + (f"(事实:{facts})" if facts else ""))
+        return "\n".join(lines)
 
     @staticmethod
     def _render_transcript(batch: list[dict[str, Any]]) -> str:

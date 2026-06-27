@@ -375,6 +375,14 @@ class SQLiteMemoryStore(MemoryStore):
             ).fetchall()
         return [self._row_to_record(r, "messages") for r in rows]
 
+    def get_first_message_timestamp(self, *, namespace: Namespace, cross_conversation: bool = True) -> int | None:
+        scope_clause, params = self._scope_clause(namespace, with_conversation=not cross_conversation)
+        with self._lock:
+            row = self._conn.execute(
+                f"SELECT MIN(timestamp) AS m FROM messages WHERE {scope_clause}", params
+            ).fetchone()
+        return int(row["m"]) if row is not None and row["m"] is not None else None
+
     def get_messages_by_date_range(
         self,
         *,

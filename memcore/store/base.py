@@ -82,6 +82,11 @@ class MemoryStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def get_first_message_timestamp(self, *, namespace: Namespace, cross_conversation: bool = True) -> int | None:
+        """该 namespace 下最早一条消息的时间戳(供"认识第 N 天"等相处时间感)。无记录返回 None。"""
+        raise NotImplementedError
+
+    @abstractmethod
     def get_messages_by_date_range(
         self,
         *,
