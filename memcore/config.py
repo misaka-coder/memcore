@@ -34,7 +34,6 @@ class MemoryConfig:
     # --- 检索 ---
     retrieval_limit: int = 6  # 默认返回片段数
     relaxation_stop_candidate_count: int = 12  # 候选达到多少就停止放宽
-    enable_pre_retrieval: bool = True  # router 门:判断本轮要不要检索(省下不必要的检索+verifier 开销)
     enable_verifier: bool = True  # verifier 门:片段进 prompt 前先校验筛选
     llm_max_retries: int = 2  # 结构化 LLM 调用建议重试次数;失败仍不提交空记忆
 

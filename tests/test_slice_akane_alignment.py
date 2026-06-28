@@ -1,6 +1,6 @@
 """对齐 Akane 后补的两点:摘要参考上下文(防冲突/保持一致)+ 认识第N天(opt-in 陪伴向)。
 
-router 不在此实现:memcore 用 enable_pre_retrieval=False + 显式 retrieve() 走"聊天模型自驱检索"。
+router 已从 memcore 移除:接入方把 retrieve/read_timeline 暴露给聊天模型,走"聊天模型自驱检索"。
 """
 
 from __future__ import annotations

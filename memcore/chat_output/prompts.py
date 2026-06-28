@@ -24,6 +24,8 @@ def build_chat_output_contract_prompt(
         "字段固定为 speech, memory_metadata。",
         "speech 是给用户看的最终回复,必须是字符串。",
         "memory_metadata 用于本轮用户原始消息的记忆检索标注,不要把它当作给用户看的内容。",
+        "工具调用阶段不适用本 JSON 契约;需要调用工具时请正常使用宿主项目的工具调用机制。",
+        "只有在所有工具调用完成、准备给用户最终回复时,才按本契约只输出一个合法 JSON 对象。",
         "memory_metadata 字段固定为 keywords, subject_scopes, categories, mood_tags, importance, confidence。",
         "keywords 最多 4 个短词;subject_scopes 只能从 user/assistant/other 中选择。",
         f"categories 只能从当前枚举选择:{cats}。",

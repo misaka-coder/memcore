@@ -3,7 +3,7 @@
 差值关系(批量 < 触发数)由 MemoryConfig 保证。强化合并按主题重叠驱动(非位置淘汰):
 新长期记忆形成时,回看最近 N 条,与重叠最高且 >= 阈值者融合,否则新建。
 
-并发:本切片同步 + 每 namespace 串行锁,压缩中不与自身重入(代际安全);异步队列分期。
+并发:压缩核心每 namespace 串行锁,压缩中不与自身重入(代际安全);MemorySystem 提供后台提交入口。
 向量索引用 outbox:先写库(pending),upsert 成功后 set_index_status('indexed')。
 """
 

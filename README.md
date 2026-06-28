@@ -3,7 +3,7 @@
 领域无关、可扩展、可授权的**分层记忆内核**。
 
 - **写侧**:working(原始对话)→ episodic(阶段摘要)→ semantic(长期事实)三层压缩 + 强化合并。
-- **读侧**:多维标签 + 向量/关键词混合检索 + RRF + router/verifier 双门 + 五级自动放宽。
+- **读侧**:显式 `retrieve` / `read_timeline` 双工具 + 向量/关键词混合检索 + RRF + verifier + 五级自动放宽。
 - **贯穿**:时间锚点(带时区)、命名空间硬隔离、温度层可关、注入防线。
 
 设计规格见桌面《可复用记忆库_设计文档_v1.md》(v1.1),提示词原文见《Akane记忆系统提示词原文.md》。
@@ -21,9 +21,9 @@
   跨 namespace 覆盖、时区校验六处接缝(见 tests/test_slice3b_repair.py)。
 - **切片 4(写侧)✅**:`compaction` 三层压缩(raw→摘要→语义)+ 主题重叠强化合并(注入 LLMClient,
   按 namespace 加锁,outbox 索引);`MemorySystem` 写侧 record/compact 接通。压缩 LLM 失败时不会提交空摘要,
-  会返回 `summary_retry_pending` / `semantic_retry_pending`,并保留原记录供下一轮 `compact_due()` 重试。
-- **切片 5(读侧)✅**:`retrieval` —— router 门 → 混合检索 + RRF + 五级放宽 + 可见排除 + raw 扩窗 → verifier 门;
-  `build_prompt_context` / `retrieve` 接通。**读写侧全闭环。**
+  会返回 `summary_retry_pending` / `semantic_retry_pending`,并保留原记录供下一轮后台压缩重试。
+- **切片 5(读侧)✅**:`retrieval` —— 显式 retrieve 工具 → 混合检索 + RRF + 五级放宽 + raw 扩窗 → verifier 门;
+  `build_prompt_context` 只拼可见三层,是否检索交给聊天模型调用工具决定。**读写侧全闭环。**
 - **时间线工具 ✅**:`read_timeline(date_from, date_to, time_periods)` —— 按时间精确读原始对话(不走向量),
   与 `retrieve`(向量模糊检索)互补,双工具对齐参考实现。
 - **embedding 三条路 + 自检 ✅**:`HuggingFaceEmbeddingProvider`(本地 BGE-M3)/ `HTTPEmbeddingProvider`(OpenAI 兼容 API,纯 stdlib 零依赖)/ `HashedEmbeddingProvider`(仅测试)。
@@ -31,9 +31,9 @@
 - **outbox 自愈 ✅**:向量后端故障时记录仍安全落库(pending),`reindex_pending()` 恢复后补齐索引,记录/压缩都不被向量故障阻断。
 - **提示词治理 ✅**:焊死骨架 + 校验插槽(`PromptOverrides`);插槽只能补充、不可移除契约/时间锚点。
 - **importance 衰减 ✅**:`enable_importance_decay` 开启后,长期记忆可见窗口按"随时间衰减的重要度"排序(久未强化的记忆淡出),衰减对**全部**候选生效、不静默截断。
-- 可配置:`visible_memory_scope`(conversation/user)、`enable_pre_retrieval`、`enable_verifier`、`enable_flavor`、`enable_importance_decay`。
+- 可配置:`visible_memory_scope`(conversation/user)、`enable_verifier`、`enable_flavor`、`enable_importance_decay`。
 - 压缩重试:`llm_max_retries` 会传给注入的 `LLMClient`;最终仍失败时压缩层不标记已完成,下一轮继续重试。
-- **Chat Output Adapter 设计草案**:标准 JSON 输出契约、`speech` 流式解析、普通文本尽力分段、raw metadata 回写流程见 `docs/chat_output_adapter_v1.md`。
+- **Chat Output Adapter 设计草案**:标准 JSON 输出契约、`speech` 流式解析、普通文本尽力分段、raw metadata 回写流程见 `docs/chat_output_adapter_v1.md`;工具调用阶段不套该 JSON,只在最终回复阶段输出 memcore JSON。
 
 核心 + 评测台 + 时间线 + embedding 三路 + outbox 自愈 + 打包(专有授权)+ importance 衰减 均已完成。
 可选后续(按需):陪伴 flavor、大语料 BM25 可扩展后端 —— 见设计文档 §15。
@@ -44,12 +44,16 @@
 mem = MemorySystem(llm=MyLLMClient(), namespace=Namespace(user_id="u1", conversation_id="c1"),
                    timezone="Asia/Shanghai", embedding="BAAI/bge-m3")
 cur = mem.record_user_turn("我之前说过爱喝什么")
-ctx = mem.build_prompt_context(current=cur)   # 可见三层 + 检索片段
-# ...用 ctx 拼你自己的最终聊天 prompt、调你自己的聊天模型...
+ctx = mem.build_prompt_context(current=cur)   # 可见三层;是否检索由聊天模型自行调用 retrieve/read_timeline
+# ...用 ctx + memcore 的两个检索工具拼你自己的最终聊天 prompt、调你自己的聊天模型...
+# 当前轮工具包装推荐用 retrieve_for_turn(current=cur, ...),避免把本轮用户问题自己搜回来。
 mem.record_assistant_turn(reply, in_reply_to=cur)
-result = mem.compact_due()                     # 到阈值则自动沉淀记忆
-# result 里若出现 summary_retry_pending / semantic_retry_pending,说明本轮压缩失败但数据仍保留,下轮会重试
+future = mem.compact_due_background()          # 聊天链路推荐后台沉淀,不阻塞用户可见回复
+# 可忽略 future 做 fire-and-forget;测试/脚本可 future.result() 读取压缩统计
 ```
+
+`compact_due_sync()` 是同步确定性入口,适合单测、CLI、管理脚本或进程退出前 flush。在线聊天产品默认应使用
+`compact_due_background()`。
 
 ## 公开边界:本库提供什么 / 接入方自备什么
 
@@ -58,7 +62,7 @@ memcore 是**纯机制**:它不含任何具体人格、领域调教或模型权�
 | memcore 提供(机制) | 接入方自备(你的资产) |
 |---|---|
 | 三层记忆、压缩、强化、时间锚点 | 具体**人格文本**(经 `persona_text` / `PromptOverrides` 运行时注入) |
-| 混合检索、router/verifier、放宽、双工具 | 你的**聊天模型**(`LLMClient` 适配器) |
+| 混合检索、verifier、放宽、双工具 | 你的**聊天模型**(`LLMClient` 适配器) |
 | 焊死提示词骨架 + 校验插槽 | **领域词表**(`categories`)与**调参**(窗口/阈值) |
 | embedding 接口 + 三路适配器 + 自检 | **embedding 模型**(本地 / API / 自有) |
 | 隔离、outbox 自愈、遗忘、评测台 | 领域**合规规则**(memcore 只保证记忆不越权变指令) |

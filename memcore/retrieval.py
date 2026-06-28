@@ -1,13 +1,13 @@
-"""读侧:router → 混合检索(语义+关键词+RRF+五级放宽)→ verifier → 拼可见三层 + 检索片段。
+"""读侧:可见三层 + 显式混合检索工具(语义+关键词+RRF+五级放宽)→ verifier。
 
-设计见 §6。两道门:router 决定要不要检索(省开销),verifier 决定片段够不够(防乱编)。
+聊天模型自己决定是否调用 retrieve/read_timeline。memcore 不再内置前置 router,
+避免每轮额外 LLM 判定带来的成本、延迟和误判。
 精度过滤可逐级放宽(软过滤),硬隔离(namespace)和时间走 index where(不放宽)。
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
 from typing import Any
 
 from .config import MemoryConfig
@@ -15,22 +15,12 @@ from .index.base import VectorIndex
 from .index.rrf import fuse_with_rrf
 from .llm.base import LLMClient, LLMRequest, ResponseFormat, TaskType
 from .namespace import Namespace
-from .prompts import build_router_prompts, build_verifier_prompts
+from .prompts import build_verifier_prompts
 from .rendering import render_raw_snippet, render_semantic_snippet, render_summary_snippet
 from .store.base import MemoryStore
 from .text_utils import normalize_text
 
-_PAST_MARKERS = ("记得", "之前", "上次", "上回", "以前", "曾经", "约定", "答应", "叫什么", "来着", "还记得")
 _QUESTION_MARKERS = ("?", "?", "吗", "什么", "怎么", "为什么", "谁", "哪", "几", "多少")
-
-
-@dataclass
-class RouterDecision:
-    need_retrieval: bool
-    query: str = ""
-    keywords: list[str] = field(default_factory=list)
-    time_hint: dict[str, Any] | None = None
-    degraded: bool = False  # LLM 失败时走启发式兜底
 
 
 def parse_ndjson(text: Any) -> list[dict[str, Any]]:
@@ -69,9 +59,7 @@ class ReadPipeline:
 
     # --- 对外:拼最终上下文 ---
 
-    def build_context(
-        self, *, namespace: Namespace, current_message: str, now_ts: int, exclude_source_ids: list[str] | None = None
-    ) -> dict[str, Any]:
+    def build_context(self, *, namespace: Namespace, now_ts: int) -> dict[str, Any]:
         cross = self.config.visible_memory_scope == "user"
         raw = self.store.get_unsummarized_messages(namespace=namespace)
         episodic = self.store.get_visible_episodic_summaries(
@@ -79,27 +67,10 @@ class ReadPipeline:
         )
         semantic = self._visible_semantic(namespace=namespace, cross=cross, now_ts=now_ts)
 
-        visible_ids = set(exclude_source_ids or [])
-        visible_ids |= {str(r.get("source_id")) for r in raw}
-        visible_ids |= {str(s.get("summary_id")) for s in episodic}
-        visible_ids |= {str(s.get("semantic_id")) for s in semantic}
-
-        router = self._route(namespace=namespace, current_message=current_message, visible=(raw, episodic, semantic))
-        retrieved: list[str] = []
-        if router.need_retrieval:
-            retrieved = self._retrieve_and_verify(
-                namespace=namespace,
-                query=router.query or current_message,
-                keywords=router.keywords,
-                time_hint=router.time_hint,
-                exclude_source_ids=visible_ids,
-            )
         return {
             "raw": raw,
             "episodic": episodic,
             "semantic": semantic,
-            "retrieved_snippets": retrieved,
-            "router": router,
         }
 
     def _visible_semantic(self, *, namespace: Namespace, cross: bool, now_ts: int) -> list[dict[str, Any]]:
@@ -145,48 +116,6 @@ class ReadPipeline:
             importance_min=importance_min,
             exclude_source_ids=set(exclude_source_ids or []),
         )
-
-    # --- router ---
-
-    def _route(self, *, namespace: Namespace, current_message: str, visible: tuple) -> RouterDecision:
-        if not self.config.enable_pre_retrieval:
-            return RouterDecision(need_retrieval=False)
-        recent_context = self._render_recent_context(visible)
-        res = self.llm.call(
-            LLMRequest(
-                task_type=TaskType.ROUTER,
-                **dict(
-                    zip(
-                        ("system_prompt", "user_prompt"),
-                        build_router_prompts(recent_context=recent_context, current_message=current_message),
-                    )
-                ),
-                response_format=ResponseFormat.NDJSON,
-                max_retries=self.config.llm_max_retries,
-                fallback={},
-            )
-        )
-        if not res.ok:
-            return self._heuristic_route(current_message)
-        events = parse_ndjson(res.data)
-        decision = next((e for e in events if e.get("type") == "decision"), None)
-        if decision is None:
-            return self._heuristic_route(current_message)
-        if not bool(decision.get("need_retrieval")):
-            return RouterDecision(need_retrieval=False)
-        query_ev = next((e for e in events if e.get("type") == "query"), {})
-        return RouterDecision(
-            need_retrieval=True,
-            query=str(query_ev.get("rewritten_query") or "").strip(),
-            keywords=[str(k).strip() for k in (query_ev.get("keywords") or []) if str(k).strip()],
-            time_hint=query_ev.get("time_hint") if isinstance(query_ev.get("time_hint"), dict) else None,
-        )
-
-    @staticmethod
-    def _heuristic_route(message: str) -> RouterDecision:
-        text = normalize_text(message)
-        need = any(marker in text for marker in _PAST_MARKERS)
-        return RouterDecision(need_retrieval=need, query=text if need else "", degraded=True)
 
     # --- 检索 + 校验 ---
 
@@ -327,6 +256,9 @@ class ReadPipeline:
                     conversation_id=str(record.get("conversation_id") or ""),
                 )
                 rows = self.store.get_context_slice(namespace=ns, seq_no=int(record.get("seq_no") or 0), window=window)
+                rows = [row for row in rows if str(row.get("source_id")) not in exclude_source_ids]
+                if not rows:
+                    continue
                 snippet = render_raw_snippet(rows, tz=self.timezone)
                 key = f"raw::{record.get('conversation_id')}::{record.get('seq_no')}"
             if snippet and key not in seen:
@@ -370,17 +302,3 @@ class ReadPipeline:
         indexes = [int(i) for i in (selection.get("selected_indexes") or []) if isinstance(i, int) or str(i).isdigit()]
         chosen = [snippets[i - 1] for i in indexes if 1 <= i <= len(snippets)]
         return chosen or snippets  # match 但没给编号 → 保守保留全部
-
-    # --- 渲染可见上下文摘要(给 router 看) ---
-
-    @staticmethod
-    def _render_recent_context(visible: tuple) -> str:
-        raw, episodic, semantic = visible
-        lines: list[str] = []
-        for r in raw[-6:]:
-            lines.append(f"{r.get('role', '')}: {normalize_text(r.get('content'))}")
-        for s in episodic[:3]:
-            lines.append(f"[摘要] {normalize_text(s.get('diary_summary'))}")
-        for s in semantic[:2]:
-            lines.append(f"[长期] {normalize_text(s.get('semantic_summary'))}")
-        return "\n".join(lines)

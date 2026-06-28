@@ -97,7 +97,7 @@ class OutboxResilience(unittest.TestCase):
         mem = self._mem(llm=_SummaryLLM(), config=cfg)
         for i in range(4):
             mem.record_user_turn(f"消息{i}", timestamp=1000 + i, source_id=f"m{i}")
-        out = mem.compact_due()  # 索引故障下压缩:摘要应已存库(pending),不抛错
+        out = mem.compact_due_sync()  # 索引故障下压缩:摘要应已存库(pending),不抛错
         self.assertEqual(out["summaries_created"], 1)
         self.index.fail = False
         mem.reindex_pending()

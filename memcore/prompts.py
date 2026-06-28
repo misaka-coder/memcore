@@ -1,6 +1,6 @@
 """记忆压缩链的承重提示词(焊死骨架 + 人格文本插槽)。
 
-覆盖 summary / semantic / reinforcement(写侧)与 router / verifier(读侧)。
+覆盖 summary / semantic / reinforcement(写侧)与 verifier(读侧)。
 焊死的是:"你就是当前角色整理自己的记忆 + 不许编造 + 只输出 JSON + 字段固定 + importance 是 0-1 数字 +
 时间锚点(相对转绝对)"。可配置的只有 persona_text(填进 [CHARACTER MEMORY SELF] 插槽)。
 
@@ -131,19 +131,6 @@ REINFORCEMENT_USER_TEMPLATE = (
 )
 
 
-ROUTER_SYSTEM = (
-    "你是前置记忆路由器,只判断当前消息是否需要触发记忆检索。\n"
-    "必须输出 NDJSON,每行一个合法 JSON 对象,不要输出任何解释。\n"
-    '第一行输出 decision 事件:{"type":"decision","need_retrieval":true|false}。\n'
-    "只有 need_retrieval=true 时,第二行才输出 query 事件:"
-    '{"type":"query","rewritten_query":"简短搜索短句","keywords":["..."],"time_hint":null}。\n'
-    "判断要点:用户在向过去要事实(记得/之前/上次/约定过/我的偏好/旧计划/叫什么来着)→ true;"
-    "只是接当前话题、当下闲聊、陈述新事实而不要求回忆 → false。\n"
-    "rewritten_query 保留实体/动作/时间线索,写成陈述短句,不要写“请查找…”。keywords 具体可检索。"
-)
-
-ROUTER_USER_TEMPLATE = "最近上下文:\n{recent_context}\n\n当前消息:\n{current_message}"
-
 VERIFIER_SYSTEM = (
     "你是记忆检索校验器,只判断检索到的片段是否足以回答用户问题。\n"
     "必须输出 NDJSON,每行一个合法 JSON 对象,不要输出解释。\n"
@@ -154,10 +141,6 @@ VERIFIER_SYSTEM = (
 )
 
 VERIFIER_USER_TEMPLATE = "用户问题:\n{query}\n\n检索到的记忆片段(编号从 1 开始):\n{snippets}"
-
-
-def build_router_prompts(*, recent_context: str, current_message: str) -> tuple[str, str]:
-    return (ROUTER_SYSTEM, ROUTER_USER_TEMPLATE.format(recent_context=recent_context, current_message=current_message))
 
 
 def build_verifier_prompts(*, query: str, snippets_text: str) -> tuple[str, str]:

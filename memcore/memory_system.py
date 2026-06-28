@@ -1,10 +1,10 @@
 """MemorySystem —— 对外唯一门面。
 
-写侧(切片 4)已接通:record_user_turn / record_assistant_turn / compact_due / embedding_status。
+写侧(切片 4)已接通:record_user_turn / record_assistant_turn / compact_due_background / compact_due_sync / embedding_status。
 读侧(切片 5)已接通:build_prompt_context / retrieve。遗忘会同步清 store 与 VectorIndex。
 
 生命周期(见设计文档 §3.3),使用方按顺序接:
-    record_user_turn → build_prompt_context → record_assistant_turn → compact_due → retrieve
+    record_user_turn → build_prompt_context → record_assistant_turn → compact_due_background
 """
 
 from __future__ import annotations
@@ -161,15 +161,19 @@ class MemorySystem:
             actor=actor,
         )
 
-    def compact_due(self) -> dict[str, int]:
-        """同步压缩(阻塞调用方直到完成)。简单/单用户/测试用;高并发请用 compact_due_background。"""
+    def compact_due_sync(self) -> dict[str, int]:
+        """同步压缩(阻塞直到完成)。
+
+        仅建议用于单测、CLI、管理脚本或进程退出前的确定性 flush。聊天请求链路应使用
+        compact_due_background(),避免压缩 LLM 调用阻塞用户可见回复。
+        """
         return self._compaction.run_due(namespace=self.namespace)
 
     def compact_due_background(self) -> Future:
-        """异步压缩:提交到单 worker 后台线程,立刻返回 Future,不阻塞调用方(对齐 Akane 的异步压缩)。
+        """异步压缩:提交到单 worker 后台线程,立刻返回 Future,不阻塞聊天链路。
 
         单 worker = 所有压缩串行,不会压垮 LLM/库;同 namespace 还有 Compaction 内部锁兜底。
-        Future.result() 可取压缩统计;fire-and-forget 直接忽略即可。用完调 close() 收线程。
+        Future.result() 可取压缩统计;聊天产品里通常 fire-and-forget。用完调 close() 收线程。
         """
         if self._compact_executor is None:
             self._compact_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="memcore-compact")
@@ -297,20 +301,31 @@ class MemorySystem:
     # --- 读侧生命周期 ---
 
     def build_prompt_context(self, *, current: dict[str, Any]) -> dict[str, Any]:
-        """拼"可见三层 + router→检索→verifier 片段",供使用方拼最终聊天 prompt。
+        """拼"可见三层",供使用方拼最终聊天 prompt。
 
-        current 是 record_user_turn 返回的记录;自动排除当前消息与已可见记忆。
+        当前轮是否需要检索由聊天模型通过 retrieve/read_timeline 工具自行决定;
+        memcore 不做前置 router,避免每轮额外 LLM 判定带来的成本和误判。
         """
-        message = str(current.get("content") or "")
         now_ts = int(current.get("timestamp") or 0)
-        exclude = [str(current.get("source_id"))] if current.get("source_id") else []
-        return self._read.build_context(
-            namespace=self.namespace, current_message=message, now_ts=now_ts, exclude_source_ids=exclude
-        )
+        return self._read.build_context(namespace=self.namespace, now_ts=now_ts)
 
     def retrieve(self, query: str, **filters: Any) -> list[str]:
         """显式检索(工具式),返回经 verifier 确认的记忆片段文本。"""
         return self._read.retrieve(namespace=self.namespace, query=query, **filters)
+
+    def retrieve_for_turn(self, *, current: dict[str, Any], query: str, **filters: Any) -> list[str]:
+        """当前聊天轮的安全检索工具:默认排除本轮刚写入的 raw message。
+
+        生命周期是先 record_user_turn(current) 再让聊天模型决定是否调用检索工具。此时当前消息已经入索引,
+        直接 retrieve(query) 可能把用户刚问的问题自己搜回来。宿主工具包装层应优先调用这个方法。
+        """
+        exclude_ids = {
+            str(item).strip() for item in (filters.pop("exclude_source_ids", None) or []) if str(item or "").strip()
+        }
+        current_id = str((current or {}).get("source_id") or "").strip()
+        if current_id:
+            exclude_ids.add(current_id)
+        return self.retrieve(query, exclude_source_ids=sorted(exclude_ids), **filters)
 
     def read_timeline(
         self,

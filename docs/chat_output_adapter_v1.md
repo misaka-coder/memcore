@@ -82,6 +82,8 @@ memory_metadata 用于本轮用户原始消息的记忆检索标注,字段为 ke
 keywords 最多 4 个短词;subject_scopes 只能从 user/assistant/other 中选择;categories 必须从当前配置枚举中选择;mood_tags 只在启用情感温度时填写。
 importance/confidence 必须是 0.0 到 1.0 的数字。
 不要把 memory_metadata 当作给用户看的内容。
+工具调用阶段不适用本 JSON 契约;如果需要调用工具,请正常使用宿主项目的工具调用机制。
+只有在所有工具调用完成、准备给用户最终回复时,才按本契约只输出一个合法 JSON 对象。
 ```
 
 如果启用分段回复,追加:
@@ -90,6 +92,19 @@ importance/confidence 必须是 0.0 到 1.0 的数字。
 请把 speech 写成自然短句。每个完整句子请用 。！？.!? 或换行结尾,方便系统按句分段展示或播放。
 不要为了分段把同一句话硬拆碎。
 ```
+
+### 工具调用边界
+
+Chat Output Adapter 只处理模型的最终回复输出,不接管宿主项目的工具调用循环。
+
+推荐接入方式:
+
+1. 需要工具时,模型照常走宿主项目的 tool calling / tool result 流程。
+2. 工具结果回到模型后,由模型生成最终给用户看的回复。
+3. 只有这一步最终回复使用 `memcore_json` 契约。
+4. `speech` 用于展示/播放;`memory_metadata` 回写到本轮用户 raw turn。
+
+不要把工具调用包装进 `speech` 或 `memory_metadata`,也不要要求中间工具调用步骤输出 memcore JSON。
 
 ## 流式事件
 

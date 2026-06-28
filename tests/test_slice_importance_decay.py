@@ -67,9 +67,7 @@ class VisibleWindowDecay(unittest.TestCase):
             store=self.store,
             index=self.index,
             embedding=self.emb,
-            config=MemoryConfig(
-                enable_pre_retrieval=False, enable_importance_decay=decay, importance_half_life_days=90
-            ),
+            config=MemoryConfig(enable_importance_decay=decay, importance_half_life_days=90),
         )
         ctx = mem.build_prompt_context(current={"content": "随便说", "timestamp": self.now})
         return [s["semantic_id"] for s in ctx["semantic"]]

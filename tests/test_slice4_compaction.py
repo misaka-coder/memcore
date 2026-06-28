@@ -102,7 +102,7 @@ class SummaryCycleViaFacade(unittest.TestCase):
         )
         for i in range(4):
             mem.record_user_turn(f"消息{i}", timestamp=1000 + i)
-        out = mem.compact_due()
+        out = mem.compact_due_sync()
         self.assertEqual(out["summaries_created"], 1)
         # 触发 4 → 总结最老 2 → 剩 2(差值关系)
         remaining = mem.store.get_unsummarized_messages(namespace=mem.namespace)
@@ -162,13 +162,13 @@ class SummaryCycleViaFacade(unittest.TestCase):
         mem.record_user_turn("第一条重要事实", timestamp=1000)
         mem.record_user_turn("第二条重要事实", timestamp=1001)
 
-        first = mem.compact_due()
+        first = mem.compact_due_sync()
         self.assertEqual(first["summaries_created"], 0)
         self.assertEqual(first["summary_retry_pending"], 1)
         self.assertEqual(len(mem.store.get_unsummarized_messages(namespace=mem.namespace)), 2)
         self.assertEqual(mem.store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10), [])
 
-        second = mem.compact_due()
+        second = mem.compact_due_sync()
         self.assertEqual(second["summaries_created"], 1)
         self.assertEqual(len(mem.store.get_unsummarized_messages(namespace=mem.namespace)), 1)
 
@@ -190,7 +190,7 @@ class SummaryCycleViaFacade(unittest.TestCase):
         mem.record_user_turn("第一条重要事实", timestamp=1000)
         mem.record_user_turn("第二条重要事实", timestamp=1001)
 
-        mem.compact_due()
+        mem.compact_due_sync()
 
         summary_requests = [req for req in llm.requests if req.task_type == TaskType.SUMMARY]
         self.assertEqual(len(summary_requests), 1)

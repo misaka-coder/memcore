@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "memcore"
 version = "0.1.0"
-description = "Domain-agnostic layered memory core: working/episodic/semantic memory, time-anchored, hybrid retrieval with router/verifier."
+description = "Domain-agnostic layered memory core: working/episodic/semantic memory, time-anchored, explicit hybrid retrieval tools with verifier."
 readme = "README.md"
 requires-python = ">=3.10"
 keywords = ["memory", "llm", "retrieval", "rag", "embeddings", "long-term-memory", "agents"]

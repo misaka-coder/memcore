@@ -114,6 +114,8 @@ class ChatOutputPrompt(unittest.TestCase):
         self.assertIn("字段固定为 speech, memory_metadata", prompt)
         self.assertIn("finance_profile", prompt)
         self.assertIn("mood_tags 必须输出为空数组", prompt)
+        self.assertIn("工具调用阶段不适用本 JSON 契约", prompt)
+        self.assertIn("最终回复", prompt)
         self.assertIn("每个完整句子", prompt)
         self.assertNotIn("speech_segments", prompt)
 

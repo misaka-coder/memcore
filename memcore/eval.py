@@ -21,17 +21,9 @@ from .store.sqlite_store import SQLiteMemoryStore
 
 
 class EvalLLM(LLMClient):
-    """确定性评测用:router 恒触发检索、verifier 恒 match(保留全部候选,把判定交给指标)。"""
+    """确定性评测用:verifier 恒 match(保留全部候选,把判定交给指标)。"""
 
     def call(self, request: LLMRequest) -> LLMResult:
-        if request.task_type == TaskType.ROUTER:
-            return LLMResult(
-                ok=True,
-                data=[
-                    {"type": "decision", "need_retrieval": True},
-                    {"type": "query", "rewritten_query": "", "keywords": [], "time_hint": None},
-                ],
-            )
         if request.task_type == TaskType.VERIFIER:
             return LLMResult(ok=True, data=[{"type": "decision", "match_result": "match"}])
         return LLMResult(ok=True, data={})
@@ -53,7 +45,6 @@ class EvalCase:
     time_hint: dict[str, Any] | None = None
     expect_substrings: list[str] = field(default_factory=list)  # 必须出现在检索结果
     forbid_substrings: list[str] = field(default_factory=list)  # 绝不能出现(隔离/时间红线)
-    use_build_context: bool = False  # True 走 router→检索整链;False 走显式 retrieve
 
 
 @dataclass
@@ -116,11 +107,7 @@ def run_eval(
         failures: list[str] = []
         for case in cases:
             mem = mem_for(case.namespace)
-            if case.use_build_context:
-                cur = mem.record_user_turn(case.query, timestamp=10_000_000)
-                snippets = mem.build_prompt_context(current=cur)["retrieved_snippets"]
-            else:
-                snippets = mem.retrieve(case.query, keywords=case.keywords, time_hint=case.time_hint)
+            snippets = mem.retrieve(case.query, keywords=case.keywords, time_hint=case.time_hint)
             blob = "\n".join(snippets)
 
             case_ok = True
@@ -180,11 +167,11 @@ def default_dataset() -> tuple[list[SeedTurn], list[EvalCase]]:
             forbid_substrings=["最喜欢喝可乐"],  # u1 的不能串过来
         ),
         EvalCase(
-            name="build_context_full_chain",
+            name="explicit_tool_retrieve_cross_conversation",
             namespace=u1_c1,
             query="还记得我喜欢喝可乐吗",
+            keywords=["可乐"],
             expect_substrings=["可乐"],
-            use_build_context=True,
         ),
     ]
     return seed, cases

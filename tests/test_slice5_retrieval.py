@@ -1,4 +1,4 @@
-"""切片 5 单测:读侧 router → 检索 → verifier → build_prompt_context。
+"""切片 5 单测:读侧显式检索 → verifier → build_prompt_context 可见层。
 
 canned LLM 用列表形式返回 NDJSON 事件(parse_ndjson 接受列表)。不依赖真实模型/网络。
 """
@@ -20,26 +20,13 @@ from memcore.llm.base import LLMClient, LLMRequest, LLMResult, TaskType
 
 
 class ReadLLM(LLMClient):
-    """router 恒判 need_retrieval=true;verifier 按 verifier_match 决定 match/mismatch。"""
+    """verifier 按 verifier_match 决定 match/mismatch。"""
 
     def __init__(self, *, verifier_match: bool = True, keywords: list[str] | None = None) -> None:
         self.verifier_match = verifier_match
         self.keywords = keywords or ["可乐"]
 
     def call(self, request: LLMRequest) -> LLMResult:
-        if request.task_type == TaskType.ROUTER:
-            return LLMResult(
-                ok=True,
-                data=[
-                    {"type": "decision", "need_retrieval": True},
-                    {
-                        "type": "query",
-                        "rewritten_query": " ".join(self.keywords),
-                        "keywords": self.keywords,
-                        "time_hint": None,
-                    },
-                ],
-            )
         if request.task_type == TaskType.VERIFIER:
             if self.verifier_match:
                 return LLMResult(
@@ -92,6 +79,19 @@ class ExplicitRetrieve(unittest.TestCase):
         mem = _mem(store, index, emb, conversation="c1", llm=ReadLLM(verifier_match=False), config=cfg)
         mem.record_user_turn("我最喜欢喝可乐", timestamp=1000)
         self.assertTrue(any("可乐" in s for s in mem.retrieve("可乐", keywords=["可乐"])))
+        store.close()
+
+    def test_retrieve_for_turn_excludes_current_raw_and_context_neighbor(self) -> None:
+        store, index, emb = _shared_backends()
+        mem = _mem(store, index, emb, conversation="c1", config=MemoryConfig(enable_verifier=False))
+        mem.record_user_turn("我最喜欢喝可乐", timestamp=1000, source_id="old")
+        cur = mem.record_user_turn("我之前说过我喜欢喝可乐吗", timestamp=1001, source_id="cur")
+
+        hits = mem.retrieve_for_turn(current=cur, query="可乐", keywords=["可乐"])
+        blob = "\n".join(hits)
+
+        self.assertIn("我最喜欢喝可乐", blob)
+        self.assertNotIn("我之前说过我喜欢喝可乐吗", blob)
         store.close()
 
     def test_update_turn_metadata_reindexes_raw_tags(self) -> None:
@@ -157,39 +157,21 @@ class ExplicitRetrieve(unittest.TestCase):
 
 
 class BuildContext(unittest.TestCase):
-    def test_cross_conversation_retrieval_but_visible_is_per_conversation(self) -> None:
+    def test_visible_context_is_per_conversation_and_retrieve_is_explicit(self) -> None:
         store, index, emb = _shared_backends()
         # c2 里存一条"可乐"记忆
         mem_c2 = _mem(store, index, emb, conversation="c2")
         mem_c2.record_user_turn("我最喜欢喝可乐", timestamp=900)
-        # c1 当前问"之前爱喝什么";c1 可见层不含 c2,但检索能跨会话捞到
+        # c1 当前问"之前爱喝什么";build_prompt_context 只给可见层,不做 router 自动检索
         mem_c1 = _mem(store, index, emb, conversation="c1")
         cur = mem_c1.record_user_turn("我之前说过爱喝什么", timestamp=1000)
         ctx = mem_c1.build_prompt_context(current=cur)
-        self.assertTrue(ctx["router"].need_retrieval)
-        self.assertTrue(any("可乐" in s for s in ctx["retrieved_snippets"]))
+        self.assertEqual(set(ctx), {"raw", "episodic", "semantic"})
         # 可见 raw 只含当前会话 c1 的消息,不含 c2
         self.assertTrue(all(r["conversation_id"] == "c1" for r in ctx["raw"]))
-        store.close()
-
-    def test_router_gate_off_skips_retrieval(self) -> None:
-        store, index, emb = _shared_backends()
-        cfg = MemoryConfig(enable_pre_retrieval=False)
-        mem = _mem(store, index, emb, conversation="c1", config=cfg)
-        mem.record_user_turn("我最喜欢喝可乐", timestamp=900)
-        cur = mem.record_user_turn("随便聊聊", timestamp=1000)
-        ctx = mem.build_prompt_context(current=cur)
-        self.assertFalse(ctx["router"].need_retrieval)
-        self.assertEqual(ctx["retrieved_snippets"], [])
-        store.close()
-
-    def test_current_message_excluded_from_retrieval(self) -> None:
-        store, index, emb = _shared_backends()
-        mem = _mem(store, index, emb, conversation="c1")
-        cur = mem.record_user_turn("我最喜欢喝可乐", timestamp=1000)
-        ctx = mem.build_prompt_context(current=cur)
-        # 当前这条已在可见层,不该又作为"检索回来的"重复出现
-        self.assertFalse(any(s.count("我最喜欢喝可乐") > 0 and "原始对话片段" in s for s in ctx["retrieved_snippets"]))
+        # 聊天模型若需要旧记忆,应显式调用 retrieve 工具;检索仍按 hardkey 跨会话。
+        hits = mem_c1.retrieve("可乐", keywords=["可乐"])
+        self.assertTrue(any("可乐" in s for s in hits))
         store.close()
 
 
