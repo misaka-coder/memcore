@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 from .compaction import Compaction
 from .config import MemoryConfig
 from .embedding.base import EmbeddingProvider
+from .errors import ConfigError
 from .index.base import VectorIndex
 from .index.entry_builder import build_raw_entry
 from .index.memory_index import InMemoryVectorIndex
@@ -29,6 +30,7 @@ from .schema import coerce_memory_metadata
 from .store.base import MemoryStore
 from .store.sqlite_store import SQLiteMemoryStore
 from .time_anchor import infer_time_of_day, timestamp_to_date_label
+from .token_counter import TokenCounter
 
 
 class MemorySystem:
@@ -43,6 +45,7 @@ class MemorySystem:
         store: MemoryStore | None = None,
         index: VectorIndex | None = None,
         embedding: EmbeddingProvider | str | None = None,
+        token_counter: TokenCounter | None = None,
         enable_flavor: bool | None = None,
         persona_text: str = "",
         prompt_overrides: PromptOverrides | None = None,
@@ -67,12 +70,17 @@ class MemorySystem:
         self.config = config or MemoryConfig()
         if enable_flavor is not None:  # 显式传入覆盖 config 默认
             self.config.enable_flavor = bool(enable_flavor)
+        if token_counter is not None and not isinstance(token_counter, TokenCounter):
+            raise TypeError("token_counter must be a TokenCounter instance or None")
+        if self.config.raw_compaction_policy == "token" and token_counter is None:
+            raise ConfigError("token_counter is required when raw_compaction_policy='token'")
         self.persona_text = str(persona_text or "")
         # 提示词治理:persona_text 便捷参数填进 overrides 的对应插槽(显式 overrides 优先)。
         self.prompt_overrides = self._resolve_overrides(prompt_overrides, self.persona_text)
 
         # 依赖装配:缺省自带 SQLite + 内存索引;embedding 必须显式(生产不静默退 hashed,见 §13.1)。
         self.embedding = self._resolve_embedding(embedding)
+        self.token_counter = token_counter
         self.store: MemoryStore = store or SQLiteMemoryStore(storage_dir or ":memory:")
         self.index: VectorIndex = index or InMemoryVectorIndex(embedding=self.embedding)
         self._compaction = Compaction(
@@ -82,6 +90,7 @@ class MemorySystem:
             config=self.config,
             timezone=self.timezone,
             overrides=self.prompt_overrides,
+            token_counter=self.token_counter,
         )
         self._read = ReadPipeline(
             store=self.store, index=self.index, llm=self.llm, config=self.config, timezone=self.timezone
@@ -314,14 +323,17 @@ class MemorySystem:
         return self._read.retrieve(namespace=self.namespace, query=query, **filters)
 
     def retrieve_for_turn(self, *, current: dict[str, Any], query: str, **filters: Any) -> list[str]:
-        """当前聊天轮的安全检索工具:默认排除本轮刚写入的 raw message。
+        """当前聊天轮的安全检索工具:默认排除本轮 prompt 已可见记忆。
 
         生命周期是先 record_user_turn(current) 再让聊天模型决定是否调用检索工具。此时当前消息已经入索引,
-        直接 retrieve(query) 可能把用户刚问的问题自己搜回来。宿主工具包装层应优先调用这个方法。
+        且 build_prompt_context 会把当前未摘要 raw/可见摘要/可见语义放进 prompt。宿主工具包装层应优先调用
+        这个方法,避免工具检索把已可见内容重复搜回来。
         """
         exclude_ids = {
             str(item).strip() for item in (filters.pop("exclude_source_ids", None) or []) if str(item or "").strip()
         }
+        now_ts = int((current or {}).get("timestamp") or 0)
+        exclude_ids |= self._read.visible_source_ids(namespace=self.namespace, now_ts=now_ts)
         current_id = str((current or {}).get("source_id") or "").strip()
         if current_id:
             exclude_ids.add(current_id)

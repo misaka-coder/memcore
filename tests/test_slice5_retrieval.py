@@ -16,6 +16,7 @@ from memcore import (
     NamespaceError,
     SQLiteMemoryStore,
 )
+from memcore.index.entry_builder import build_semantic_entry, build_summary_entry
 from memcore.llm.base import LLMClient, LLMRequest, LLMResult, TaskType
 
 
@@ -81,17 +82,82 @@ class ExplicitRetrieve(unittest.TestCase):
         self.assertTrue(any("可乐" in s for s in mem.retrieve("可乐", keywords=["可乐"])))
         store.close()
 
-    def test_retrieve_for_turn_excludes_current_raw_and_context_neighbor(self) -> None:
+    def test_retrieve_for_turn_excludes_visible_raw_and_context_neighbor(self) -> None:
         store, index, emb = _shared_backends()
         mem = _mem(store, index, emb, conversation="c1", config=MemoryConfig(enable_verifier=False))
-        mem.record_user_turn("我最喜欢喝可乐", timestamp=1000, source_id="old")
+        mem.record_user_turn("当前会话可见 raw 可乐", timestamp=1000, source_id="visible")
         cur = mem.record_user_turn("我之前说过我喜欢喝可乐吗", timestamp=1001, source_id="cur")
+        other = _mem(store, index, emb, conversation="c2", config=MemoryConfig(enable_verifier=False))
+        other.record_user_turn("跨会话隐藏 raw 可乐", timestamp=900, source_id="hidden")
 
         hits = mem.retrieve_for_turn(current=cur, query="可乐", keywords=["可乐"])
         blob = "\n".join(hits)
 
-        self.assertIn("我最喜欢喝可乐", blob)
+        self.assertIn("跨会话隐藏 raw 可乐", blob)
+        self.assertNotIn("当前会话可见 raw 可乐", blob)
         self.assertNotIn("我之前说过我喜欢喝可乐吗", blob)
+        store.close()
+
+    def test_retrieve_for_turn_excludes_visible_episodic_and_semantic(self) -> None:
+        store, index, emb = _shared_backends()
+        mem = _mem(store, index, emb, conversation="c1", config=MemoryConfig(enable_verifier=False))
+        cur = mem.record_user_turn("帮我查一下滑雪相关记忆", timestamp=2000, source_id="cur")
+        other_ns = Namespace(user_id="u1", conversation_id="c2")
+
+        visible_summary = store.add_summary(
+            namespace=mem.namespace,
+            record={
+                "summary_id": "visible-summary",
+                "timestamp": 1100,
+                "diary_summary": "当前会话可见阶段摘要滑雪",
+                "memory_metadata": {"keywords": ["滑雪"]},
+            },
+        )
+        hidden_summary = store.add_summary(
+            namespace=other_ns,
+            record={
+                "summary_id": "hidden-summary",
+                "timestamp": 900,
+                "diary_summary": "跨会话隐藏阶段摘要滑雪",
+                "memory_metadata": {"keywords": ["滑雪"]},
+            },
+        )
+        visible_semantic = store.add_semantic_summary(
+            namespace=mem.namespace,
+            record={
+                "semantic_id": "visible-semantic",
+                "timestamp": 1200,
+                "last_reinforced_ts": 1200,
+                "semantic_summary": "当前会话可见长期语义滑雪",
+                "memory_metadata": {"keywords": ["滑雪"]},
+            },
+        )
+        hidden_semantic = store.add_semantic_summary(
+            namespace=other_ns,
+            record={
+                "semantic_id": "hidden-semantic",
+                "timestamp": 950,
+                "last_reinforced_ts": 950,
+                "semantic_summary": "跨会话隐藏长期语义滑雪",
+                "memory_metadata": {"keywords": ["滑雪"]},
+            },
+        )
+        index.upsert(
+            [
+                build_summary_entry(visible_summary),
+                build_summary_entry(hidden_summary),
+                build_semantic_entry(visible_semantic),
+                build_semantic_entry(hidden_semantic),
+            ]
+        )
+
+        hits = mem.retrieve_for_turn(current=cur, query="滑雪", keywords=["滑雪"])
+        blob = "\n".join(hits)
+
+        self.assertIn("跨会话隐藏阶段摘要滑雪", blob)
+        self.assertIn("跨会话隐藏长期语义滑雪", blob)
+        self.assertNotIn("当前会话可见阶段摘要滑雪", blob)
+        self.assertNotIn("当前会话可见长期语义滑雪", blob)
         store.close()
 
     def test_update_turn_metadata_reindexes_raw_tags(self) -> None:

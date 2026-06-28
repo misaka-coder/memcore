@@ -19,6 +19,7 @@ from memcore import (
     Namespace,
     NamespaceError,
     SchemaError,
+    TokenCounter,
     coerce_memory_metadata,
 )
 from memcore.schema import SEMANTIC_REQUIRED_FIELDS, require_fields
@@ -27,6 +28,11 @@ from memcore.schema import SEMANTIC_REQUIRED_FIELDS, require_fields
 class _StubLLM(LLMClient):
     def call(self, request: LLMRequest) -> LLMResult:
         return LLMResult(ok=True, data={}, attempts=1)
+
+
+class _StubTokenCounter(TokenCounter):
+    def count_text(self, text: str) -> int:
+        return len(text)
 
 
 class ConfigInvariants(unittest.TestCase):
@@ -50,6 +56,16 @@ class ConfigInvariants(unittest.TestCase):
     def test_categories_must_be_nonempty_enum(self) -> None:
         with self.assertRaises(ConfigError):
             MemoryConfig(categories=())
+
+    def test_raw_compaction_policy_enum(self) -> None:
+        with self.assertRaises(ConfigError):
+            MemoryConfig(raw_compaction_policy="magic")
+
+    def test_raw_token_batch_ratio_bounds(self) -> None:
+        with self.assertRaises(ConfigError):
+            MemoryConfig(raw_token_batch_ratio=1)
+        with self.assertRaises(ConfigError):
+            MemoryConfig(raw_token_batch_ratio=0)
 
 
 class MetadataCoercion(unittest.TestCase):
@@ -128,6 +144,38 @@ class FacadeShell(unittest.TestCase):
         mem = self._mk()
         self.assertIsNotNone(mem.store)
         self.assertIsNotNone(mem.index)
+
+    def test_token_policy_requires_token_counter(self) -> None:
+        with self.assertRaises(ConfigError):
+            MemorySystem(
+                llm=_StubLLM(),
+                namespace=Namespace(user_id="u1"),
+                timezone="Asia/Shanghai",
+                embedding=HashedEmbeddingProvider(),
+                config=MemoryConfig(raw_compaction_policy="token"),
+            )
+
+    def test_token_counter_must_match_interface(self) -> None:
+        with self.assertRaises(TypeError):
+            MemorySystem(
+                llm=_StubLLM(),
+                namespace=Namespace(user_id="u1"),
+                timezone="Asia/Shanghai",
+                embedding=HashedEmbeddingProvider(),
+                config=MemoryConfig(raw_compaction_policy="token"),
+                token_counter=object(),
+            )
+
+    def test_token_policy_accepts_token_counter(self) -> None:
+        mem = MemorySystem(
+            llm=_StubLLM(),
+            namespace=Namespace(user_id="u1"),
+            timezone="Asia/Shanghai",
+            embedding=HashedEmbeddingProvider(),
+            config=MemoryConfig(raw_compaction_policy="token"),
+            token_counter=_StubTokenCounter(),
+        )
+        self.assertIsInstance(mem.token_counter, TokenCounter)
 
 
 if __name__ == "__main__":

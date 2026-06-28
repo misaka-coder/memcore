@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .config import MemoryConfig
+from .errors import ConfigError
 from .index.base import VectorIndex
 from .index.entry_builder import build_semantic_entry, build_summary_entry
 from .llm.base import LLMClient, LLMRequest, ResponseFormat, TaskType
@@ -24,7 +25,14 @@ from .prompts import PromptOverrides, build_reinforcement_prompts, build_semanti
 from .schema import coerce_memory_metadata
 from .store.base import MemoryStore
 from .text_utils import normalize_text
-from .time_anchor import infer_time_of_day, timestamp_to_date_label
+from .time_anchor import (
+    TIME_PERIOD_LABELS,
+    format_time_range_label,
+    infer_time_of_day,
+    timestamp_to_date_label,
+    timestamp_to_datetime_weekday_label,
+)
+from .token_counter import TokenCounter
 
 
 @dataclass
@@ -43,6 +51,7 @@ class Compaction:
         config: MemoryConfig,
         timezone: str,
         overrides: PromptOverrides | None = None,
+        token_counter: TokenCounter | None = None,
     ) -> None:
         self.store = store
         self.index = index
@@ -50,6 +59,11 @@ class Compaction:
         self.config = config
         self.timezone = timezone
         self.overrides = overrides or PromptOverrides()
+        if token_counter is not None and not isinstance(token_counter, TokenCounter):
+            raise TypeError("token_counter must be a TokenCounter instance or None")
+        if self.config.raw_compaction_policy == "token" and token_counter is None:
+            raise ConfigError("token_counter is required when raw_compaction_policy='token'")
+        self.token_counter = token_counter
         self._locks: dict[tuple[str, str, str], threading.RLock] = defaultdict(threading.RLock)
 
     def run_due(self, *, namespace: Namespace) -> dict[str, int]:
@@ -70,8 +84,10 @@ class Compaction:
     def _summarize_raw(self, namespace: Namespace, result: dict[str, int]) -> None:
         cfg = self.config
         msgs = self.store.get_unsummarized_messages(namespace=namespace)
-        while len(msgs) >= cfg.raw_trigger_count:
-            batch = msgs[: cfg.summary_batch_size]
+        while True:
+            batch = self._select_raw_summary_batch(msgs)
+            if not batch:
+                break
             call = self._call_json(
                 TaskType.SUMMARY,
                 *build_summary_prompts(
@@ -106,12 +122,65 @@ class Compaction:
                     payload.get("memory_metadata"), categories=cfg.categories, enable_flavor=cfg.enable_flavor
                 ).to_dict(),
                 "semantic_tags": coerce_memory_metadata(payload.get("memory_metadata")).keywords,
+                "source_ids": [str(m["source_id"]) for m in batch],
             }
             saved = self.store.add_summary(namespace=namespace, record=record)
             self.store.mark_messages_summarized([str(m["source_id"]) for m in batch], saved["summary_id"])
             self._index(build_summary_entry(saved), saved["summary_id"])
             result["summaries_created"] += 1
             msgs = self.store.get_unsummarized_messages(namespace=namespace)
+
+    def _select_raw_summary_batch(self, msgs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        cfg = self.config
+        if cfg.raw_compaction_policy == "count":
+            return msgs[: cfg.summary_batch_size] if len(msgs) >= cfg.raw_trigger_count else []
+        return self._select_raw_summary_batch_by_tokens(msgs)
+
+    def _select_raw_summary_batch_by_tokens(self, msgs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        cfg = self.config
+        if self.token_counter is None:
+            raise ValueError("token_counter is required when raw_compaction_policy='token'")
+        if not msgs:
+            return []
+        boundary_role = cfg.raw_token_boundary_role
+        if str(msgs[-1].get("role") or "") != boundary_role:
+            return []
+
+        token_counts = [self._count_raw_content_tokens(m) for m in msgs]
+        if sum(token_counts) < cfg.raw_token_trigger:
+            return []
+
+        max_cut = len(msgs) - cfg.raw_token_min_remainder_messages - 1
+        if max_cut < 0:
+            return []
+
+        target = cfg.raw_token_trigger * float(cfg.raw_token_batch_ratio)
+        running = 0
+        initial_cut = 0
+        for idx, count in enumerate(token_counts):
+            running += count
+            if running >= target:
+                initial_cut = idx
+                break
+
+        for idx in range(initial_cut, max_cut + 1):
+            if str(msgs[idx].get("role") or "") == boundary_role:
+                return msgs[: idx + 1]
+
+        for idx in range(min(initial_cut, max_cut), -1, -1):
+            if str(msgs[idx].get("role") or "") == boundary_role:
+                return msgs[: idx + 1]
+        return []
+
+    def _count_raw_content_tokens(self, message: dict[str, Any]) -> int:
+        assert self.token_counter is not None
+        try:
+            count = int(self.token_counter.count_text(str(message.get("content") or "")))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("TokenCounter.count_text() must return a non-negative int") from exc
+        if count < 0:
+            raise ValueError("TokenCounter.count_text() must return a non-negative int")
+        return count
 
     # --- 阶段摘要 → 长期语义记忆(含强化合并) ---
 
@@ -270,15 +339,35 @@ class Compaction:
             lines.append(f"- [{label}] {diary}" + (f"(事实:{facts})" if facts else ""))
         return "\n".join(lines)
 
-    @staticmethod
-    def _render_transcript(batch: list[dict[str, Any]]) -> str:
-        return "\n".join(f"{m.get('role', '')}: {normalize_text(m.get('content'))}" for m in batch)
+    def _render_transcript(self, batch: list[dict[str, Any]]) -> str:
+        lines: list[str] = []
+        for m in batch:
+            ts = m.get("timestamp")
+            stamp = timestamp_to_datetime_weekday_label(ts, self.timezone) if ts is not None else ""
+            period = TIME_PERIOD_LABELS.get(str(m.get("time_of_day") or ""), "")
+            head = " | ".join(p for p in (stamp, period) if p)
+            prefix = f"[{head}] " if head else ""
+            lines.append(f"{prefix}{m.get('role', '')}: {normalize_text(m.get('content'))}")
+        return "\n".join(lines)
 
-    @staticmethod
-    def _render_episodes(batch: list[dict[str, Any]]) -> str:
-        return "\n".join(
-            f"- {normalize_text(s.get('diary_summary'))} | 事实: {'; '.join(s.get('core_facts') or [])}" for s in batch
-        )
+    def _render_episodes(self, batch: list[dict[str, Any]]) -> str:
+        lines: list[str] = []
+        for s in batch:
+            time_label = self._summary_time_label(s)
+            period = TIME_PERIOD_LABELS.get(str(s.get("time_of_day") or ""), "")
+            head = " | ".join(p for p in (time_label, period) if p)
+            prefix = f"[{head}] " if head else ""
+            facts = "; ".join(s.get("core_facts") or [])
+            lines.append(f"- {prefix}{normalize_text(s.get('diary_summary'))} | 事实: {facts}")
+        return "\n".join(lines)
+
+    def _summary_time_label(self, summary: dict[str, Any]) -> str:
+        start = _positive_ts(summary.get("period_start_ts"))
+        end = _positive_ts(summary.get("period_end_ts")) or _positive_ts(summary.get("timestamp"))
+        if start is None and end is None:
+            ts = _positive_ts(summary.get("timestamp"))
+            start, end = ts, ts
+        return format_time_range_label(start_ts=start, end_ts=end, tz=self.timezone)
 
 
 def _clamp01(value: Any) -> float:
@@ -299,6 +388,14 @@ def _str_list(value: Any) -> list[str]:
             seen.add(text)
             out.append(text)
     return out
+
+
+def _positive_ts(value: Any) -> int | None:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
 
 
 def _has_summary_content(payload: dict[str, Any]) -> bool:

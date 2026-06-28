@@ -41,6 +41,10 @@ class WhereTranslation(unittest.TestCase):
             {"$and": [{"user_id": "u1"}, {"timestamp": {"$gte": 50}}, {"timestamp": {"$lte": 150}}]},
         )
 
+    def test_source_exclude_nin_kept_as_operator_clause(self) -> None:
+        out = _to_chroma_where({"user_id": "u1", "source_id": {"$nin": ["m1", "m2"]}})
+        self.assertEqual(out, {"$and": [{"user_id": "u1"}, {"source_id": {"$nin": ["m1", "m2"]}}]})
+
 
 @unittest.skipUnless(_HAS_CHROMA, "chromadb not installed (pip install memcore[chroma])")
 class ChromaIntegration(unittest.TestCase):

@@ -17,6 +17,7 @@ TIME_PERIOD_LABELS = {
     "midnight": "凌晨",
 }
 TIME_PERIOD_ORDER = ("midnight", "morning", "afternoon", "night")
+WEEKDAY_LABELS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
 
 # 检索出的旧记忆若含这些相对词,需追加锚点行,提醒按该记忆自身时间解释。
 RELATIVE_TIME_TOKENS = (
@@ -33,6 +34,31 @@ RELATIVE_TIME_TOKENS = (
     "后天",
     "上周",
     "下周",
+    "本周",
+    "这周",
+    "周一",
+    "周二",
+    "周三",
+    "周四",
+    "周五",
+    "周六",
+    "周日",
+    "星期一",
+    "星期二",
+    "星期三",
+    "星期四",
+    "星期五",
+    "星期六",
+    "星期日",
+    "星期天",
+    "礼拜一",
+    "礼拜二",
+    "礼拜三",
+    "礼拜四",
+    "礼拜五",
+    "礼拜六",
+    "礼拜日",
+    "礼拜天",
     "上个月",
     "下个月",
     "去年",
@@ -98,24 +124,45 @@ def timestamp_to_date_label(timestamp: float, tz: str) -> str:
     return _dt(timestamp, tz).strftime("%Y-%m-%d")
 
 
+def timestamp_to_weekday_label(timestamp: float, tz: str) -> str:
+    return WEEKDAY_LABELS[_dt(timestamp, tz).weekday()]
+
+
+def timestamp_to_date_weekday_label(timestamp: float, tz: str) -> str:
+    local = _dt(timestamp, tz)
+    return f"{local.strftime('%Y-%m-%d')} {WEEKDAY_LABELS[local.weekday()]}"
+
+
 def timestamp_to_datetime_label(timestamp: float, tz: str) -> str:
     return _dt(timestamp, tz).strftime("%Y-%m-%d %H:%M")
 
 
+def timestamp_to_datetime_weekday_label(timestamp: float, tz: str) -> str:
+    local = _dt(timestamp, tz)
+    return f"{local.strftime('%Y-%m-%d')} {WEEKDAY_LABELS[local.weekday()]} {local.strftime('%H:%M')}"
+
+
 def format_time_range_label(*, start_ts: float | None, end_ts: float | None, tz: str) -> str:
-    """同日渲染 `YYYY-MM-DD HH:MM ~ HH:MM`,跨日渲染两端完整日期。"""
+    """同日渲染 `YYYY-MM-DD 周X HH:MM ~ HH:MM`,跨日渲染两端完整日期。"""
     if start_ts is None and end_ts is None:
         return ""
     if start_ts is None:
-        return timestamp_to_datetime_label(end_ts, tz)  # type: ignore[arg-type]
+        return timestamp_to_datetime_weekday_label(end_ts, tz)  # type: ignore[arg-type]
     if end_ts is None:
-        return timestamp_to_datetime_label(start_ts, tz)
+        return timestamp_to_datetime_weekday_label(start_ts, tz)
 
     start_dt = _dt(start_ts, tz)
     end_dt = _dt(end_ts, tz)
+    start_weekday = WEEKDAY_LABELS[start_dt.weekday()]
+    end_weekday = WEEKDAY_LABELS[end_dt.weekday()]
     if start_dt.date() == end_dt.date():
-        return f"{start_dt.strftime('%Y-%m-%d %H:%M')} ~ {end_dt.strftime('%H:%M')}"
-    return f"{start_dt.strftime('%Y-%m-%d %H:%M')} ~ {end_dt.strftime('%Y-%m-%d %H:%M')}"
+        return (
+            f"{start_dt.strftime('%Y-%m-%d')} {start_weekday} {start_dt.strftime('%H:%M')} ~ {end_dt.strftime('%H:%M')}"
+        )
+    return (
+        f"{start_dt.strftime('%Y-%m-%d')} {start_weekday} {start_dt.strftime('%H:%M')} ~ "
+        f"{end_dt.strftime('%Y-%m-%d')} {end_weekday} {end_dt.strftime('%H:%M')}"
+    )
 
 
 def render_relative_time_anchor_line(*, text: str, time_range_label: str) -> str:
@@ -125,4 +172,7 @@ def render_relative_time_anchor_line(*, text: str, time_range_label: str) -> str
     normalized = str(text or "")
     if not any(token in normalized for token in RELATIVE_TIME_TOKENS):
         return ""
-    return f"相对时间锚点:本条记忆中的今天/明天/昨天/最近等说法,均以 {time_range_label} 为准,不按当前日期重算。"
+    return (
+        "相对时间锚点:本条记忆中的今天/明天/昨天/上周二/下周三/最近等说法,"
+        f"均以 {time_range_label} 为准,不按当前日期重算。"
+    )

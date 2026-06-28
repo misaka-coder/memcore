@@ -13,6 +13,8 @@ from .time_anchor import (
     TIME_PERIOD_LABELS,
     format_time_range_label,
     render_relative_time_anchor_line,
+    timestamp_to_date_weekday_label,
+    timestamp_to_datetime_weekday_label,
 )
 
 
@@ -120,8 +122,6 @@ def render_semantic_snippet(record: dict[str, Any], *, tz: str, enable_flavor: b
 
 def render_timeline(messages: list[dict[str, Any]], *, tz: str) -> str:
     """时间线工具:把按日期范围读出的原始对话渲染成"按天分组、带时刻"的可读文本。"""
-    from .time_anchor import TIME_PERIOD_LABELS, timestamp_to_datetime_label
-
     if not messages:
         return ""
     lines: list[str] = ["【按时间读取的原始对话(精确记录,非摘要)】"]
@@ -130,9 +130,10 @@ def render_timeline(messages: list[dict[str, Any]], *, tz: str) -> str:
         ts = row.get("timestamp")
         date_label = str(row.get("date_label") or "")
         if date_label != current_date:
-            lines.append(f"[日期 {date_label}]")
+            header_label = timestamp_to_date_weekday_label(ts, tz) if ts is not None else date_label
+            lines.append(f"[日期 {header_label}]")
             current_date = date_label
-        stamp = timestamp_to_datetime_label(ts, tz)[-5:] if ts is not None else ""  # HH:MM
+        stamp = timestamp_to_datetime_weekday_label(ts, tz).rsplit(" ", 1)[-1] if ts is not None else ""  # HH:MM
         period = TIME_PERIOD_LABELS.get(str(row.get("time_of_day") or ""), "")
         head = " | ".join(p for p in (stamp, period) if p)
         speaker = str(row.get("role") or "")
@@ -142,12 +143,10 @@ def render_timeline(messages: list[dict[str, Any]], *, tz: str) -> str:
 
 def render_raw_snippet(context_rows: list[dict[str, Any]], *, tz: str) -> str:
     """raw 上下文扩窗后的多条消息渲染成一段带时间标签的对话。"""
-    from .time_anchor import timestamp_to_datetime_label
-
     lines: list[str] = ["【原始对话片段】"]
     for row in context_rows:
         ts = row.get("timestamp")
-        stamp = timestamp_to_datetime_label(ts, tz) if ts is not None else ""
+        stamp = timestamp_to_datetime_weekday_label(ts, tz) if ts is not None else ""
         period = TIME_PERIOD_LABELS.get(str(row.get("time_of_day") or ""), "")
         speaker = str(row.get("role") or "")
         head = " | ".join(p for p in (stamp, period) if p)

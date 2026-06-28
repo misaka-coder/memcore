@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from memcore import (
     HashedEmbeddingProvider,
@@ -14,9 +16,14 @@ from memcore import (
     MemorySystem,
     Namespace,
     SQLiteMemoryStore,
+    TokenCounter,
 )
 from memcore.compaction import Compaction
 from memcore.llm.base import LLMClient, LLMRequest, LLMResult, TaskType
+
+
+def _ts(y: int, mo: int, d: int, h: int, mi: int = 0, tz: str = "Asia/Shanghai") -> int:
+    return int(datetime(y, mo, d, h, mi, tzinfo=ZoneInfo(tz)).timestamp())
 
 
 class CannedLLM(LLMClient):
@@ -55,6 +62,11 @@ class CannedLLM(LLMClient):
         else:
             data = {}
         return LLMResult(ok=True, data=data, attempts=1)
+
+
+class LengthTokenCounter(TokenCounter):
+    def count_text(self, text: str) -> int:
+        return len(text)
 
 
 class FailThenSummaryLLM(CannedLLM):
@@ -111,6 +123,90 @@ class SummaryCycleViaFacade(unittest.TestCase):
         visible = mem.store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10)
         self.assertEqual(len(visible), 1)
         self.assertEqual(visible[0]["index_status"], "indexed")
+
+    def test_raw_token_policy_waits_until_last_message_is_assistant(self) -> None:
+        cfg = MemoryConfig(
+            raw_compaction_policy="token",
+            raw_token_trigger=10,
+            raw_token_batch_ratio=0.6,
+            episodic_compact_trigger_count=99,
+        )
+        mem = MemorySystem(
+            llm=CannedLLM(),
+            namespace=Namespace(user_id="u1", conversation_id="c1"),
+            timezone="Asia/Shanghai",
+            config=cfg,
+            embedding=HashedEmbeddingProvider(),
+            token_counter=LengthTokenCounter(),
+        )
+        mem.record_user_turn("aaaa", timestamp=1000, source_id="u1")
+        mem.record_assistant_turn("bb", timestamp=1001, source_id="a1")
+        mem.record_user_turn("cccc", timestamp=1002, source_id="u2")
+
+        out = mem.compact_due_sync()
+
+        self.assertEqual(out["summaries_created"], 0)
+        self.assertEqual(len(mem.store.get_unsummarized_messages(namespace=mem.namespace)), 3)
+
+    def test_raw_token_policy_compacts_oldest_assistant_boundary_and_keeps_tail(self) -> None:
+        cfg = MemoryConfig(
+            raw_compaction_policy="token",
+            raw_token_trigger=10,
+            raw_token_batch_ratio=0.6,
+            raw_token_min_remainder_messages=1,
+            episodic_compact_trigger_count=99,
+        )
+        mem = MemorySystem(
+            llm=CannedLLM(),
+            namespace=Namespace(user_id="u1", conversation_id="c1"),
+            timezone="Asia/Shanghai",
+            config=cfg,
+            embedding=HashedEmbeddingProvider(),
+            token_counter=LengthTokenCounter(),
+        )
+        mem.record_user_turn("aaaa", timestamp=1000, source_id="u1")
+        mem.record_assistant_turn("bb", timestamp=1001, source_id="a1")
+        mem.record_user_turn("cccc", timestamp=1002, source_id="u2")
+        mem.record_assistant_turn("dd", timestamp=1003, source_id="a2")
+
+        out = mem.compact_due_sync()
+
+        self.assertEqual(out["summaries_created"], 1)
+        remaining = mem.store.get_unsummarized_messages(namespace=mem.namespace)
+        self.assertEqual([m["source_id"] for m in remaining], ["u2", "a2"])
+        visible = mem.store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10)
+        self.assertEqual(visible[0]["source_ids"], ["u1", "a1"])
+
+    def test_raw_token_policy_user_cutpoint_aligns_to_next_assistant_when_tail_exists(self) -> None:
+        cfg = MemoryConfig(
+            raw_compaction_policy="token",
+            raw_token_trigger=12,
+            raw_token_batch_ratio=0.5,
+            raw_token_min_remainder_messages=1,
+            episodic_compact_trigger_count=99,
+        )
+        mem = MemorySystem(
+            llm=CannedLLM(),
+            namespace=Namespace(user_id="u1", conversation_id="c1"),
+            timezone="Asia/Shanghai",
+            config=cfg,
+            embedding=HashedEmbeddingProvider(),
+            token_counter=LengthTokenCounter(),
+        )
+        mem.record_user_turn("aa", timestamp=1000, source_id="u1")
+        mem.record_assistant_turn("bb", timestamp=1001, source_id="a1")
+        mem.record_user_turn("ccc", timestamp=1002, source_id="u2")  # cumulative crosses target here
+        mem.record_assistant_turn("d", timestamp=1003, source_id="a2")  # cutpoint aligns here
+        mem.record_user_turn("eeee", timestamp=1004, source_id="u3")
+        mem.record_assistant_turn("f", timestamp=1005, source_id="a3")
+
+        out = mem.compact_due_sync()
+
+        self.assertEqual(out["summaries_created"], 1)
+        remaining = mem.store.get_unsummarized_messages(namespace=mem.namespace)
+        self.assertEqual([m["source_id"] for m in remaining], ["u3", "a3"])
+        visible = mem.store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10)
+        self.assertEqual(visible[0]["source_ids"], ["u1", "a1", "u2", "a2"])
 
     def test_raw_is_indexed_on_record(self) -> None:
         mem = MemorySystem(
@@ -195,6 +291,26 @@ class SummaryCycleViaFacade(unittest.TestCase):
         summary_requests = [req for req in llm.requests if req.task_type == TaskType.SUMMARY]
         self.assertEqual(len(summary_requests), 1)
         self.assertEqual(summary_requests[0].max_retries, 4)
+
+    def test_summary_prompt_carries_weekday_anchor(self) -> None:
+        cfg = MemoryConfig(raw_trigger_count=2, summary_batch_size=1, episodic_compact_trigger_count=99)
+        llm = CapturingLLM()
+        mem = MemorySystem(
+            llm=llm,
+            namespace=Namespace(user_id="u1", conversation_id="c1"),
+            timezone="Asia/Shanghai",
+            config=cfg,
+            embedding=HashedEmbeddingProvider(),
+        )
+        mem.record_user_turn("上周二说的事情还记得吗", timestamp=_ts(2026, 4, 10, 9))
+        mem.record_assistant_turn("记得,我们可以继续整理。", timestamp=_ts(2026, 4, 10, 9, 1))
+
+        mem.compact_due_sync()
+
+        summary_requests = [req for req in llm.requests if req.task_type == TaskType.SUMMARY]
+        self.assertEqual(len(summary_requests), 1)
+        self.assertIn("2026-04-10 周五", summary_requests[0].user_prompt)
+        self.assertIn("上周二", summary_requests[0].user_prompt)
 
 
 class SemanticAndReinforcement(unittest.TestCase):

@@ -14,6 +14,7 @@ from memcore.time_anchor import (
     format_time_range_label,
     infer_time_of_day,
     render_relative_time_anchor_line,
+    timestamp_to_weekday_label,
 )
 
 
@@ -38,12 +39,16 @@ class TimeAnchor(unittest.TestCase):
 
     def test_same_day_vs_cross_day_range(self) -> None:
         same = format_time_range_label(start_ts=_ts(2026, 4, 10, 9), end_ts=_ts(2026, 4, 10, 11), tz="Asia/Shanghai")
-        self.assertEqual(same, "2026-04-10 09:00 ~ 11:00")
+        self.assertEqual(same, "2026-04-10 周五 09:00 ~ 11:00")
         cross = format_time_range_label(start_ts=_ts(2026, 4, 10, 23), end_ts=_ts(2026, 4, 11, 1), tz="Asia/Shanghai")
-        self.assertEqual(cross, "2026-04-10 23:00 ~ 2026-04-11 01:00")
+        self.assertEqual(cross, "2026-04-10 周五 23:00 ~ 2026-04-11 周六 01:00")
+
+    def test_weekday_label_uses_configured_timezone(self) -> None:
+        self.assertEqual(timestamp_to_weekday_label(_ts(2026, 4, 10, 9), "Asia/Shanghai"), "周五")
 
     def test_relative_anchor_only_when_relative_words_present(self) -> None:
         self.assertTrue(render_relative_time_anchor_line(text="昨天聊到的事", time_range_label="2026-04-10"))
+        self.assertTrue(render_relative_time_anchor_line(text="上周二聊到的事", time_range_label="2026-04-10 周五"))
         self.assertEqual(render_relative_time_anchor_line(text="复习微积分", time_range_label="2026-04-10"), "")
 
 
@@ -83,6 +88,7 @@ class Rendering(unittest.TestCase):
         out = render_raw_snippet(rows, tz="Asia/Shanghai")
         self.assertIn("在吗", out)
         self.assertIn("在的", out)
+        self.assertIn("2026-04-10 周五", out)
 
 
 class HybridRetrieval(unittest.TestCase):
@@ -121,6 +127,21 @@ class HybridRetrieval(unittest.TestCase):
         # "饮料"只出现在 m1 的标签里,正文没有 —— 证明关键词侧吃了多维标签。
         hits = idx.keyword_search(query_text="饮料", keywords=["饮料"], where={"user_id": "u1"})
         self.assertEqual(hits[0]["source_id"], "m1")
+
+    def test_keyword_exclude_is_applied_before_limit(self) -> None:
+        idx = InMemoryVectorIndex(embedding=HashedEmbeddingProvider())
+        idx.upsert(
+            [
+                {"source_id": "m1", "text": "可乐 第一候选", "metadata": {"user_id": "u1", "entry_type": "raw"}},
+                {"source_id": "m2", "text": "可乐 第二候选", "metadata": {"user_id": "u1", "entry_type": "raw"}},
+            ]
+        )
+
+        hits = idx.keyword_search(
+            query_text="可乐", keywords=["可乐"], where={"user_id": "u1"}, n_results=1, exclude_source_ids=["m1"]
+        )
+
+        self.assertEqual([h["source_id"] for h in hits], ["m2"])
 
     def test_rrf_prefers_dual_hit(self) -> None:
         semantic = [{"source_id": "a", "semantic_score": 0.5}, {"source_id": "b", "semantic_score": 0.4}]

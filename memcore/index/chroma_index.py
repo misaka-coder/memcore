@@ -16,6 +16,14 @@ from .base import VectorIndex
 from .memory_index import _keyword_doc_text
 
 
+def _with_source_excludes(where: dict[str, Any], exclude_source_ids: list[str] | None) -> dict[str, Any]:
+    out = dict(where or {})
+    excluded = [str(source_id) for source_id in (exclude_source_ids or []) if str(source_id or "").strip()]
+    if excluded:
+        out["source_id"] = {"$nin": excluded}
+    return out
+
+
 def _to_chroma_where(where: dict[str, Any] | None) -> dict[str, Any] | None:
     """把 memcore 的 where(多顶层键隐式 AND、单字段多操作符)翻成 Chroma 严格语法。
 
@@ -57,7 +65,8 @@ class ChromaVectorIndex(VectorIndex):
             source_id = str(entry.get("source_id") or "").strip()
             if not source_id:
                 continue
-            metadata = entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {}
+            metadata = dict(entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {})
+            metadata["source_id"] = source_id
             ids.append(source_id)
             docs.append(str(entry.get("text") or ""))
             metas.append({k: v for k, v in metadata.items() if isinstance(v, (str, int, float, bool))})
@@ -70,11 +79,18 @@ class ChromaVectorIndex(VectorIndex):
             metadatas=metas,
         )
 
-    def semantic_search(self, *, query_text: str, where: dict[str, Any], n_results: int = 8) -> list[dict[str, Any]]:
+    def semantic_search(
+        self,
+        *,
+        query_text: str,
+        where: dict[str, Any],
+        n_results: int = 8,
+        exclude_source_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         result = self._collection.query(
             query_embeddings=self.embedding.embed_texts([str(query_text or "")]),
             n_results=max(1, int(n_results)),
-            where=_to_chroma_where(where),
+            where=_to_chroma_where(_with_source_excludes(where, exclude_source_ids)),
             include=["documents", "metadatas", "distances"],
         )
         hits: list[dict[str, Any]] = []
@@ -99,10 +115,14 @@ class ChromaVectorIndex(VectorIndex):
         keywords: list[str],
         where: dict[str, Any],
         n_results: int = 8,
+        exclude_source_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         import math
 
-        got = self._collection.get(where=_to_chroma_where(where), include=["documents", "metadatas"])
+        got = self._collection.get(
+            where=_to_chroma_where(_with_source_excludes(where, exclude_source_ids)),
+            include=["documents", "metadatas"],
+        )
         ids = got.get("ids") or []
         documents = got.get("documents") or []
         metadatas = got.get("metadatas") or []

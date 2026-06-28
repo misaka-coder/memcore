@@ -49,6 +49,7 @@ class Timeline(unittest.TestCase):
         self.assertEqual(contents, ["4月10日上午的话", "4月10日晚上的话"])  # 按时间排序,排除 4-20
         self.assertEqual(out["status"], "ok")
         self.assertIn("日期 2026-04-10", out["text"])
+        self.assertIn("日期 2026-04-10 周五", out["text"])
 
     def test_single_day_when_date_to_omitted(self) -> None:
         mem = self._mem("c1")

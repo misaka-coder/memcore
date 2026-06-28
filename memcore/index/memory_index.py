@@ -37,6 +37,12 @@ def _match_where(metadata: dict[str, Any], where: dict[str, Any]) -> bool:
                 return False
             if "$lte" in cond and not (value is not None and value <= cond["$lte"]):
                 return False
+            if "$in" in cond and value not in set(cond["$in"] or []):
+                return False
+            if "$nin" in cond and value in set(cond["$nin"] or []):
+                return False
+            if "$ne" in cond and value == cond["$ne"]:
+                return False
         elif value != cond:
             return False
     return True
@@ -69,7 +75,8 @@ class InMemoryVectorIndex(VectorIndex):
             if not source_id:
                 continue
             text = str(entry.get("text") or "")
-            metadata = entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {}
+            metadata = dict(entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {})
+            metadata["source_id"] = source_id
             # embed 在锁外算(可能较慢),只在写 dict 时加锁。
             prepared.append(
                 (
@@ -86,12 +93,22 @@ class InMemoryVectorIndex(VectorIndex):
             for source_id, record in prepared:
                 self._entries[source_id] = record
 
-    def semantic_search(self, *, query_text: str, where: dict[str, Any], n_results: int = 8) -> list[dict[str, Any]]:
+    def semantic_search(
+        self,
+        *,
+        query_text: str,
+        where: dict[str, Any],
+        n_results: int = 8,
+        exclude_source_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         query_vec = self.embedding.embed_text(str(query_text or ""))
+        excluded = {str(source_id) for source_id in (exclude_source_ids or [])}
         with self._lock:
             snapshot = list(self._entries.values())
         hits: list[dict[str, Any]] = []
         for entry in snapshot:
+            if entry["source_id"] in excluded:
+                continue
             if not _match_where(entry["metadata"], where):
                 continue
             hits.append(
@@ -112,10 +129,12 @@ class InMemoryVectorIndex(VectorIndex):
         keywords: list[str],
         where: dict[str, Any],
         n_results: int = 8,
+        exclude_source_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
+        excluded = {str(source_id) for source_id in (exclude_source_ids or [])}
         with self._lock:
             snapshot = list(self._entries.values())
-        candidates = [e for e in snapshot if _match_where(e["metadata"], where)]
+        candidates = [e for e in snapshot if e["source_id"] not in excluded and _match_where(e["metadata"], where)]
         if not candidates:
             return []
 

@@ -39,6 +39,7 @@ from .schema import (
 )
 from .store.base import MemoryStore
 from .store.sqlite_store import SQLiteMemoryStore
+from .token_counter import TokenCounter
 
 __version__ = "0.1.0"
 
@@ -81,6 +82,7 @@ __all__ = [
     "HashedEmbeddingProvider",
     "HTTPEmbeddingProvider",
     "verify_embedding",
+    "TokenCounter",
     # 异常
     "MemcoreError",
     "ConfigError",

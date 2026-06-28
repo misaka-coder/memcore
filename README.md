@@ -31,7 +31,10 @@
 - **outbox 自愈 ✅**:向量后端故障时记录仍安全落库(pending),`reindex_pending()` 恢复后补齐索引,记录/压缩都不被向量故障阻断。
 - **提示词治理 ✅**:焊死骨架 + 校验插槽(`PromptOverrides`);插槽只能补充、不可移除契约/时间锚点。
 - **importance 衰减 ✅**:`enable_importance_decay` 开启后,长期记忆可见窗口按"随时间衰减的重要度"排序(久未强化的记忆淡出),衰减对**全部**候选生效、不静默截断。
-- 可配置:`visible_memory_scope`(conversation/user)、`enable_verifier`、`enable_flavor`、`enable_importance_decay`。
+- **raw token 压缩 ✅**:默认仍按条数压缩;长文本/金融/研报场景可显式开启 `raw_compaction_policy="token"`,并注入 `TokenCounter`。
+- **星期感知时间锚点 ✅**:raw、摘要、语义与时间线渲染会由 `timestamp + timezone` 自动派生 `周一..周日`,
+  让“上周二/下周三”这类相对表达在压缩与检索回填时有明确参照。
+- 可配置:`visible_memory_scope`(conversation/user)、`enable_verifier`、`enable_flavor`、`enable_importance_decay`、`raw_compaction_policy`。
 - 压缩重试:`llm_max_retries` 会传给注入的 `LLMClient`;最终仍失败时压缩层不标记已完成,下一轮继续重试。
 - **Chat Output Adapter 设计草案**:标准 JSON 输出契约、`speech` 流式解析、普通文本尽力分段、raw metadata 回写流程见 `docs/chat_output_adapter_v1.md`;工具调用阶段不套该 JSON,只在最终回复阶段输出 memcore JSON。
 
@@ -46,7 +49,7 @@ mem = MemorySystem(llm=MyLLMClient(), namespace=Namespace(user_id="u1", conversa
 cur = mem.record_user_turn("我之前说过爱喝什么")
 ctx = mem.build_prompt_context(current=cur)   # 可见三层;是否检索由聊天模型自行调用 retrieve/read_timeline
 # ...用 ctx + memcore 的两个检索工具拼你自己的最终聊天 prompt、调你自己的聊天模型...
-# 当前轮工具包装推荐用 retrieve_for_turn(current=cur, ...),避免把本轮用户问题自己搜回来。
+# 当前轮工具包装推荐用 retrieve_for_turn(current=cur, ...),避免把 prompt 已可见三层重复检索回来。
 mem.record_assistant_turn(reply, in_reply_to=cur)
 future = mem.compact_due_background()          # 聊天链路推荐后台沉淀,不阻塞用户可见回复
 # 可忽略 future 做 fire-and-forget;测试/脚本可 future.result() 读取压缩统计
@@ -54,6 +57,18 @@ future = mem.compact_due_background()          # 聊天链路推荐后台沉淀,
 
 `compact_due_sync()` 是同步确定性入口,适合单测、CLI、管理脚本或进程退出前 flush。在线聊天产品默认应使用
 `compact_due_background()`。
+
+raw token 压缩只影响 raw → episodic 的触发/批次选择,不会改变检索条目结构。开启时必须提供与模型 tokenizer 对齐的
+`TokenCounter`;memcore 不会静默用字符估算冒充 token:
+
+```python
+class MyTokenCounter(TokenCounter):
+    def count_text(self, text: str) -> int:
+        return count_with_your_model_tokenizer(text)
+
+cfg = MemoryConfig(raw_compaction_policy="token", raw_token_trigger=12000, raw_token_batch_ratio=0.67)
+mem = MemorySystem(..., config=cfg, token_counter=MyTokenCounter())
+```
 
 ## 公开边界:本库提供什么 / 接入方自备什么
 
@@ -78,7 +93,7 @@ memcore 是**纯机制**:它不含任何具体人格、领域调教或模型权�
 ## 公共 API
 
 `import memcore` 暴露:`MemorySystem`、`MemoryConfig`、`Namespace`/`Actor`、`PromptOverrides`、
-`LLMClient`/`LLMRequest`/`LLMResult`、`MemoryStore`/`VectorIndex`/`EmbeddingProvider` 三接口、
+`LLMClient`/`LLMRequest`/`LLMResult`、`MemoryStore`/`VectorIndex`/`EmbeddingProvider`/`TokenCounter` 接口、
 默认实现 `SQLiteMemoryStore`/`InMemoryVectorIndex`/`HashedEmbeddingProvider`/`HTTPEmbeddingProvider`、
 `verify_embedding`、契约 `MemoryMetadata`/`SummaryRecord`/`SemanticRecord`、异常类。
 

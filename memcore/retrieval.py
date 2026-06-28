@@ -73,6 +73,15 @@ class ReadPipeline:
             "semantic": semantic,
         }
 
+    def visible_source_ids(self, *, namespace: Namespace, now_ts: int) -> set[str]:
+        """返回当前 prompt 可见三层的索引 ID,供工具检索在候选阶段去重。"""
+        context = self.build_context(namespace=namespace, now_ts=now_ts)
+        ids: set[str] = set()
+        ids.update(str(row.get("source_id")) for row in context["raw"] if row.get("source_id"))
+        ids.update(str(row.get("summary_id")) for row in context["episodic"] if row.get("summary_id"))
+        ids.update(str(row.get("semantic_id")) for row in context["semantic"] if row.get("semantic_id"))
+        return ids
+
     def _visible_semantic(self, *, namespace: Namespace, cross: bool, now_ts: int) -> list[dict[str, Any]]:
         limit = self.config.semantic_visible_limit
         if not self.config.enable_importance_decay:
@@ -134,10 +143,14 @@ class ReadPipeline:
     ) -> list[str]:
         where = self._build_where(namespace, time_hint)
         pool = max(10, self.config.retrieval_limit * 10)
-        semantic_hits = self.index.semantic_search(query_text=query, where=where, n_results=pool)
-        keyword_hits = self.index.keyword_search(query_text=query, keywords=keywords, where=where, n_results=pool)
+        excluded = sorted(exclude_source_ids)
+        semantic_hits = self.index.semantic_search(
+            query_text=query, where=where, n_results=pool, exclude_source_ids=excluded
+        )
+        keyword_hits = self.index.keyword_search(
+            query_text=query, keywords=keywords, where=where, n_results=pool, exclude_source_ids=excluded
+        )
         fused = fuse_with_rrf(semantic_hits, keyword_hits)
-        fused = [h for h in fused if str(h.get("source_id")) not in exclude_source_ids]
 
         requested = {
             "source_layers": source_layers or [],
@@ -146,7 +159,7 @@ class ReadPipeline:
             "importance_min": importance_min,
         }
         selected = self._apply_precision_relaxation(fused, requested)[: self.config.retrieval_limit]
-        snippets = self._build_snippets(selected, exclude_source_ids=exclude_source_ids)
+        snippets = self._build_snippets(selected, exclude_context_source_ids=exclude_source_ids)
         return self._verify(query=query, snippets=snippets)
 
     def _build_where(self, namespace: Namespace, time_hint: dict[str, Any] | None) -> dict[str, Any]:
@@ -225,14 +238,12 @@ class ReadPipeline:
 
     # --- 片段构建(回关系库取原文 + raw 上下文扩窗) ---
 
-    def _build_snippets(self, hits: list[dict[str, Any]], *, exclude_source_ids: set[str]) -> list[str]:
+    def _build_snippets(self, hits: list[dict[str, Any]], *, exclude_context_source_ids: set[str]) -> list[str]:
         snippets: list[str] = []
         seen: set[str] = set()
         flavor = self.config.enable_flavor
         for hit in hits:
             source_id = str(hit.get("source_id"))
-            if source_id in exclude_source_ids:
-                continue
             record = self.store.get_record_by_source_id(source_id)
             if not record:
                 continue
@@ -256,7 +267,7 @@ class ReadPipeline:
                     conversation_id=str(record.get("conversation_id") or ""),
                 )
                 rows = self.store.get_context_slice(namespace=ns, seq_no=int(record.get("seq_no") or 0), window=window)
-                rows = [row for row in rows if str(row.get("source_id")) not in exclude_source_ids]
+                rows = [row for row in rows if str(row.get("source_id")) not in exclude_context_source_ids]
                 if not rows:
                     continue
                 snippet = render_raw_snippet(rows, tz=self.timezone)

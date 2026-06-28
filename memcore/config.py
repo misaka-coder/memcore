@@ -7,6 +7,7 @@
 - 差值关系:`summary_batch_size < raw_trigger_count`(防层间记忆重叠 / no blind window)。
 - 同理:`episodic_compact_batch_size < episodic_compact_trigger_count`。
 - 所有窗口/阈值为正;重叠阈值 >= 1;categories 为非空固定枚举。
+- raw token policy 只改变 raw->episodic 批次选择;token 参数必须合法,TokenCounter 由门面注入校验。
 """
 
 from __future__ import annotations
@@ -22,6 +23,11 @@ class MemoryConfig:
     # --- 写侧:三层窗口与差值 ---
     raw_trigger_count: int = 30  # raw 达到多少条触发摘要
     summary_batch_size: int = 20  # 每次总结最老多少条(必须 < raw_trigger_count)
+    raw_compaction_policy: str = "count"  # "count" | "token"
+    raw_token_trigger: int = 12000  # token policy:未摘要 raw content token 总量达到多少触发摘要
+    raw_token_batch_ratio: float = 0.67  # token policy:触发后压缩 trigger 的多少比例,默认约等于 20/30
+    raw_token_min_remainder_messages: int = 1  # token policy:压缩后至少保留多少条 raw 近期上下文
+    raw_token_boundary_role: str = "assistant"  # token policy:批次边界对齐到 assistant 回复
     episodic_visible_max: int = 8  # 可见阶段摘要数
     episodic_compact_trigger_count: int = 10  # 阶段摘要达到多少条触发语义压缩
     episodic_compact_batch_size: int = 5  # 每次压缩多少条阶段摘要(必须 < trigger)
@@ -58,6 +64,8 @@ class MemoryConfig:
         positives = {
             "raw_trigger_count": self.raw_trigger_count,
             "summary_batch_size": self.summary_batch_size,
+            "raw_token_trigger": self.raw_token_trigger,
+            "raw_token_min_remainder_messages": self.raw_token_min_remainder_messages,
             "episodic_visible_max": self.episodic_visible_max,
             "episodic_compact_trigger_count": self.episodic_compact_trigger_count,
             "episodic_compact_batch_size": self.episodic_compact_batch_size,
@@ -74,6 +82,15 @@ class MemoryConfig:
         if self.semantic_reinforcement_min_overlap < 1:
             raise ConfigError(
                 f"semantic_reinforcement_min_overlap must be >= 1, got {self.semantic_reinforcement_min_overlap!r}"
+            )
+
+        if self.raw_compaction_policy not in ("count", "token"):
+            raise ConfigError(f"raw_compaction_policy must be 'count' or 'token', got {self.raw_compaction_policy!r}")
+        if not isinstance(self.raw_token_batch_ratio, (int, float)) or not (0 < self.raw_token_batch_ratio < 1):
+            raise ConfigError(f"raw_token_batch_ratio must be > 0 and < 1, got {self.raw_token_batch_ratio!r}")
+        if self.raw_token_boundary_role != "assistant":
+            raise ConfigError(
+                f"raw_token_boundary_role currently supports only 'assistant', got {self.raw_token_boundary_role!r}"
             )
 
         # 焊死的差值关系:批量必须严格小于触发数,否则层间记忆会重叠 / 出现空窗。

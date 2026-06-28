@@ -23,8 +23,9 @@ class VectorIndex(ABC):
         query_text: str,
         where: dict[str, Any],
         n_results: int = 8,
+        exclude_source_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
-        """向量相似检索;where 为硬过滤(隔离 + 时间)。返回含 source_id / semantic_score。"""
+        """向量相似检索;where 为硬过滤(隔离 + 时间),exclude 为候选前排除。返回含 source_id / semantic_score。"""
         raise NotImplementedError
 
     @abstractmethod
@@ -35,8 +36,9 @@ class VectorIndex(ABC):
         keywords: list[str],
         where: dict[str, Any],
         n_results: int = 8,
+        exclude_source_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
-        """关键词/BM25 检索(文本含多维标签);返回含 source_id / tag_score。"""
+        """关键词/BM25 检索(文本含多维标签),exclude 为候选前排除;返回含 source_id / tag_score。"""
         raise NotImplementedError
 
     @abstractmethod
