@@ -15,6 +15,8 @@ from ..text_utils import tokenize
 from .base import VectorIndex
 from .memory_index import _keyword_doc_text
 
+_NEVER_MATCH = {"__memcore_never_match__": True}
+
 
 def _with_source_excludes(where: dict[str, Any], exclude_source_ids: list[str] | None) -> dict[str, Any]:
     out = dict(where or {})
@@ -25,7 +27,7 @@ def _with_source_excludes(where: dict[str, Any], exclude_source_ids: list[str] |
 
 
 def _to_chroma_where(where: dict[str, Any] | None) -> dict[str, Any] | None:
-    """把 memcore 的 where(多顶层键隐式 AND、单字段多操作符)翻成 Chroma 严格语法。
+    """把 memcore 的 where(多顶层键隐式 AND、逻辑子句、单字段多操作符)翻成 Chroma 严格语法。
 
     Chroma(0.5+)要求:多条件必须显式 $and;一个字段 dict 只能含一个操作符。
     例:{"u":"x","ts":{"$gte":a,"$lte":b}} → {"$and":[{"u":"x"},{"ts":{"$gte":a}},{"ts":{"$lte":b}}]}
@@ -34,14 +36,26 @@ def _to_chroma_where(where: dict[str, Any] | None) -> dict[str, Any] | None:
         return None
     clauses: list[dict[str, Any]] = []
     for key, cond in where.items():
-        if isinstance(cond, dict):
-            for op, val in cond.items():  # 每个操作符拆成独立子句
-                clauses.append({key: {op: val}})
-        else:
-            clauses.append({key: cond})
+        clauses.extend(_to_chroma_clauses(key, cond))
     if not clauses:
         return None
     return clauses[0] if len(clauses) == 1 else {"$and": clauses}
+
+
+def _to_chroma_clauses(key: str, cond: Any) -> list[dict[str, Any]]:
+    if key in ("$and", "$or"):
+        if not isinstance(cond, list):
+            return [] if key == "$and" else [_NEVER_MATCH]
+        children = [_to_chroma_where(child) for child in cond if isinstance(child, dict)]
+        children = [child for child in children if child]
+        if not children:
+            return [] if key == "$and" else [_NEVER_MATCH]
+        if key == "$and":
+            return children
+        return children if len(children) == 1 else [{"$or": children}]
+    if isinstance(cond, dict):
+        return [{key: {op: val}} for op, val in cond.items()]
+    return [{key: cond}]
 
 
 class ChromaVectorIndex(VectorIndex):

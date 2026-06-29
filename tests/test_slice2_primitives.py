@@ -9,6 +9,7 @@ import unittest
 from datetime import datetime, timezone
 
 from memcore import HashedEmbeddingProvider, InMemoryVectorIndex, fuse_with_rrf
+from memcore.index.metadata_filters import category_filter_key, metadata_filter_key, subject_scope_filter_key
 from memcore.rendering import render_prompt_context, render_raw_snippet, render_semantic_snippet, render_summary_snippet
 from memcore.time_anchor import (
     format_time_range_label,
@@ -117,6 +118,15 @@ class Rendering(unittest.TestCase):
 
 
 class HybridRetrieval(unittest.TestCase):
+    def test_metadata_filter_key_is_stable_and_safe(self) -> None:
+        self.assertEqual(category_filter_key("risk_profile"), "memory_category__risk_profile")
+        self.assertEqual(subject_scope_filter_key("user"), "memory_scope__user")
+        self.assertTrue(category_filter_key("偏好").startswith("memory_category__h_"))
+        self.assertEqual(category_filter_key("偏好"), category_filter_key("偏好"))
+        self.assertNotEqual(
+            metadata_filter_key("memory_category", "偏好"), metadata_filter_key("memory_category", "情绪")
+        )
+
     def _index(self) -> InMemoryVectorIndex:
         idx = InMemoryVectorIndex(embedding=HashedEmbeddingProvider())
         idx.upsert(
@@ -188,6 +198,136 @@ class HybridRetrieval(unittest.TestCase):
         idx._entries["excluded"]["vector"] = BombVector()  # noqa: SLF001 - white-box prefilter guard
 
         hits = idx.semantic_search(query_text="可乐", where={"user_id": "u1"}, exclude_source_ids=["excluded"])
+
+        self.assertEqual([hit["source_id"] for hit in hits], ["good"])
+
+    def test_numpy_speed_path_stores_compact_float32_vectors(self) -> None:
+        from memcore.index import memory_index as memory_index_module
+
+        if memory_index_module._np is None:  # noqa: SLF001 - optional dependency guard
+            self.skipTest("numpy not installed")
+        idx = InMemoryVectorIndex(embedding=HashedEmbeddingProvider(dimension=8))
+        idx.upsert([{"source_id": "m1", "text": "可乐", "metadata": {"user_id": "u1", "entry_type": "raw"}}])
+
+        entry = idx._entries["m1"]  # noqa: SLF001 - white-box storage optimization guard
+
+        self.assertEqual(entry["vector"].dtype, memory_index_module._np.float32)  # noqa: SLF001
+        self.assertEqual(entry["vector"].shape, (8,))
+        self.assertGreaterEqual(entry["vector_norm"], 0.0)
+
+    def test_semantic_recursive_metadata_where_is_applied_before_scoring(self) -> None:
+        class BombVector:
+            def __len__(self) -> int:
+                raise AssertionError("metadata-filtered vector should not be scored")
+
+            def __iter__(self):
+                raise AssertionError("metadata-filtered vector should not be scored")
+
+        idx = InMemoryVectorIndex(embedding=HashedEmbeddingProvider())
+        idx.upsert(
+            [
+                {
+                    "source_id": "good",
+                    "text": "可乐 偏好",
+                    "metadata": {
+                        "user_id": "u1",
+                        "entry_type": "raw",
+                        "memory_importance": 0.8,
+                        category_filter_key("preference"): True,
+                        subject_scope_filter_key("user"): True,
+                    },
+                },
+                {
+                    "source_id": "bad-category",
+                    "text": "可乐",
+                    "metadata": {
+                        "user_id": "u1",
+                        "entry_type": "raw",
+                        "memory_importance": 0.9,
+                        category_filter_key("project_work"): True,
+                        subject_scope_filter_key("user"): True,
+                    },
+                },
+                {
+                    "source_id": "bad-scope",
+                    "text": "可乐",
+                    "metadata": {
+                        "user_id": "u1",
+                        "entry_type": "raw",
+                        "memory_importance": 0.9,
+                        category_filter_key("preference"): True,
+                        subject_scope_filter_key("assistant"): True,
+                    },
+                },
+                {
+                    "source_id": "bad-importance",
+                    "text": "可乐",
+                    "metadata": {
+                        "user_id": "u1",
+                        "entry_type": "raw",
+                        "memory_importance": 0.4,
+                        category_filter_key("preference"): True,
+                        subject_scope_filter_key("user"): True,
+                    },
+                },
+            ]
+        )
+        for source_id in ("bad-category", "bad-scope", "bad-importance"):
+            idx._entries[source_id]["vector"] = BombVector()  # noqa: SLF001 - white-box prefilter guard
+
+        where = {
+            "user_id": "u1",
+            "$and": [
+                {"memory_importance": {"$gte": 0.6}},
+                {
+                    "$or": [
+                        {category_filter_key("preference"): True},
+                        {category_filter_key("plan_goal"): True},
+                    ]
+                },
+                {subject_scope_filter_key("user"): True},
+            ],
+        }
+
+        hits = idx.semantic_search(query_text="可乐", where=where)
+
+        self.assertEqual([hit["source_id"] for hit in hits], ["good"])
+
+    def test_keyword_recursive_metadata_where_filters_candidates_before_bm25(self) -> None:
+        idx = InMemoryVectorIndex(embedding=HashedEmbeddingProvider())
+        idx.upsert(
+            [
+                {
+                    "source_id": "good",
+                    "text": "可乐 偏好",
+                    "metadata": {
+                        "user_id": "u1",
+                        "entry_type": "raw",
+                        category_filter_key("preference"): True,
+                        subject_scope_filter_key("user"): True,
+                    },
+                },
+                {
+                    "source_id": "bad-category",
+                    "text": "可乐 噪声",
+                    "metadata": {
+                        "user_id": "u1",
+                        "entry_type": "raw",
+                        category_filter_key("project_work"): True,
+                        subject_scope_filter_key("user"): True,
+                    },
+                },
+            ]
+        )
+        where = {
+            "user_id": "u1",
+            "$and": [
+                {"$or": [{category_filter_key("preference"): True}, {category_filter_key("plan_goal"): True}]},
+                {subject_scope_filter_key("user"): True},
+            ],
+        }
+
+        hits = idx.keyword_search(query_text="可乐", keywords=["可乐"], where=where)
 
         self.assertEqual([hit["source_id"] for hit in hits], ["good"])
 

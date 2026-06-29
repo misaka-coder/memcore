@@ -23,12 +23,44 @@ except Exception:  # pragma: no cover - depends on optional runtime dependency
     _np = None
 
 
-def _cosine(a: list[float], b: list[float]) -> float:
-    if not a or not b or len(a) != len(b):
+def _vector_len(vector: Any) -> int:
+    try:
+        return len(vector)
+    except TypeError:
+        return 0
+
+
+def _compact_vector(vector: Any) -> Any:
+    """Use float32 arrays when NumPy is available; keep pure-Python fallback dependency-free."""
+    if _np is None:
+        return vector
+    try:
+        array = _np.asarray(vector, dtype=_np.float32)
+    except (TypeError, ValueError):
+        return vector
+    return array if array.ndim == 1 else vector
+
+
+def _vector_norm(vector: Any) -> float:
+    if _vector_len(vector) <= 0:
+        return 0.0
+    if _np is not None:
+        try:
+            return float(_np.linalg.norm(vector))
+        except (TypeError, ValueError):
+            pass
+    try:
+        return math.sqrt(sum(x * x for x in vector))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _cosine(a: Any, b: Any, *, a_norm: float | None = None, b_norm: float | None = None) -> float:
+    if _vector_len(a) <= 0 or _vector_len(b) <= 0 or _vector_len(a) != _vector_len(b):
         return 0.0
     dot = sum(x * y for x, y in zip(a, b))
-    na = math.sqrt(sum(x * x for x in a))
-    nb = math.sqrt(sum(y * y for y in b))
+    na = _vector_norm(a) if a_norm is None else float(a_norm)
+    nb = _vector_norm(b) if b_norm is None else float(b_norm)
     if na == 0 or nb == 0:
         return 0.0
     return dot / (na * nb)
@@ -36,21 +68,65 @@ def _cosine(a: list[float], b: list[float]) -> float:
 
 def _match_where(metadata: dict[str, Any], where: dict[str, Any]) -> bool:
     for key, cond in (where or {}).items():
-        value = metadata.get(key)
-        if isinstance(cond, dict):
-            if "$gte" in cond and not (value is not None and value >= cond["$gte"]):
+        if key == "$and":
+            if not isinstance(cond, list):
                 return False
-            if "$lte" in cond and not (value is not None and value <= cond["$lte"]):
+            children = cond
+            if any(not isinstance(child, dict) or not _match_where(metadata, child) for child in children):
                 return False
-            if "$in" in cond and value not in set(cond["$in"] or []):
+            continue
+        if key == "$or":
+            children = cond if isinstance(cond, list) else []
+            if not children or not any(isinstance(child, dict) and _match_where(metadata, child) for child in children):
                 return False
-            if "$nin" in cond and value in set(cond["$nin"] or []):
-                return False
-            if "$ne" in cond and value == cond["$ne"]:
-                return False
-        elif value != cond:
+            continue
+        if not _match_field(metadata.get(key), cond):
             return False
     return True
+
+
+def _match_field(value: Any, cond: Any) -> bool:
+    if not isinstance(cond, dict):
+        return value == cond
+    for op, expected in cond.items():
+        if op == "$gte":
+            if not _compare(value, expected, lambda left, right: left >= right):
+                return False
+        elif op == "$lte":
+            if not _compare(value, expected, lambda left, right: left <= right):
+                return False
+        elif op == "$in":
+            allowed = set(expected or [])
+            if isinstance(value, (list, tuple, set)):
+                if not any(item in allowed for item in value):
+                    return False
+            elif value not in allowed:
+                return False
+        elif op == "$nin":
+            blocked = set(expected or [])
+            if isinstance(value, (list, tuple, set)):
+                if any(item in blocked for item in value):
+                    return False
+            elif value in blocked:
+                return False
+        elif op == "$ne":
+            if value == expected:
+                return False
+        elif op == "$eq":
+            if value != expected:
+                return False
+        else:
+            return False
+    return True
+
+
+def _compare(value: Any, expected: Any, predicate) -> bool:
+    if value is None:
+        return False
+    try:
+        return bool(predicate(value, expected))
+    except TypeError:
+        return False
 
 
 def _keyword_doc_text(document: str, metadata: dict[str, Any]) -> str:
@@ -88,6 +164,7 @@ class InMemoryVectorIndex(VectorIndex):
             text = str(entry.get("text") or "")
             metadata = dict(entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {})
             metadata["source_id"] = source_id
+            vector = _compact_vector(self.embedding.embed_text(text))
             # embed 在锁外算(可能较慢),只在写 dict 时加锁。
             prepared.append(
                 (
@@ -96,7 +173,8 @@ class InMemoryVectorIndex(VectorIndex):
                         "source_id": source_id,
                         "document": text,
                         "metadata": dict(metadata),
-                        "vector": self.embedding.embed_text(text),
+                        "vector": vector,
+                        "vector_norm": _vector_norm(vector),
                     },
                 )
             )
@@ -112,7 +190,8 @@ class InMemoryVectorIndex(VectorIndex):
         n_results: int = 8,
         exclude_source_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
-        query_vec = self.embedding.embed_text(str(query_text or ""))
+        query_vec = _compact_vector(self.embedding.embed_text(str(query_text or "")))
+        query_norm = _vector_norm(query_vec)
         excluded = {str(source_id) for source_id in (exclude_source_ids or [])}
         with self._lock:
             snapshot = list(self._entries.values())
@@ -128,31 +207,38 @@ class InMemoryVectorIndex(VectorIndex):
                     "source_id": entry["source_id"],
                     "document": entry["document"],
                     "metadata": entry["metadata"],
-                    "semantic_score": max(0.0, _cosine(query_vec, entry["vector"])),
+                    "semantic_score": max(
+                        0.0,
+                        _cosine(query_vec, entry["vector"], a_norm=query_norm, b_norm=entry.get("vector_norm")),
+                    ),
                 }
             )
         hits.sort(key=lambda item: item["semantic_score"], reverse=True)
         return hits[: max(1, int(n_results))]
 
     @staticmethod
-    def _semantic_hits_numpy(query_vec: list[float], candidates: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
-        if _np is None or not query_vec or not candidates:
+    def _semantic_hits_numpy(query_vec: Any, candidates: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+        if _np is None or _vector_len(query_vec) <= 0 or not candidates:
             return None
         try:
-            query = _np.asarray(query_vec, dtype=float)
+            query = _np.asarray(query_vec, dtype=_np.float32)
             if query.ndim != 1 or query.size == 0:
                 return None
             vectors = [entry["vector"] for entry in candidates]
-            if any(len(vector) != query.size for vector in vectors):
+            if any(_vector_len(vector) != query.size for vector in vectors):
                 return None
-            matrix = _np.asarray(vectors, dtype=float)
+            matrix = _np.asarray(vectors, dtype=_np.float32)
             if matrix.ndim != 2:
                 return None
             query_norm = float(_np.linalg.norm(query))
-            vector_norms = _np.linalg.norm(matrix, axis=1)
+            norm_values: list[float] = []
+            for entry in candidates:
+                norm = entry.get("vector_norm")
+                norm_values.append(float(_vector_norm(entry["vector"]) if norm is None else norm))
+            vector_norms = _np.asarray(norm_values, dtype=_np.float32)
             denom = vector_norms * query_norm
             dots = matrix @ query
-            scores = _np.divide(dots, denom, out=_np.zeros_like(dots, dtype=float), where=denom != 0)
+            scores = _np.divide(dots, denom, out=_np.zeros_like(dots, dtype=_np.float32), where=denom != 0)
             scores = _np.maximum(scores, 0.0)
         except (TypeError, ValueError):
             return None

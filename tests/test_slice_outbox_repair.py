@@ -41,13 +41,13 @@ class OutboxResilience(unittest.TestCase):
     def tearDown(self) -> None:
         self.store.close()
 
-    def _mem(self, llm=None, config=None) -> MemorySystem:
+    def _mem(self, llm=None, config=None, namespace=None, index=None) -> MemorySystem:
         return MemorySystem(
             llm=llm or _StubLLM(),
-            namespace=Namespace(user_id="u1", conversation_id="c1"),
+            namespace=namespace or Namespace(user_id="u1", conversation_id="c1"),
             timezone="Asia/Shanghai",
             store=self.store,
-            index=self.index,
+            index=index or self.index,
             embedding=self.emb,
             config=config,
         )
@@ -102,6 +102,101 @@ class OutboxResilience(unittest.TestCase):
         self.index.fail = False
         mem.reindex_pending()
         self.assertEqual(self.store.list_pending_index(), [])  # raw + summary 全部补齐
+
+    def test_reindex_all_rebuilds_fresh_index_from_store(self) -> None:
+        ns = Namespace(user_id="u1", conversation_id="c1")
+        self.store.add_message(
+            namespace=ns,
+            role="user",
+            content="用户喜欢喝可乐",
+            timestamp=1000,
+            source_id="raw1",
+            memory_metadata={
+                "keywords": ["可乐"],
+                "categories": ["preference"],
+                "subject_scopes": ["user"],
+                "importance": 0.7,
+            },
+        )
+        self.store.add_summary(
+            namespace=ns,
+            record={
+                "summary_id": "sum1",
+                "timestamp": 1001,
+                "diary_summary": "用户表达了可乐偏好",
+                "memory_metadata": {"keywords": ["可乐"], "categories": ["preference"]},
+            },
+        )
+        self.store.add_semantic_summary(
+            namespace=ns,
+            record={
+                "semantic_id": "sem1",
+                "timestamp": 1002,
+                "semantic_summary": "用户偏好可乐",
+                "memory_metadata": {"keywords": ["可乐"], "subject_scopes": ["user"]},
+            },
+        )
+        fresh_index = InMemoryVectorIndex(embedding=self.emb)
+        mem = self._mem(namespace=ns, index=fresh_index)
+
+        out = mem.reindex_all()
+
+        self.assertEqual(out, {"scanned": 3, "reindexed": 3, "failed": 0})
+        self.assertEqual(fresh_index.count(), 3)
+        self.assertEqual(self.store.list_pending_index(), [])
+        hits = fresh_index.keyword_search(
+            query_text="可乐",
+            keywords=["可乐"],
+            where={"tenant_id": "", "user_id": "u1", "domain_id": ""},
+            n_results=10,
+        )
+        self.assertEqual({hit["source_id"] for hit in hits}, {"raw1", "sum1", "sem1"})
+
+    def test_reindex_all_respects_hard_namespace(self) -> None:
+        ns = Namespace(user_id="u1", conversation_id="c1")
+        other = Namespace(user_id="u2", conversation_id="c1")
+        self.store.add_message(namespace=ns, role="user", content="u1 可乐", timestamp=1000, source_id="u1-raw")
+        self.store.add_message(namespace=other, role="user", content="u2 可乐", timestamp=1000, source_id="u2-raw")
+        fresh_index = InMemoryVectorIndex(embedding=self.emb)
+        mem = self._mem(namespace=ns, index=fresh_index)
+
+        out = mem.reindex_all()
+
+        self.assertEqual(out["scanned"], 1)
+        self.assertEqual(fresh_index.count(), 1)
+        hits = fresh_index.keyword_search(
+            query_text="可乐",
+            keywords=["可乐"],
+            where={"tenant_id": "", "user_id": "u2", "domain_id": ""},
+            n_results=10,
+        )
+        self.assertEqual(hits, [])
+
+    def test_reindex_all_can_limit_to_current_conversation(self) -> None:
+        ns = Namespace(user_id="u1", conversation_id="c1")
+        other_conversation = Namespace(user_id="u1", conversation_id="c2")
+        self.store.add_message(namespace=ns, role="user", content="c1 可乐", timestamp=1000, source_id="c1-raw")
+        self.store.add_message(
+            namespace=other_conversation, role="user", content="c2 可乐", timestamp=1001, source_id="c2-raw"
+        )
+        fresh_index = InMemoryVectorIndex(embedding=self.emb)
+        mem = self._mem(namespace=ns, index=fresh_index)
+
+        out = mem.reindex_all(current_conversation_only=True)
+
+        self.assertEqual(out, {"scanned": 1, "reindexed": 1, "failed": 0})
+        self.assertEqual(fresh_index.count(), 1)
+        self.assertEqual(set(fresh_index._entries), {"c1-raw"})  # noqa: SLF001 - white-box scope guard
+
+    def test_reindex_all_reports_failure_and_marks_pending(self) -> None:
+        mem = self._mem()
+        self.store.add_message(namespace=mem.namespace, role="user", content="索引仍挂", timestamp=1000, source_id="s1")
+        self.store.set_index_status("s1", "indexed")
+
+        out = mem.reindex_all()
+
+        self.assertEqual(out, {"scanned": 1, "reindexed": 0, "failed": 1})
+        self.assertEqual({r["source_id"] for r in self.store.list_pending_index()}, {"s1"})
 
 
 if __name__ == "__main__":

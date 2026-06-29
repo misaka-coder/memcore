@@ -19,7 +19,8 @@ from memcore import (
     SQLiteMemoryStore,
     VectorIndex,
 )
-from memcore.index.entry_builder import build_semantic_entry, build_summary_entry
+from memcore.index.entry_builder import build_raw_entry, build_semantic_entry, build_summary_entry
+from memcore.index.metadata_filters import category_filter_key, subject_scope_filter_key
 from memcore.llm.base import LLMClient, LLMRequest, LLMResult, TaskType
 
 
@@ -128,13 +129,56 @@ class ExplicitRetrieve(unittest.TestCase):
             embedding=HashedEmbeddingProvider(),
         )
 
-        mem.retrieve("风险偏好", source_layers=["summary"], importance_min=0.7, categories=["preference"])
+        mem.retrieve(
+            "风险偏好",
+            source_layers=["summary"],
+            importance_min=0.7,
+            categories=["preference", "plan_goal"],
+            subject_scopes=["user", "assistant"],
+        )
 
-        self.assertEqual(index.semantic_wheres[0]["entry_type"], {"$in": ["summary"]})
-        self.assertEqual(index.semantic_wheres[0]["memory_importance"], {"$gte": 0.7})
-        self.assertNotIn("memory_categories_text", index.semantic_wheres[0])
-        self.assertEqual(index.keyword_wheres[0], index.semantic_wheres[0])
+        first = index.semantic_wheres[0]
+        category_or = {"$or": [{category_filter_key("preference"): True}, {category_filter_key("plan_goal"): True}]}
+        scope_or = {"$or": [{subject_scope_filter_key("user"): True}, {subject_scope_filter_key("assistant"): True}]}
+        self.assertEqual(first["entry_type"], {"$in": ["summary"]})
+        self.assertEqual(first["memory_importance"], {"$gte": 0.7})
+        self.assertIn(category_or, first["$and"])
+        self.assertIn(scope_or, first["$and"])
+        self.assertNotIn("memory_categories_text", first)
+        self.assertEqual(index.keyword_wheres[0], first)
+        self.assertEqual(len(index.semantic_wheres), 5)
+        self.assertNotIn("memory_importance", index.semantic_wheres[1])
+        self.assertIn(category_or, index.semantic_wheres[1]["$and"])
+        self.assertEqual(index.semantic_wheres[2]["$and"], [scope_or])
+        self.assertNotIn("$and", index.semantic_wheres[3])
+        self.assertNotIn("entry_type", index.semantic_wheres[4])
         store.close()
+
+    def test_entry_builder_writes_prefilter_flags_for_all_layers(self) -> None:
+        base = {
+            "tenant_id": "",
+            "user_id": "u1",
+            "domain_id": "",
+            "conversation_id": "c1",
+            "timestamp": 1000,
+            "memory_metadata": {
+                "categories": ["preference", "plan_goal"],
+                "subject_scopes": ["user"],
+                "importance": 0.8,
+            },
+        }
+        entries = [
+            build_raw_entry({**base, "source_id": "m1", "role": "user", "content": "我喜欢可乐"}),
+            build_summary_entry({**base, "summary_id": "s1", "diary_summary": "用户喜欢可乐"}),
+            build_semantic_entry({**base, "semantic_id": "sem1", "semantic_summary": "用户喜欢可乐"}),
+        ]
+
+        for entry in entries:
+            metadata = entry["metadata"]
+            self.assertTrue(metadata[category_filter_key("preference")])
+            self.assertTrue(metadata[category_filter_key("plan_goal")])
+            self.assertTrue(metadata[subject_scope_filter_key("user")])
+            self.assertEqual(metadata["memory_importance"], 0.8)
 
     def test_retrieve_for_turn_excludes_visible_raw_and_context_neighbor(self) -> None:
         store, index, emb = _shared_backends()

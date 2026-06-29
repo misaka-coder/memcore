@@ -28,14 +28,15 @@
   与 `retrieve`(向量模糊检索)互补,双工具对齐参考实现。
 - **embedding 三条路 + 自检 ✅**:`HuggingFaceEmbeddingProvider`(本地 BGE-M3)/ `HTTPEmbeddingProvider`(OpenAI 兼容 API,纯 stdlib 零依赖)/ `HashedEmbeddingProvider`(仅测试)。
   `verify_embedding()` 自检语义是否真有效(近义词应明显更近),hashed/弱模型会被响亮标记。**不捆绑任何模型权重。**
-- **outbox 自愈 ✅**:向量后端故障时记录仍安全落库(pending),`reindex_pending()` 恢复后补齐索引,记录/压缩都不被向量故障阻断。
+- **outbox 自愈 ✅**:向量后端故障时记录仍安全落库(pending),`reindex_pending()` 恢复后补齐索引;
+  `reindex_all()` 可从 SQLite 真相源补建/热加载当前 hard namespace 的三层索引,记录/压缩都不被向量故障阻断。
 - **提示词治理 ✅**:焊死骨架 + 校验插槽(`PromptOverrides`);插槽只能补充、不可移除契约/时间锚点。
 - **importance 衰减 ✅**:`enable_importance_decay` 开启后,长期记忆可见窗口按"随时间衰减的重要度"排序(久未强化的记忆淡出),衰减对**全部**候选生效、不静默截断。
 - **raw token 压缩 ✅**:默认仍按条数压缩;长文本/金融/研报场景可显式开启 `raw_compaction_policy="token"`,并注入 `TokenCounter`。
 - **星期感知时间锚点 ✅**:raw、摘要、语义与时间线渲染会由 `timestamp + timezone` 自动派生 `周一..周日`,
   让“上周二/下周三”这类相对表达在压缩与检索回填时有明确参照。
 - **内存索引加速 ✅**:默认不强制向量数据库;`InMemoryVectorIndex` 会先按 namespace/time/exclude 与可前置 metadata 过滤候选,
-  再计算分数。安装 `memcore[speed]` 后语义 cosine 自动走可选 NumPy 批量计算。
+  再计算分数。安装 `memcore[speed]` 后向量以 float32 存储,语义 cosine 自动走可选 NumPy 批量计算。
 - 可配置:`visible_memory_scope`(conversation/user)、`enable_verifier`、`enable_flavor`、`enable_importance_decay`、`raw_compaction_policy`。
 - 压缩重试:`llm_max_retries` 会传给注入的 `LLMClient`;最终仍失败时压缩层不标记已完成,下一轮继续重试。
 - **Chat Output Adapter 设计草案**:标准 JSON 输出契约、`speech` 流式解析、普通文本尽力分段、raw metadata 回写流程见 `docs/chat_output_adapter_v1.md`;工具调用阶段不套该 JSON,只在最终回复阶段输出 memcore JSON。
@@ -57,6 +58,16 @@ mem.record_assistant_turn(reply, in_reply_to=cur)
 future = mem.compact_due_background()          # 聊天链路推荐后台沉淀,不阻塞用户可见回复
 # 可忽略 future 做 fire-and-forget;测试/脚本可 future.result() 读取压缩统计
 ```
+
+进程重启、换一个新的内存索引实例,或升级索引 metadata 字段后,可以从 SQLite 真相源补建/热加载索引:
+
+```python
+stats = mem.reindex_all()  # 默认 upsert 当前 tenant/user/domain 下全部会话的 raw/summary/semantic
+# stats: {"scanned": 42, "reindexed": 42, "failed": 0}
+```
+
+`reindex_all()` 不会清空已有 index 里的陈旧条目;它适合空内存索引冷启动/补 upsert。若外部向量库已污染,
+应先用后端管理工具清理对应集合或新建空 index。
 
 `compact_due_sync()` 是同步确定性入口,适合单测、CLI、管理脚本或进程退出前 flush。在线聊天产品默认应使用
 `compact_due_background()`。

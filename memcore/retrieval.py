@@ -12,6 +12,7 @@ from typing import Any
 
 from .config import MemoryConfig
 from .index.base import VectorIndex
+from .index.metadata_filters import category_filter_key, subject_scope_filter_key
 from .index.rrf import fuse_with_rrf
 from .llm.base import LLMClient, LLMRequest, ResponseFormat, TaskType
 from .namespace import Namespace
@@ -39,6 +40,36 @@ def parse_ndjson(text: Any) -> list[dict[str, Any]]:
         if isinstance(obj, dict):
             events.append(obj)
     return events
+
+
+def _filter_values(values: Any) -> list[str]:
+    if not isinstance(values, (list, tuple)):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
+def _flag_or_clause(keys: Any) -> dict[str, Any]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for key in keys:
+        text = str(key or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        unique.append(text)
+    if not unique:
+        return {}
+    if len(unique) == 1:
+        return {unique[0]: True}
+    return {"$or": [{key: True} for key in unique]}
 
 
 class ReadPipeline:
@@ -163,8 +194,7 @@ class ReadPipeline:
                     query_text=query, keywords=keywords, where=where, n_results=pool, exclude_source_ids=excluded
                 )
                 search_cache[cache_key] = fuse_with_rrf(semantic_hits, keyword_hits)
-            fused = search_cache[cache_key]
-            selected = [h for h in fused if self._match_filters(h, stage)]
+            selected = search_cache[cache_key]
             if len(selected) >= self.config.relaxation_stop_candidate_count:
                 break
         selected = selected[: self.config.retrieval_limit]
@@ -194,14 +224,24 @@ class ReadPipeline:
     def _stage_index_where(stage: dict[str, Any]) -> dict[str, Any]:
         """把可安全前置的 metadata 过滤下推到 VectorIndex。
 
-        categories/subject_scopes 是空格拼接标签上的 OR 匹配,仍由 _match_filters 做精确校验和逐级放宽。
+        不同维度之间是 AND;同一维度多值是 OR。VectorIndex 必须在相似度/BM25 计算前执行 where,
+        读侧不再做后置精筛,避免把后端契约做成灰色地带。
         """
         where: dict[str, Any] = {}
+        clauses: list[dict[str, Any]] = []
         source_layers = [str(x) for x in (stage.get("source_layers") or []) if str(x).strip()]
         if source_layers:
             where["entry_type"] = {"$in": source_layers}
         if stage.get("importance_min") is not None:
             where["memory_importance"] = {"$gte": float(stage["importance_min"])}
+        category_clause = _flag_or_clause(category_filter_key(x) for x in _filter_values(stage.get("categories")))
+        if category_clause:
+            clauses.append(category_clause)
+        scope_clause = _flag_or_clause(subject_scope_filter_key(x) for x in _filter_values(stage.get("subject_scopes")))
+        if scope_clause:
+            clauses.append(scope_clause)
+        if clauses:
+            where["$and"] = clauses
         return where
 
     @staticmethod
@@ -226,26 +266,6 @@ class ReadPipeline:
             full = {**full, "source_layers": []}
             stages.append(dict(full))
         return stages
-
-    @staticmethod
-    def _match_filters(hit: dict[str, Any], stage: dict[str, Any]) -> bool:
-        meta = hit.get("metadata") or {}
-        if stage.get("source_layers") and str(meta.get("entry_type", "")) not in stage["source_layers"]:
-            return False
-        if stage.get("importance_min") is not None and float(meta.get("memory_importance") or 0.0) < float(
-            stage["importance_min"]
-        ):
-            return False
-        for key, meta_key in (
-            ("subject_scopes", "memory_subject_scopes_text"),
-            ("categories", "memory_categories_text"),
-        ):
-            wanted = stage.get(key)
-            if wanted:
-                have = set(str(meta.get(meta_key, "")).split())
-                if not (set(wanted) & have):  # OR 匹配:有交集才过
-                    return False
-        return True
 
     # --- 片段构建(回关系库取原文 + raw 上下文扩窗) ---
 

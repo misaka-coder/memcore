@@ -114,6 +114,17 @@ class MemoryStore(ABC):
         """修复扫描:列出 index_status=pending 的记录,供补做向量 upsert。"""
         raise NotImplementedError
 
+    @abstractmethod
+    def list_index_records(
+        self, *, namespace: Namespace, limit: int | None = None, with_conversation: bool = False
+    ) -> list[dict[str, Any]]:
+        """列出可补建/热加载向量索引的三层记录。
+
+        默认按硬隔离边界(tenant/user/domain)列出全部会话;with_conversation=True 时只列当前会话。
+        limit 是全局安全上限,不是分页 cursor;批量重建需要另行设计 cursor。
+        """
+        raise NotImplementedError
+
     # --- 遗忘 / 合规 ---
     @abstractmethod
     def delete_namespace(self, *, namespace: Namespace) -> list[str]:

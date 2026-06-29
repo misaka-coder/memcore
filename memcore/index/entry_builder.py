@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..text_utils import join_tags
+from .metadata_filters import metadata_filter_flags
 
 
 def _safe_importance(value: Any) -> float:
@@ -44,6 +45,7 @@ def _metadata_tags(record: dict[str, Any]) -> dict[str, Any]:
             meta.get("importance") if "importance" in meta else record.get("importance")
         ),
         "semantic_tags_text": join_tags(record.get("semantic_tags")),
+        **metadata_filter_flags(meta),
     }
 
 

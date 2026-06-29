@@ -487,6 +487,37 @@ class SQLiteMemoryStore(MemoryStore):
                 out.extend(self._row_to_record(r, table) for r in rows)
         return out
 
+    def list_index_records(
+        self, *, namespace: Namespace, limit: int | None = None, with_conversation: bool = False
+    ) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        max_rows = None if limit is None else max(0, int(limit))
+        if max_rows == 0:
+            return []
+        scope_clause, params = self._scope_clause(namespace, with_conversation=with_conversation)
+        tables = (
+            ("messages", "ORDER BY timestamp ASC, conversation_id, seq_no"),
+            ("summaries", "ORDER BY timestamp ASC, conversation_id, summary_id"),
+            ("semantic_summaries", "ORDER BY timestamp ASC, conversation_id, semantic_id"),
+        )
+        with self._lock:
+            for table, order_by in tables:
+                if max_rows is not None:
+                    remaining = max_rows - len(out)
+                    if remaining <= 0:
+                        break
+                    rows = self._conn.execute(
+                        f"SELECT * FROM {table} WHERE {scope_clause} {order_by} LIMIT ?",
+                        [*params, remaining],
+                    ).fetchall()
+                else:
+                    rows = self._conn.execute(
+                        f"SELECT * FROM {table} WHERE {scope_clause} {order_by}",
+                        params,
+                    ).fetchall()
+                out.extend(self._row_to_record(r, table) for r in rows)
+        return out
+
     # --- 遗忘 / 合规 ---
 
     def delete_namespace(self, *, namespace: Namespace) -> list[str]:

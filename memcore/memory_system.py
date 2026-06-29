@@ -20,7 +20,7 @@ from .config import MemoryConfig
 from .embedding.base import EmbeddingProvider
 from .errors import ConfigError
 from .index.base import VectorIndex
-from .index.entry_builder import build_raw_entry
+from .index.entry_builder import build_raw_entry, build_semantic_entry, build_summary_entry
 from .index.memory_index import InMemoryVectorIndex
 from .llm.base import LLMClient
 from .namespace import Actor, Namespace
@@ -217,25 +217,70 @@ class MemorySystem:
 
     def reindex_pending(self, *, limit: int = 100) -> dict[str, int]:
         """outbox 自愈:把 index_status=pending 的记录补做向量 upsert。可定期/启动时调用。"""
-        from .index.entry_builder import build_raw_entry, build_semantic_entry, build_summary_entry
+        pending = self.store.list_pending_index(limit=limit)
+        repaired = failed = 0
+        for rec in pending:
+            try:
+                self._reindex_record(rec)
+                repaired += 1
+            except Exception:
+                failed += 1
+        return {"scanned": len(pending), "repaired": repaired, "failed": failed}
 
+    def reindex_all(
+        self,
+        *,
+        namespace: Namespace | None = None,
+        limit: int | None = None,
+        current_conversation_only: bool = False,
+    ) -> dict[str, int]:
+        """从 SQLite 真相源补建/热加载三层向量索引。
+
+        默认按硬隔离边界(tenant/user/domain)upsert 全部会话,这样换会话后的长期记忆仍可被 retrieve 搜到。
+        current_conversation_only=True 时只热当前 conversation。limit 是一次性安全上限,不是分页 cursor。
+        该方法不会清空 index 里的旧条目;已有污染/陈旧向量库应由接入方先创建空 index 或使用后端管理工具清理。
+        失败的记录会标回 pending,可交给 reindex_pending 重试。
+        """
+        target = namespace or self.namespace
+        records = self.store.list_index_records(
+            namespace=target,
+            limit=limit,
+            with_conversation=current_conversation_only,
+        )
+        reindexed = failed = 0
+        for rec in records:
+            try:
+                self._reindex_record(rec)
+                reindexed += 1
+            except Exception:
+                source_id = self._record_index_id(rec)
+                if source_id:
+                    self.store.set_index_status(source_id, "pending")
+                failed += 1
+        return {"scanned": len(records), "reindexed": reindexed, "failed": failed}
+
+    @staticmethod
+    def _record_index_id(record: dict[str, Any]) -> str:
+        entry_type = str(record.get("entry_type") or "")
+        if entry_type == "summary":
+            return str(record.get("summary_id") or "").strip()
+        if entry_type == "semantic_summary":
+            return str(record.get("semantic_id") or "").strip()
+        return str(record.get("source_id") or "").strip()
+
+    @staticmethod
+    def _build_index_entry(record: dict[str, Any]) -> dict[str, Any]:
         builders = {
             "raw": build_raw_entry,
             "summary": build_summary_entry,
             "semantic_summary": build_semantic_entry,
         }
-        pending = self.store.list_pending_index(limit=limit)
-        repaired = failed = 0
-        for rec in pending:
-            builder = builders.get(str(rec.get("entry_type")), build_raw_entry)
-            entry = builder(rec)
-            try:
-                self.index.upsert([entry])
-                self.store.set_index_status(entry["source_id"], "indexed")
-                repaired += 1
-            except Exception:
-                failed += 1
-        return {"scanned": len(pending), "repaired": repaired, "failed": failed}
+        return builders.get(str(record.get("entry_type")), build_raw_entry)(record)
+
+    def _reindex_record(self, record: dict[str, Any]) -> None:
+        entry = self._build_index_entry(record)
+        self.index.upsert([entry])
+        self.store.set_index_status(entry["source_id"], "indexed")
 
     def update_turn_metadata(self, source_id: str, memory_metadata: dict[str, Any] | None) -> dict[str, Any]:
         """回写 raw turn 的 memory_metadata,并重建 raw 向量索引。

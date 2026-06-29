@@ -45,6 +45,37 @@ class WhereTranslation(unittest.TestCase):
         out = _to_chroma_where({"user_id": "u1", "source_id": {"$nin": ["m1", "m2"]}})
         self.assertEqual(out, {"$and": [{"user_id": "u1"}, {"source_id": {"$nin": ["m1", "m2"]}}]})
 
+    def test_or_clause_is_preserved(self) -> None:
+        out = _to_chroma_where({"$or": [{"memory_category__preference": True}, {"memory_category__plan_goal": True}]})
+        self.assertEqual(
+            out,
+            {"$or": [{"memory_category__preference": True}, {"memory_category__plan_goal": True}]},
+        )
+
+    def test_empty_or_is_not_silently_dropped(self) -> None:
+        self.assertEqual(_to_chroma_where({"$or": []}), {"__memcore_never_match__": True})
+
+    def test_mixed_scalar_and_logic_becomes_top_level_and(self) -> None:
+        out = _to_chroma_where(
+            {
+                "user_id": "u1",
+                "$and": [
+                    {"$or": [{"memory_category__preference": True}, {"memory_category__plan_goal": True}]},
+                    {"memory_scope__user": True},
+                ],
+            }
+        )
+        self.assertEqual(
+            out,
+            {
+                "$and": [
+                    {"user_id": "u1"},
+                    {"$or": [{"memory_category__preference": True}, {"memory_category__plan_goal": True}]},
+                    {"memory_scope__user": True},
+                ]
+            },
+        )
+
 
 @unittest.skipUnless(_HAS_CHROMA, "chromadb not installed (pip install memcore[chroma])")
 class ChromaIntegration(unittest.TestCase):
