@@ -10,6 +10,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from memcore import (
+    Actor,
     HashedEmbeddingProvider,
     InMemoryVectorIndex,
     MemoryConfig,
@@ -337,6 +338,27 @@ class SummaryCycleViaFacade(unittest.TestCase):
         self.assertEqual(len(summary_requests), 1)
         self.assertIn("2026-04-10 周五", summary_requests[0].user_prompt)
         self.assertIn("上周二", summary_requests[0].user_prompt)
+
+    def test_summary_prompt_keeps_group_actor_attribution(self) -> None:
+        cfg = MemoryConfig(raw_trigger_count=2, summary_batch_size=1, episodic_compact_trigger_count=99)
+        llm = CapturingLLM()
+        mem = MemorySystem(
+            llm=llm,
+            namespace=Namespace(user_id="group-1", conversation_id="c1"),
+            timezone="Asia/Shanghai",
+            config=cfg,
+            embedding=HashedEmbeddingProvider(),
+        )
+        mem.record_user_turn(
+            "我下周三要复盘基金组合", actor=Actor(stable_id="qq-1", display_name="张三"), timestamp=1000
+        )
+        mem.record_user_turn("我周五看风险报告", actor=Actor(stable_id="qq-2", display_name="李四"), timestamp=1001)
+
+        mem.compact_due_sync()
+
+        summary_requests = [req for req in llm.requests if req.task_type == TaskType.SUMMARY]
+        self.assertEqual(len(summary_requests), 1)
+        self.assertIn("user(张三): 我下周三要复盘基金组合", summary_requests[0].user_prompt)
 
 
 class SemanticAndReinforcement(unittest.TestCase):

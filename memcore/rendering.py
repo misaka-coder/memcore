@@ -6,6 +6,8 @@ period_start_ts/period_end_ts/timestamp 取(跨 store 的 seq 解析属于 store
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from typing import Any
 
 from .text_utils import normalize_text
@@ -130,6 +132,34 @@ def render_visible_raw(messages: list[dict[str, Any]], *, tz: str) -> str:
     return _render_grouped_raw_messages(messages, tz=tz, title="【近期原始对话(未摘要)】")
 
 
+_SPEAKER_LABEL_MAX_CHARS = 40
+_SPEAKER_STRUCTURAL_CHARS = re.compile(r"[:：\[\]\(\)（）{}<>]")
+_WHITESPACE = re.compile(r"\s+")
+
+
+def _sanitize_speaker_part(value: Any) -> str:
+    text = normalize_text(value)
+    if not text:
+        return ""
+    text = "".join(" " if unicodedata.category(ch).startswith("C") else ch for ch in text)
+    text = _SPEAKER_STRUCTURAL_CHARS.sub(" ", text)
+    text = _WHITESPACE.sub(" ", text).strip()
+    if len(text) > _SPEAKER_LABEL_MAX_CHARS:
+        text = text[:_SPEAKER_LABEL_MAX_CHARS].rstrip() + "..."
+    return text
+
+
+def render_speaker_label(row: dict[str, Any]) -> str:
+    """渲染 role + actor 显示名,让群聊/多方场景不丢"谁说的"。"""
+    role = _sanitize_speaker_part(row.get("role"))
+    actor_name = _sanitize_speaker_part(row.get("actor_display_name"))
+    actor_id = _sanitize_speaker_part(row.get("actor_id"))
+    actor = actor_name or actor_id
+    if role and actor:
+        return f"{role}({actor})"
+    return role or actor
+
+
 def _render_grouped_raw_messages(messages: list[dict[str, Any]], *, tz: str, title: str) -> str:
     if not messages:
         return ""
@@ -145,7 +175,7 @@ def _render_grouped_raw_messages(messages: list[dict[str, Any]], *, tz: str, tit
         stamp = timestamp_to_datetime_weekday_label(ts, tz).rsplit(" ", 1)[-1] if ts is not None else ""  # HH:MM
         period = TIME_PERIOD_LABELS.get(str(row.get("time_of_day") or ""), "")
         head = " | ".join(p for p in (stamp, period) if p)
-        speaker = str(row.get("role") or "")
+        speaker = render_speaker_label(row)
         lines.append(f"[{head}] {speaker}: {normalize_text(row.get('content'))}".rstrip())
     return "\n".join(lines)
 
@@ -174,7 +204,7 @@ def render_raw_snippet(context_rows: list[dict[str, Any]], *, tz: str) -> str:
         ts = row.get("timestamp")
         stamp = timestamp_to_datetime_weekday_label(ts, tz) if ts is not None else ""
         period = TIME_PERIOD_LABELS.get(str(row.get("time_of_day") or ""), "")
-        speaker = str(row.get("role") or "")
+        speaker = render_speaker_label(row)
         head = " | ".join(p for p in (stamp, period) if p)
         lines.append(f"[{head}] {speaker}: {normalize_text(row.get('content'))}".rstrip())
     return "\n".join(lines)

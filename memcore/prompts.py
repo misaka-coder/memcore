@@ -23,6 +23,21 @@ MEMORY_TIME_ANCHOR_RULES = (
     "日期旁的星期几(如 2026-04-10 周五)也是时间锚点的一部分,解析“上周二/下周三”等说法时必须使用它。"
 )
 
+MULTI_ACTOR_MEMORY_RULES = (
+    "[多方/群聊归因规则]\n"
+    "原始对话若出现 user(昵称) / assistant(昵称) / other(昵称) 这类发言人标签,"
+    "整理事实时必须保留事实主体:谁表达了偏好、谁提出计划、谁承诺行动、谁情绪变化。"
+    "不要把不同发言人的事实笼统写成“用户说/大家说”。"
+)
+
+MEMORY_METADATA_RULES = (
+    "[memory_metadata 标注规则]\n"
+    "memory_metadata 是后续检索前置过滤的索引信号。keywords 写可复用短词,不要写整句;"
+    "subject_scopes 标事实主体(user/assistant/other),categories 只从固定枚举选;"
+    "importance 按长期价值评分,confidence 按你对标注正确性的把握评分。"
+    "没有明确长期价值时宁可低分或空数组,不要为了填字段而编造标签。"
+)
+
 # 插槽文本上限:领域插槽只能补充,不能塞进一整套替代提示词。
 MAX_SLOT_CHARS = 4000
 
@@ -66,7 +81,7 @@ def _mood_instruction() -> str:
 
 
 def _weld(base_system: str, *, persona_text: str = "", extra_guidance: str = "", enable_flavor: bool = False) -> str:
-    """焊死骨架装配:base(契约)永远在前,时间锚点永远在后;插槽/温度只能填在中间(只增不改)。
+    """焊死骨架装配:base(契约)永远在前,质量规则永远追加;插槽/温度只能填在中间(只增不改)。
 
     enable_flavor 动态决定是否注入 mood 指令——温度关闭时三层提示词一个字都不提 mood。
     """
@@ -85,6 +100,8 @@ def _weld(base_system: str, *, persona_text: str = "", extra_guidance: str = "",
     if extra:
         parts.append(f"[领域补充指引(只补充,不得改写以上任何规则与字段契约)]\n{extra}")
     parts.append(MEMORY_TIME_ANCHOR_RULES)
+    parts.append(MULTI_ACTOR_MEMORY_RULES)
+    parts.append(MEMORY_METADATA_RULES)
     return "\n\n".join(parts)
 
 

@@ -37,12 +37,17 @@
   让“上周二/下周三”这类相对表达在压缩与检索回填时有明确参照。
 - **内存索引加速 ✅**:默认不强制向量数据库;`InMemoryVectorIndex` 会先按 namespace/time/exclude 与可前置 metadata 过滤候选,
   再计算分数。安装 `memcore[speed]` 后向量以 float32 存储,语义 cosine 自动走可选 NumPy 批量计算。
+- **模型协作提示词 ✅**:标准输出契约与压缩链提示词已补充时间锚点、工具选择、群聊归因、metadata 标注规则。
+  接入方提示词指南见 `docs/model_prompt_playbook_v1.md`。
 - 可配置:`visible_memory_scope`(conversation/user)、`enable_verifier`、`enable_flavor`、`enable_importance_decay`、`raw_compaction_policy`。
 - 压缩重试:`llm_max_retries` 会传给注入的 `LLMClient`;最终仍失败时压缩层不标记已完成,下一轮继续重试。
 - **Chat Output Adapter 设计草案**:标准 JSON 输出契约、`speech` 流式解析、普通文本尽力分段、raw metadata 回写流程见 `docs/chat_output_adapter_v1.md`;工具调用阶段不套该 JSON,只在最终回复阶段输出 memcore JSON。
 
 核心 + 评测台 + 时间线 + embedding 三路 + outbox 自愈 + 打包(专有授权)+ importance 衰减 均已完成。
 可选后续(按需):陪伴 flavor、大语料 BM25 可扩展后端 —— 见设计文档 §15。
+
+设计亮点说明见 `docs/design_highlights_v1.md`;接入聊天模型时建议先读 `docs/model_prompt_playbook_v1.md`。
+如果让 AI 编码助手接入本库,请先把根目录 `AGENTS.md` 交给它读。
 
 ## 端到端用法
 

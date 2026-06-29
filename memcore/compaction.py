@@ -22,6 +22,7 @@ from .index.entry_builder import build_semantic_entry, build_summary_entry
 from .llm.base import LLMClient, LLMRequest, ResponseFormat, TaskType
 from .namespace import Namespace
 from .prompts import PromptOverrides, build_reinforcement_prompts, build_semantic_prompts, build_summary_prompts
+from .rendering import render_speaker_label
 from .schema import coerce_memory_metadata
 from .store.base import MemoryStore
 from .text_utils import normalize_text
@@ -355,7 +356,7 @@ class Compaction:
             period = TIME_PERIOD_LABELS.get(str(m.get("time_of_day") or ""), "")
             head = " | ".join(p for p in (stamp, period) if p)
             prefix = f"[{head}] " if head else ""
-            lines.append(f"{prefix}{m.get('role', '')}: {normalize_text(m.get('content'))}")
+            lines.append(f"{prefix}{render_speaker_label(m)}: {normalize_text(m.get('content'))}")
         return "\n".join(lines)
 
     def _render_episodes(self, batch: list[dict[str, Any]]) -> str:

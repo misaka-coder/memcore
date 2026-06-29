@@ -79,11 +79,15 @@ adapter 只做保守解析:
 字段固定为 speech, memory_metadata。
 speech 是给用户看的最终回复,必须是字符串。
 memory_metadata 用于本轮用户原始消息的记忆检索标注,字段为 keywords, subject_scopes, categories, mood_tags, importance, confidence。
-keywords 最多 4 个短词;subject_scopes 只能从 user/assistant/other 中选择;categories 必须从当前配置枚举中选择;mood_tags 只在启用情感温度时填写。
+keywords 最多 4 个可复用短词,优先写实体/主题/计划/偏好词,不要写整句。
+subject_scopes 标注本轮原始消息涉及的事实主体,只能从 user/assistant/other 中选择;群聊中不要把别人的事实归到 user。
+categories 必须从当前配置枚举中选择;mood_tags 只在启用情感温度时填写。
 importance/confidence 必须是 0.0 到 1.0 的数字。
 不要把 memory_metadata 当作给用户看的内容。
 工具调用阶段不适用本 JSON 契约;如果需要调用工具,请正常使用宿主项目的工具调用机制。
 只有在所有工具调用完成、准备给用户最终回复时,才按本契约只输出一个合法 JSON 对象。
+如果用户提到“昨天/上周/上周二/最近”等相对时间,请结合 prompt 中的日期与星期锚点理解;需要精确日期范围时优先调用 read_timeline,需要模糊事实时调用 retrieve。
+多方/群聊场景请保留谁说的、谁的偏好、谁的计划。
 ```
 
 如果启用分段回复,追加:

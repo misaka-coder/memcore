@@ -27,10 +27,14 @@ def build_chat_output_contract_prompt(
         "工具调用阶段不适用本 JSON 契约;需要调用工具时请正常使用宿主项目的工具调用机制。",
         "只有在所有工具调用完成、准备给用户最终回复时,才按本契约只输出一个合法 JSON 对象。",
         "memory_metadata 字段固定为 keywords, subject_scopes, categories, mood_tags, importance, confidence。",
-        "keywords 最多 4 个短词;subject_scopes 只能从 user/assistant/other 中选择。",
+        "keywords 最多 4 个可复用短词,优先写实体/主题/计划/偏好词,不要写整句。",
+        "subject_scopes 标注本轮原始消息涉及的事实主体,只能从 user/assistant/other 中选择;群聊中不要把别人的事实归到 user。",
         f"categories 只能从当前枚举选择:{cats}。",
+        "importance 表示这条原始消息未来是否值得检索,confidence 表示你对 metadata 标注的把握;都必须是 0.0 到 1.0 的数字。",
+        "如果用户提到“昨天/上周/上周二/最近”等相对时间,请结合 prompt 中的日期与星期锚点理解;需要精确日期范围时优先调用 read_timeline,需要模糊事实时调用 retrieve。",
+        "多方/群聊场景请保留谁说的、谁的偏好、谁的计划。若宿主传入 actor/昵称信息,不要把不同发言人的事实混成同一个人。",
         mood_line,
-        "importance/confidence 必须是 0.0 到 1.0 的数字。",
+        "不确定 metadata 时可以输出空数组和较低 confidence,不要为了填字段编造标签。",
     ]
     if enable_sentence_segments:
         lines.append(
