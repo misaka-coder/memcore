@@ -122,6 +122,10 @@ class ChatOutputPrompt(unittest.TestCase):
         self.assertIn("上周二", prompt)
         self.assertIn("群聊", prompt)
         self.assertIn("confidence", prompt)
+        self.assertIn("未来正常聊天", prompt)
+        self.assertIn("不要机械补太宽泛的上位词", prompt)
+        self.assertIn("饮料/偏好", prompt)
+        self.assertIn("不要写整句或短句", prompt)
         self.assertNotIn("speech_segments", prompt)
 
 

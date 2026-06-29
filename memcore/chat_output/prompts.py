@@ -27,7 +27,7 @@ def build_chat_output_contract_prompt(
         "工具调用阶段不适用本 JSON 契约;需要调用工具时请正常使用宿主项目的工具调用机制。",
         "只有在所有工具调用完成、准备给用户最终回复时,才按本契约只输出一个合法 JSON 对象。",
         "memory_metadata 字段固定为 keywords, subject_scopes, categories, mood_tags, importance, confidence。",
-        "keywords 最多 4 个可复用短词,优先写实体/主题/计划/偏好词,不要写整句。",
+        "keywords 最多 4 个可复用检索标签,按用户未来正常聊天里可能命中的问法选词;例如可乐可补饮料/偏好,但不要机械补太宽泛的上位词。不要写整句或短句。",
         "subject_scopes 标注本轮原始消息涉及的事实主体,只能从 user/assistant/other 中选择;群聊中不要把别人的事实归到 user。",
         f"categories 只能从当前枚举选择:{cats}。",
         "importance 表示这条原始消息未来是否值得检索,confidence 表示你对 metadata 标注的把握;都必须是 0.0 到 1.0 的数字。",

@@ -1,0 +1,257 @@
+"""Minimal memcore chat integration demo.
+
+Run from the repository root:
+
+    python examples/minimal_chat_integration.py
+
+This file is intentionally small and copyable. Replace `DemoMemoryLLM`,
+`fake_chat_model`, and `HashedEmbeddingProvider` with your real model adapters in
+production. Hashed embeddings are demo/test-only; they do not provide real
+semantic recall.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from datetime import datetime
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from typing import Any
+from zoneinfo import ZoneInfo
+
+# Let `python examples/minimal_chat_integration.py` import the local source tree.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from memcore import (  # noqa: E402
+    HashedEmbeddingProvider,
+    InMemoryVectorIndex,
+    LLMClient,
+    LLMRequest,
+    LLMResult,
+    MemoryConfig,
+    MemorySystem,
+    Namespace,
+    SQLiteMemoryStore,
+    TaskType,
+    build_chat_output_contract_prompt,
+    parse_chat_output,
+)
+
+
+def ts(year: int, month: int, day: int, hour: int, minute: int = 0, tz: str = "Asia/Shanghai") -> int:
+    return int(datetime(year, month, day, hour, minute, tzinfo=ZoneInfo(tz)).timestamp())
+
+
+class DemoMemoryLLM(LLMClient):
+    """Deterministic LLM adapter for memcore's internal structured calls."""
+
+    def call(self, request: LLMRequest) -> LLMResult:
+        if request.task_type == TaskType.SUMMARY:
+            data = {
+                "diary_summary": "用户在询问记忆,并提到了饮料偏好。",
+                "period_label": "一次记忆查询",
+                "event_type": "memory_query",
+                "importance": 0.55,
+                "key_events": ["用户询问自己之前喜欢喝什么"],
+                "core_facts": ["用户关心自己过往表达过的偏好"],
+                "memory_metadata": {
+                    "keywords": ["可乐", "饮料", "偏好"],
+                    "subject_scopes": ["user"],
+                    "categories": ["memory_query", "preference"],
+                    "importance": 0.55,
+                    "confidence": 0.85,
+                },
+            }
+            return LLMResult(ok=True, data=data, attempts=1)
+
+        if request.task_type == TaskType.SEMANTIC:
+            data = {
+                "semantic_summary": "用户会回头询问自己表达过的偏好。",
+                "importance": 0.65,
+                "stable_facts": ["用户重视历史偏好的连续记忆"],
+                "recurring_topics": ["偏好", "记忆查询"],
+                "important_people": [],
+                "open_loops": [],
+                "memory_metadata": {
+                    "keywords": ["偏好", "饮料", "记忆查询"],
+                    "subject_scopes": ["user"],
+                    "categories": ["preference", "memory_query"],
+                    "importance": 0.65,
+                    "confidence": 0.8,
+                },
+            }
+            return LLMResult(ok=True, data=data, attempts=1)
+
+        if request.task_type == TaskType.REINFORCEMENT:
+            return LLMResult(ok=True, data=request.fallback or {}, attempts=1)
+
+        if request.task_type == TaskType.VERIFIER:
+            data = [
+                {"type": "decision", "match_result": "match"},
+                {"type": "selection", "selected_indexes": [1]},
+            ]
+            return LLMResult(ok=True, data=data, attempts=1)
+
+        return LLMResult(ok=False, data=request.fallback or {}, error="unsupported_task", attempts=1)
+
+
+def fake_chat_model(
+    *,
+    user_text: str,
+    visible_memory: str,
+    retrieved_memory: list[str],
+    timeline_text: str,
+    output_contract: str,
+) -> str:
+    """Stand in for the host application's final chat model call.
+
+    A real host would send `visible_memory`, tool results, and `output_contract`
+    to the chat model. If the model needs more memory, it should call the
+    host-exposed wrappers around `retrieve_for_turn` and `read_timeline` first.
+    """
+
+    _ = (user_text, visible_memory, timeline_text, output_contract)
+    knows_coke = any("可乐" in item for item in retrieved_memory)
+    speech = "你之前说过自己喜欢喝无糖可乐。" if knows_coke else "我这边没有找到你之前提过的饮料偏好。"
+    return json.dumps(
+        {
+            "speech": speech,
+            "memory_metadata": {
+                "keywords": ["可乐", "饮料", "偏好"],
+                "subject_scopes": ["user"],
+                "categories": ["memory_query", "preference"],
+                "mood_tags": [],
+                "importance": 0.55,
+                "confidence": 0.9,
+            },
+        },
+        ensure_ascii=False,
+    )
+
+
+def main() -> None:
+    with TemporaryDirectory() as tmp:
+        embedding = HashedEmbeddingProvider()
+        store = SQLiteMemoryStore(str(Path(tmp) / "memcore.sqlite3"))
+        index = InMemoryVectorIndex(embedding=embedding)
+        config = MemoryConfig(
+            raw_trigger_count=4,
+            summary_batch_size=2,
+            episodic_compact_trigger_count=99,
+            enable_verifier=True,
+            enable_flavor=False,
+        )
+        llm = DemoMemoryLLM()
+
+        old_mem = MemorySystem(
+            llm=llm,
+            namespace=Namespace(user_id="demo-user", conversation_id="old-chat"),
+            timezone="Asia/Shanghai",
+            store=store,
+            index=index,
+            embedding=embedding,
+            config=config,
+        )
+        mem = MemorySystem(
+            llm=llm,
+            namespace=Namespace(user_id="demo-user", conversation_id="live-chat"),
+            timezone="Asia/Shanghai",
+            store=store,
+            index=index,
+            embedding=embedding,
+            config=config,
+        )
+
+        try:
+            old_mem.record_user_turn(
+                "我平常喜欢喝无糖可乐,别太甜。",
+                timestamp=ts(2026, 4, 10, 9, 0),
+                memory_metadata={
+                    "keywords": ["可乐", "饮料", "无糖"],
+                    "subject_scopes": ["user"],
+                    "categories": ["preference"],
+                    "importance": 0.8,
+                    "confidence": 0.95,
+                },
+            )
+            old_mem.record_assistant_turn("记住了,你偏好无糖可乐。", timestamp=ts(2026, 4, 10, 9, 1))
+
+            mem.record_user_turn("上午提醒我看一下持仓风险。", timestamp=ts(2026, 4, 10, 10, 0))
+            mem.record_assistant_turn("好,我会按上午来理解这个提醒。", timestamp=ts(2026, 4, 10, 10, 1))
+
+            user_text = "我之前说过自己喜欢喝什么吗?"
+            cur = mem.record_user_turn(user_text, timestamp=ts(2026, 4, 10, 22, 0))
+
+            context = mem.build_prompt_context(current=cur)
+            visible_memory = mem.render_prompt_context(context)
+
+            def retrieve_memory(query: str, **filters: Any) -> list[str]:
+                return mem.retrieve_for_turn(current=cur, query=query, **filters)
+
+            def read_timeline(date_from: str, **filters: Any) -> dict[str, Any]:
+                return mem.read_timeline(date_from=date_from, **filters)
+
+            retrieved = retrieve_memory(
+                "用户喜欢喝什么",
+                keywords=["可乐", "饮料"],
+                categories=["preference"],
+                subject_scopes=["user"],
+                importance_min=0.4,
+            )
+            timeline = read_timeline("2026-04-10", cross_conversation=True)
+            output_contract = build_chat_output_contract_prompt(
+                categories=config.categories,
+                enable_flavor=config.enable_flavor,
+                enable_sentence_segments=True,
+            )
+
+            raw_output = fake_chat_model(
+                user_text=user_text,
+                visible_memory=visible_memory,
+                retrieved_memory=retrieved,
+                timeline_text=str(timeline.get("text") or ""),
+                output_contract=output_contract,
+            )
+            parsed = parse_chat_output(
+                raw_output,
+                mode="memcore_json",
+                categories=config.categories,
+                enable_flavor=config.enable_flavor,
+            )
+            if not parsed.ok:
+                print({"status": parsed.status, "reason": parsed.reason})
+                return
+
+            metadata_update = mem.update_turn_metadata(cur["source_id"], parsed.memory_metadata)
+            if not metadata_update["ok"]:
+                print({"status": metadata_update["status"], "reason": metadata_update["reason"]})
+                return
+
+            mem.record_assistant_turn(parsed.speech, in_reply_to=cur, timestamp=ts(2026, 4, 10, 22, 1))
+            compact_stats = mem.compact_due_background().result(timeout=10)
+
+            print("visible memory prompt:")
+            print(visible_memory)
+            print("\nretrieve_for_turn result:")
+            print("\n---\n".join(retrieved) or "(empty)")
+            print("\nread_timeline text:")
+            print(timeline.get("text") or "(empty)")
+            print("\nassistant speech:")
+            print(parsed.speech)
+            print("\nspeech segments:")
+            print(parsed.segments)
+            print("\nmetadata update:")
+            print(metadata_update)
+            print("\nbackground compaction:")
+            print(compact_stats)
+        finally:
+            old_mem.close()
+            mem.close()
+            store.close()
+
+
+if __name__ == "__main__":
+    main()

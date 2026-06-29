@@ -79,7 +79,7 @@ adapter 只做保守解析:
 字段固定为 speech, memory_metadata。
 speech 是给用户看的最终回复,必须是字符串。
 memory_metadata 用于本轮用户原始消息的记忆检索标注,字段为 keywords, subject_scopes, categories, mood_tags, importance, confidence。
-keywords 最多 4 个可复用短词,优先写实体/主题/计划/偏好词,不要写整句。
+keywords 最多 4 个可复用检索标签,按用户未来正常聊天里可能命中的问法选词;例如可乐可补饮料/偏好,但不要机械补太宽泛的上位词。不要写整句或短句。
 subject_scopes 标注本轮原始消息涉及的事实主体,只能从 user/assistant/other 中选择;群聊中不要把别人的事实归到 user。
 categories 必须从当前配置枚举中选择;mood_tags 只在启用情感温度时填写。
 importance/confidence 必须是 0.0 到 1.0 的数字。

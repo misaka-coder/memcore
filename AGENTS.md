@@ -8,12 +8,13 @@ Your goal is not to rewrite memcore. Your goal is to wire the host app to memcor
 
 Read these files in order before coding:
 
-1. `README.md` — current public API, lifecycle, boundaries.
-2. `docs/model_prompt_playbook_v1.md` — how to prompt the chat model so memory works well.
-3. `docs/design_highlights_v1.md` — why the system is designed this way.
-4. `docs/chat_output_adapter_v1.md` — optional final-output JSON contract and streaming speech parsing.
-5. `docs/metadata_prefilter_design_v1.md` — metadata prefilter semantics for retrieval.
-6. `docs/raw_token_compaction_policy_v1.md` — optional token-based raw compaction.
+1. `examples/minimal_chat_integration.py` — runnable minimal chat-loop wiring.
+2. `README.md` — current public API, lifecycle, boundaries.
+3. `docs/model_prompt_playbook_v1.md` — how to prompt the chat model so memory works well.
+4. `docs/design_highlights_v1.md` — why the system is designed this way.
+5. `docs/chat_output_adapter_v1.md` — optional final-output JSON contract and streaming speech parsing.
+6. `docs/metadata_prefilter_design_v1.md` — metadata prefilter semantics for retrieval.
+7. `docs/raw_token_compaction_policy_v1.md` — optional token-based raw compaction.
 
 If you are changing memcore itself, inspect nearby tests first and run the validation commands at the end of this file.
 
@@ -164,11 +165,20 @@ When building the final chat model prompt, include:
 - Group-chat attribution instruction if `Actor` is used.
 - Optional `build_chat_output_contract_prompt(...)` if using memcore JSON.
 
+Cache-friendly ordering:
+
+1. Put stable system/developer content first: persona, safety policy, tool rules, metadata rules, JSON output contract.
+2. Keep that stable prefix byte-for-byte stable across turns: same order, whitespace, field names, and tool schema.
+3. Put dynamic content after the stable prefix: current time, rendered visible memory, current user message, and tool results.
+4. For repeated long documents, put the unchanged document before the variable question so provider prefix caches can reuse it.
+5. Do not inject request ids, timestamps, rendered memory, or retrieved snippets into the stable prefix.
+
 Important model guidance:
 
 - Relative time words must be interpreted from the visible date/weekday anchors.
 - In group chat, preserve who said what. Do not merge different speakers into "the user".
 - `memory_metadata` describes the current raw user message, not the assistant reply.
+- `memory_metadata.keywords` should be reusable tags, not sentences. Choose terms likely to be used in a future natural chat query; add broader/field/intent tags only when they improve recall, such as `可乐 / 饮料 / 偏好`.
 - If unsure about metadata, use empty arrays and lower `confidence`; do not invent tags.
 - Tool calls are not wrapped in memcore JSON. Only the final user-facing reply uses the JSON contract.
 

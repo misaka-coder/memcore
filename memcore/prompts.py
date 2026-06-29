@@ -32,7 +32,10 @@ MULTI_ACTOR_MEMORY_RULES = (
 
 MEMORY_METADATA_RULES = (
     "[memory_metadata 标注规则]\n"
-    "memory_metadata 是后续检索前置过滤的索引信号。keywords 写可复用短词,不要写整句;"
+    "memory_metadata 是后续检索前置过滤的索引信号。keywords 写 0-4 个可复用检索标签,不要写整句或短句;"
+    "优先选择用户未来正常聊天里可能会用来追问的自然短词,如具体实体、别名、主题、计划、偏好、风险等;"
+    "上位词/领域词/意图词只在常见且能提高召回时补充,不要机械泛化成太宽的标签。"
+    "例如“可乐”可补“饮料/偏好”,但具体项目名通常保留项目名、别名和真实议题即可;"
     "subject_scopes 标事实主体(user/assistant/other),categories 只从固定枚举选;"
     "importance 按长期价值评分,confidence 按你对标注正确性的把握评分。"
     "没有明确长期价值时宁可低分或空数组,不要为了填字段而编造标签。"
@@ -110,8 +113,8 @@ SUMMARY_SYSTEM = (
     "字段固定为 diary_summary, period_label, event_type, importance, key_events, core_facts, memory_metadata。\n"
     "diary_summary 是你的日记式回忆,可带一点语气和心情。\n"
     "core_facts 要客观、稳定、适合后续检索;不要把角色设定当成事实写进去。\n"
-    "memory_metadata 只用于检索入库:keywords 0-4 个短词,subject_scopes 从 user/assistant/other 选,"
-    "categories 从固定枚举选。\n"
+    "memory_metadata 只用于检索入库:keywords 0-4 个短标签,按未来正常聊天里可能命中的问法选词,"
+    "不要写成短句,也不要机械补太宽泛的上位词;subject_scopes 从 user/assistant/other 选,categories 从固定枚举选。\n"
     "不要编造对话里没有出现的事实。importance 必须是 0.0 到 1.0 之间的数字,不要写“高/中/低”。\n"
     "key_events 和 core_facts 必须是 JSON 数组。只输出一个合法 JSON 对象,不要解释或代码块。"
 )

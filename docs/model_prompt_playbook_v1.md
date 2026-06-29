@@ -23,6 +23,30 @@ memcore 不替宿主写完整人格 prompt,但建议把下面这些规则拼到�
 memory_metadata 标注的是本轮用户原始消息,不是你的回复。它用于后续检索前置过滤,不要展示给用户。
 ```
 
+## 缓存友好 Prompt 布局
+
+许多模型服务会对重复输入前缀做缓存(例如按完整前缀单元命中)。接入 memcore 时,要让稳定内容形成尽可能长、尽可能不变的前缀,把每轮变化的记忆和用户消息放到后面。
+
+推荐顺序:
+
+```text
+1. system/developer: 固定人格、合规边界、工具使用总规则
+2. system/developer: 固定 memcore 工具说明、metadata 标注规则、JSON 输出契约
+3. system/developer 或 user: 固定领域规则/长期不变的大段资料(如同一份研报/财报原文)
+4. user/developer: 本轮动态时间锚点、render_prompt_context(ctx) 的可见三层记忆
+5. user: 本轮用户输入
+6. tool result: retrieve_for_turn / read_timeline 的工具返回
+7. assistant final: 最终回复;若启用 memcore_json,只在这里输出 JSON
+```
+
+注意:
+
+- 固定前缀要保持字面稳定:顺序、空格、换行、字段名、工具 schema 不要每轮重排。
+- 不要把当前时间、可见三层记忆、检索结果、随机 request id 混进固定 system prompt 前部。
+- `render_prompt_context(ctx)` 每轮都会变,应放在稳定规则之后;它的存在不影响前面的固定规则命中缓存。
+- 长文本问答里,若同一份财报/研报会被连续追问,把原文放在问题之前并保持完全一致;后续问题只追加在原文之后。
+- 需要变更人格、工具契约或领域枚举时,把它当成 prompt 版本升级;版本稳定后不要频繁微调标点。
+
 ## 时间锚点
 
 memcore 会把 raw、summary、semantic、timeline 渲染成带日期和星期的文本,例如:
@@ -66,7 +90,7 @@ read_timeline(date_from, date_to?, time_periods?)
 
 ```json
 {
-  "keywords": ["可乐", "饮料"],
+  "keywords": ["可乐", "饮料", "偏好"],
   "subject_scopes": ["user"],
   "categories": ["preference"],
   "mood_tags": [],
@@ -77,7 +101,7 @@ read_timeline(date_from, date_to?, time_periods?)
 
 标注原则:
 
-- `keywords`: 0-4 个短词,写实体、主题、计划、偏好词,不要写整句。
+- `keywords`: 0-4 个可复用检索标签,按用户未来正常聊天里可能命中的问法选词。优先保留具体实体、别名、真实议题、计划、偏好、风险等自然短词;上位词/领域词/意图词只在常见且能提高召回时补充。例如用户说喜欢可乐,可写 `可乐 / 饮料 / 偏好`;提到英伟达财报风险,可写 `英伟达 / NVDA / 财报 / 风险`,不必机械补很宽的 `股票`。不要写整句或短句,比如不要写“用户喜欢喝可乐”。
 - `subject_scopes`: 事实主体。用户自己的偏好/计划用 `user`;助手自己的设定或承诺用 `assistant`;群聊其他人用 `other`。
 - `categories`: 必须从当前 `MemoryConfig.categories` 枚举里选。金融领域应换成稳定领域枚举,如 `risk_profile / investment_goal / asset_preference / compliance_preference`。
 - `importance`: 未来是否值得检索。闲聊寒暄低,稳定偏好/身份/计划/风险约束高。
@@ -114,4 +138,3 @@ memcore 的硬隔离是 `tenant_id / user_id / domain_id`;`actor` 是同一记�
 6. adapter 解析 `speech`,并把 `memory_metadata` 回写本轮 raw。
 
 不要让工具调用中间步骤输出 memcore JSON,也不要把 `memory_metadata` 当作给用户看的内容。
-
