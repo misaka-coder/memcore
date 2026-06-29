@@ -156,7 +156,10 @@ target_tokens = raw_token_trigger * raw_token_batch_ratio
 len(msgs) - len(batch) >= raw_token_min_remainder_messages
 ```
 
-如果对齐 assistant 后会吃掉全部 raw,则回退到能保留最小尾巴的位置。极端情况下宁可暂不压缩或只压到合法边界,不要制造 raw 空窗。
+如果对齐 assistant 后会吃掉全部 raw,则优先回退到能保留最小尾巴的位置。若没有任何合法尾巴可保留,
+但当前未摘要 raw 已经以 assistant 结尾形成完整对话块,则允许压缩整个块。这样避免"第一轮就是超长 user + assistant"
+在达到 token trigger 后仍永久暴露为可见 raw。`raw_token_min_remainder_messages` 是有可保留尾巴时的下限,不是阻止完整
+assistant 边界落库的硬门槛。
 
 ## 单条超长输入
 
@@ -175,7 +178,8 @@ len(msgs) - len(batch) >= raw_token_min_remainder_messages
 -> compact_due_* 再按 token policy 压缩完整问答边界
 ```
 
-如果 `user + assistant` 两条合起来仍没有合法 remainder,可暂不压缩并返回 `summary_retry_pending` 之外的结构化状态需要另行设计。v1 暂不新增状态,优先保持现有 result shape。
+如果 `user + assistant` 两条合起来已经超过 trigger,且 assistant 回复已经落库,则压缩这两条完整 raw。v1 不新增 result
+状态;压缩成功仍计入 `summaries_created`,摘要通过 `source_ids` 保留完整来源。
 
 ## 与现有实现的接入点
 
@@ -264,7 +268,7 @@ v1 只实现 `TokenCounter` 接口;生产 tokenizer 适配器后续可按需增�
 - cutpoint 向后对齐到 assistant 消息。
 - 用户输入导致超过 target 时,包含下一条 assistant 回复一起压缩。
 - assistant 回复导致超过 target 时,cutpoint 可落在该 assistant 回复。
-- 压缩后至少保留 `raw_token_min_remainder_messages` 条 raw。
+- 有可保留尾巴时,压缩后至少保留 `raw_token_min_remainder_messages` 条 raw。
 - 单条超长 user + assistant 后仍按完整条目压缩,不切内容。
 - 摘要 `source_ids` 等于被压缩的完整 raw source_id 列表。
 - 失败重试仍保持 raw 未标记 summarized,与现有 `test_summary_failure_keeps_raw_for_retry` 一致。

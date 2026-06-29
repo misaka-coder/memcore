@@ -141,24 +141,33 @@ class ReadPipeline:
         importance_min: float | None = None,
         exclude_source_ids: set[str],
     ) -> list[str]:
-        where = self._build_where(namespace, time_hint)
         pool = max(10, self.config.retrieval_limit * 10)
         excluded = sorted(exclude_source_ids)
-        semantic_hits = self.index.semantic_search(
-            query_text=query, where=where, n_results=pool, exclude_source_ids=excluded
-        )
-        keyword_hits = self.index.keyword_search(
-            query_text=query, keywords=keywords, where=where, n_results=pool, exclude_source_ids=excluded
-        )
-        fused = fuse_with_rrf(semantic_hits, keyword_hits)
-
         requested = {
             "source_layers": source_layers or [],
             "subject_scopes": subject_scopes or [],
             "categories": categories or [],
             "importance_min": importance_min,
         }
-        selected = self._apply_precision_relaxation(fused, requested)[: self.config.retrieval_limit]
+        selected: list[dict[str, Any]] = []
+        search_cache: dict[str, list[dict[str, Any]]] = {}
+        for stage in self._build_stages(requested):
+            where = self._build_where(namespace, time_hint)
+            where.update(self._stage_index_where(stage))
+            cache_key = repr((where, excluded))
+            if cache_key not in search_cache:
+                semantic_hits = self.index.semantic_search(
+                    query_text=query, where=where, n_results=pool, exclude_source_ids=excluded
+                )
+                keyword_hits = self.index.keyword_search(
+                    query_text=query, keywords=keywords, where=where, n_results=pool, exclude_source_ids=excluded
+                )
+                search_cache[cache_key] = fuse_with_rrf(semantic_hits, keyword_hits)
+            fused = search_cache[cache_key]
+            selected = [h for h in fused if self._match_filters(h, stage)]
+            if len(selected) >= self.config.relaxation_stop_candidate_count:
+                break
+        selected = selected[: self.config.retrieval_limit]
         snippets = self._build_snippets(selected, exclude_context_source_ids=exclude_source_ids)
         return self._verify(query=query, snippets=snippets)
 
@@ -181,17 +190,19 @@ class ReadPipeline:
 
     # --- 五级精度放宽(软过滤) ---
 
-    def _apply_precision_relaxation(
-        self, hits: list[dict[str, Any]], requested: dict[str, Any]
-    ) -> list[dict[str, Any]]:
-        stages = self._build_stages(requested)
-        stop = self.config.relaxation_stop_candidate_count
-        selected: list[dict[str, Any]] = []
-        for stage in stages:  # strict→最宽逐级放宽,候选够了就停;循环必至少跑一轮
-            selected = [h for h in hits if self._match_filters(h, stage)]
-            if len(selected) >= stop:
-                break
-        return selected
+    @staticmethod
+    def _stage_index_where(stage: dict[str, Any]) -> dict[str, Any]:
+        """把可安全前置的 metadata 过滤下推到 VectorIndex。
+
+        categories/subject_scopes 是空格拼接标签上的 OR 匹配,仍由 _match_filters 做精确校验和逐级放宽。
+        """
+        where: dict[str, Any] = {}
+        source_layers = [str(x) for x in (stage.get("source_layers") or []) if str(x).strip()]
+        if source_layers:
+            where["entry_type"] = {"$in": source_layers}
+        if stage.get("importance_min") is not None:
+            where["memory_importance"] = {"$gte": float(stage["importance_min"])}
+        return where
 
     @staticmethod
     def _build_stages(requested: dict[str, Any]) -> list[dict[str, Any]]:

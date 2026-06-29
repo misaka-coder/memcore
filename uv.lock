@@ -1170,17 +1170,23 @@ dev = [
 huggingface = [
     { name = "sentence-transformers" },
 ]
+speed = [
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
+    { name = "numpy", version = "2.5.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "build", marker = "extra == 'dev'", specifier = ">=1.2" },
     { name = "chromadb", marker = "extra == 'chroma'", specifier = ">=0.4" },
+    { name = "numpy", marker = "extra == 'speed'", specifier = ">=1.24" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15" },
     { name = "sentence-transformers", marker = "extra == 'huggingface'", specifier = ">=2.2" },
     { name = "tzdata" },
 ]
-provides-extras = ["chroma", "huggingface", "dev"]
+provides-extras = ["chroma", "huggingface", "speed", "dev"]
 
 [[package]]
 name = "mmh3"

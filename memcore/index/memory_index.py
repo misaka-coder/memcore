@@ -17,6 +17,11 @@ from ..embedding.base import EmbeddingProvider
 from ..text_utils import tokenize
 from .base import VectorIndex
 
+try:  # optional speed path; core memcore remains dependency-free
+    import numpy as _np
+except Exception:  # pragma: no cover - depends on optional runtime dependency
+    _np = None
+
 
 def _cosine(a: list[float], b: list[float]) -> float:
     if not a or not b or len(a) != len(b):
@@ -62,6 +67,12 @@ def _keyword_doc_text(document: str, metadata: dict[str, Any]) -> str:
     return f"{document} {extra}".strip()
 
 
+def _candidate_entries(
+    entries: list[dict[str, Any]], *, where: dict[str, Any], excluded: set[str]
+) -> list[dict[str, Any]]:
+    return [entry for entry in entries if entry["source_id"] not in excluded and _match_where(entry["metadata"], where)]
+
+
 class InMemoryVectorIndex(VectorIndex):
     def __init__(self, *, embedding: EmbeddingProvider) -> None:
         self.embedding = embedding
@@ -105,12 +116,13 @@ class InMemoryVectorIndex(VectorIndex):
         excluded = {str(source_id) for source_id in (exclude_source_ids or [])}
         with self._lock:
             snapshot = list(self._entries.values())
+        candidates = _candidate_entries(snapshot, where=where, excluded=excluded)
+        numpy_hits = self._semantic_hits_numpy(query_vec, candidates)
+        if numpy_hits is not None:
+            numpy_hits.sort(key=lambda item: item["semantic_score"], reverse=True)
+            return numpy_hits[: max(1, int(n_results))]
         hits: list[dict[str, Any]] = []
-        for entry in snapshot:
-            if entry["source_id"] in excluded:
-                continue
-            if not _match_where(entry["metadata"], where):
-                continue
+        for entry in candidates:
             hits.append(
                 {
                     "source_id": entry["source_id"],
@@ -121,6 +133,38 @@ class InMemoryVectorIndex(VectorIndex):
             )
         hits.sort(key=lambda item: item["semantic_score"], reverse=True)
         return hits[: max(1, int(n_results))]
+
+    @staticmethod
+    def _semantic_hits_numpy(query_vec: list[float], candidates: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+        if _np is None or not query_vec or not candidates:
+            return None
+        try:
+            query = _np.asarray(query_vec, dtype=float)
+            if query.ndim != 1 or query.size == 0:
+                return None
+            vectors = [entry["vector"] for entry in candidates]
+            if any(len(vector) != query.size for vector in vectors):
+                return None
+            matrix = _np.asarray(vectors, dtype=float)
+            if matrix.ndim != 2:
+                return None
+            query_norm = float(_np.linalg.norm(query))
+            vector_norms = _np.linalg.norm(matrix, axis=1)
+            denom = vector_norms * query_norm
+            dots = matrix @ query
+            scores = _np.divide(dots, denom, out=_np.zeros_like(dots, dtype=float), where=denom != 0)
+            scores = _np.maximum(scores, 0.0)
+        except (TypeError, ValueError):
+            return None
+        return [
+            {
+                "source_id": entry["source_id"],
+                "document": entry["document"],
+                "metadata": entry["metadata"],
+                "semantic_score": float(score),
+            }
+            for entry, score in zip(candidates, scores.tolist())
+        ]
 
     def keyword_search(
         self,
@@ -134,7 +178,7 @@ class InMemoryVectorIndex(VectorIndex):
         excluded = {str(source_id) for source_id in (exclude_source_ids or [])}
         with self._lock:
             snapshot = list(self._entries.values())
-        candidates = [e for e in snapshot if e["source_id"] not in excluded and _match_where(e["metadata"], where)]
+        candidates = _candidate_entries(snapshot, where=where, excluded=excluded)
         if not candidates:
             return []
 

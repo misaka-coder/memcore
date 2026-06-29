@@ -19,6 +19,7 @@ dependencies = ["tzdata"]
 [project.optional-dependencies]
 chroma = ["chromadb>=0.4"]
 huggingface = ["sentence-transformers>=2.2"]
+speed = ["numpy>=1.24"]
 dev = ["pytest>=7", "ruff>=0.15", "build>=1.2"]
 
 [tool.ruff]

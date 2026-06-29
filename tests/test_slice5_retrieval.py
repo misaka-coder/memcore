@@ -6,6 +6,8 @@ canned LLM 用列表形式返回 NDJSON 事件(parse_ndjson 接受列表)。不�
 from __future__ import annotations
 
 import unittest
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from memcore import (
     HashedEmbeddingProvider,
@@ -15,6 +17,7 @@ from memcore import (
     Namespace,
     NamespaceError,
     SQLiteMemoryStore,
+    VectorIndex,
 )
 from memcore.index.entry_builder import build_semantic_entry, build_summary_entry
 from memcore.llm.base import LLMClient, LLMRequest, LLMResult, TaskType
@@ -46,6 +49,10 @@ def _shared_backends():
     return SQLiteMemoryStore(":memory:"), InMemoryVectorIndex(embedding=emb), emb
 
 
+def _ts(y: int, mo: int, d: int, h: int, mi: int = 0, tz: str = "Asia/Shanghai") -> int:
+    return int(datetime(y, mo, d, h, mi, tzinfo=ZoneInfo(tz)).timestamp())
+
+
 def _mem(store, index, emb, *, conversation, llm=None, config=None):
     return MemorySystem(
         llm=llm or ReadLLM(),
@@ -56,6 +63,33 @@ def _mem(store, index, emb, *, conversation, llm=None, config=None):
         embedding=emb,
         config=config,
     )
+
+
+class SpyIndex(VectorIndex):
+    def __init__(self) -> None:
+        self.semantic_wheres: list[dict] = []
+        self.keyword_wheres: list[dict] = []
+
+    def upsert(self, entries: list[dict]) -> None:
+        return None
+
+    def semantic_search(
+        self, *, query_text: str, where: dict, n_results: int = 8, exclude_source_ids=None
+    ) -> list[dict]:
+        self.semantic_wheres.append(dict(where))
+        return []
+
+    def keyword_search(
+        self, *, query_text: str, keywords: list[str], where: dict, n_results: int = 8, exclude_source_ids=None
+    ) -> list[dict]:
+        self.keyword_wheres.append(dict(where))
+        return []
+
+    def delete(self, source_ids: list[str]) -> None:
+        return None
+
+    def count(self) -> int:
+        return 0
 
 
 class ExplicitRetrieve(unittest.TestCase):
@@ -80,6 +114,26 @@ class ExplicitRetrieve(unittest.TestCase):
         mem = _mem(store, index, emb, conversation="c1", llm=ReadLLM(verifier_match=False), config=cfg)
         mem.record_user_turn("我最喜欢喝可乐", timestamp=1000)
         self.assertTrue(any("可乐" in s for s in mem.retrieve("可乐", keywords=["可乐"])))
+        store.close()
+
+    def test_index_safe_metadata_filters_are_pushed_into_where(self) -> None:
+        store = SQLiteMemoryStore(":memory:")
+        index = SpyIndex()
+        mem = MemorySystem(
+            llm=ReadLLM(),
+            namespace=Namespace(user_id="u1", conversation_id="c1"),
+            timezone="Asia/Shanghai",
+            store=store,
+            index=index,
+            embedding=HashedEmbeddingProvider(),
+        )
+
+        mem.retrieve("风险偏好", source_layers=["summary"], importance_min=0.7, categories=["preference"])
+
+        self.assertEqual(index.semantic_wheres[0]["entry_type"], {"$in": ["summary"]})
+        self.assertEqual(index.semantic_wheres[0]["memory_importance"], {"$gte": 0.7})
+        self.assertNotIn("memory_categories_text", index.semantic_wheres[0])
+        self.assertEqual(index.keyword_wheres[0], index.semantic_wheres[0])
         store.close()
 
     def test_retrieve_for_turn_excludes_visible_raw_and_context_neighbor(self) -> None:
@@ -227,14 +281,18 @@ class BuildContext(unittest.TestCase):
         store, index, emb = _shared_backends()
         # c2 里存一条"可乐"记忆
         mem_c2 = _mem(store, index, emb, conversation="c2")
-        mem_c2.record_user_turn("我最喜欢喝可乐", timestamp=900)
+        mem_c2.record_user_turn("我最喜欢喝可乐", timestamp=_ts(2026, 4, 9, 9))
         # c1 当前问"之前爱喝什么";build_prompt_context 只给可见层,不做 router 自动检索
         mem_c1 = _mem(store, index, emb, conversation="c1")
-        cur = mem_c1.record_user_turn("我之前说过爱喝什么", timestamp=1000)
+        cur = mem_c1.record_user_turn("我之前说过爱喝什么", timestamp=_ts(2026, 4, 10, 9))
         ctx = mem_c1.build_prompt_context(current=cur)
         self.assertEqual(set(ctx), {"raw", "episodic", "semantic"})
         # 可见 raw 只含当前会话 c1 的消息,不含 c2
         self.assertTrue(all(r["conversation_id"] == "c1" for r in ctx["raw"]))
+        rendered = mem_c1.render_prompt_context(ctx)
+        self.assertIn("【近期原始对话(未摘要)】", rendered)
+        self.assertIn("[日期 2026-04-10 周五]", rendered)
+        self.assertIn("[09:00 | 上午] user: 我之前说过爱喝什么", rendered)
         # 聊天模型若需要旧记忆,应显式调用 retrieve 工具;检索仍按 hardkey 跨会话。
         hits = mem_c1.retrieve("可乐", keywords=["可乐"])
         self.assertTrue(any("可乐" in s for s in hits))

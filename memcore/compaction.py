@@ -150,9 +150,12 @@ class Compaction:
         if sum(token_counts) < cfg.raw_token_trigger:
             return []
 
+        def full_boundary_batch() -> list[dict[str, Any]]:
+            return msgs if str(msgs[-1].get("role") or "") == boundary_role else []
+
         max_cut = len(msgs) - cfg.raw_token_min_remainder_messages - 1
         if max_cut < 0:
-            return []
+            return full_boundary_batch()
 
         target = cfg.raw_token_trigger * float(cfg.raw_token_batch_ratio)
         running = 0
@@ -170,7 +173,12 @@ class Compaction:
         for idx in range(min(initial_cut, max_cut), -1, -1):
             if str(msgs[idx].get("role") or "") == boundary_role:
                 return msgs[: idx + 1]
-        return []
+
+        # First-turn / remaining-tail extreme: a single long user turn plus its assistant
+        # reply can exceed the token trigger while having no legal remainder. Once the
+        # batch ends on the configured boundary role, compress the whole complete chunk
+        # rather than leaving oversized raw visible forever.
+        return full_boundary_batch()
 
     def _count_raw_content_tokens(self, message: dict[str, Any]) -> int:
         assert self.token_counter is not None

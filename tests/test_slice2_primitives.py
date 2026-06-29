@@ -9,7 +9,7 @@ import unittest
 from datetime import datetime, timezone
 
 from memcore import HashedEmbeddingProvider, InMemoryVectorIndex, fuse_with_rrf
-from memcore.rendering import render_raw_snippet, render_semantic_snippet, render_summary_snippet
+from memcore.rendering import render_prompt_context, render_raw_snippet, render_semantic_snippet, render_summary_snippet
 from memcore.time_anchor import (
     format_time_range_label,
     infer_time_of_day,
@@ -90,6 +90,31 @@ class Rendering(unittest.TestCase):
         self.assertIn("在的", out)
         self.assertIn("2026-04-10 周五", out)
 
+    def test_prompt_context_groups_visible_raw_by_date(self) -> None:
+        ctx = {
+            "raw": [
+                {"role": "user", "content": "第一天早上", "timestamp": _ts(2026, 4, 10, 9), "time_of_day": "morning"},
+                {
+                    "role": "assistant",
+                    "content": "第一天晚上",
+                    "timestamp": _ts(2026, 4, 10, 22),
+                    "time_of_day": "night",
+                },
+                {"role": "user", "content": "第二天早上", "timestamp": _ts(2026, 4, 11, 9), "time_of_day": "morning"},
+            ],
+            "episodic": [],
+            "semantic": [],
+        }
+
+        out = render_prompt_context(ctx, tz="Asia/Shanghai")
+
+        self.assertIn("【近期原始对话(未摘要)】", out)
+        self.assertIn("[日期 2026-04-10 周五]", out)
+        self.assertIn("[日期 2026-04-11 周六]", out)
+        self.assertIn("[09:00 | 上午] user: 第一天早上", out)
+        self.assertIn("[22:00 | 晚上] assistant: 第一天晚上", out)
+        self.assertNotIn("[2026-04-10 周五 09:00", out)
+
 
 class HybridRetrieval(unittest.TestCase):
     def _index(self) -> InMemoryVectorIndex:
@@ -142,6 +167,29 @@ class HybridRetrieval(unittest.TestCase):
         )
 
         self.assertEqual([h["source_id"] for h in hits], ["m2"])
+
+    def test_semantic_where_and_exclude_are_applied_before_scoring(self) -> None:
+        class BombVector:
+            def __len__(self) -> int:
+                raise AssertionError("filtered vector should not be scored")
+
+            def __iter__(self):
+                raise AssertionError("filtered vector should not be scored")
+
+        idx = InMemoryVectorIndex(embedding=HashedEmbeddingProvider())
+        idx.upsert(
+            [
+                {"source_id": "good", "text": "可乐 可乐", "metadata": {"user_id": "u1", "entry_type": "raw"}},
+                {"source_id": "other-user", "text": "可乐", "metadata": {"user_id": "u2", "entry_type": "raw"}},
+                {"source_id": "excluded", "text": "可乐", "metadata": {"user_id": "u1", "entry_type": "raw"}},
+            ]
+        )
+        idx._entries["other-user"]["vector"] = BombVector()  # noqa: SLF001 - white-box prefilter guard
+        idx._entries["excluded"]["vector"] = BombVector()  # noqa: SLF001 - white-box prefilter guard
+
+        hits = idx.semantic_search(query_text="可乐", where={"user_id": "u1"}, exclude_source_ids=["excluded"])
+
+        self.assertEqual([hit["source_id"] for hit in hits], ["good"])
 
     def test_rrf_prefers_dual_hit(self) -> None:
         semantic = [{"source_id": "a", "semantic_score": 0.5}, {"source_id": "b", "semantic_score": 0.4}]

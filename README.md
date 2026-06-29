@@ -34,6 +34,8 @@
 - **raw token 压缩 ✅**:默认仍按条数压缩;长文本/金融/研报场景可显式开启 `raw_compaction_policy="token"`,并注入 `TokenCounter`。
 - **星期感知时间锚点 ✅**:raw、摘要、语义与时间线渲染会由 `timestamp + timezone` 自动派生 `周一..周日`,
   让“上周二/下周三”这类相对表达在压缩与检索回填时有明确参照。
+- **内存索引加速 ✅**:默认不强制向量数据库;`InMemoryVectorIndex` 会先按 namespace/time/exclude 与可前置 metadata 过滤候选,
+  再计算分数。安装 `memcore[speed]` 后语义 cosine 自动走可选 NumPy 批量计算。
 - 可配置:`visible_memory_scope`(conversation/user)、`enable_verifier`、`enable_flavor`、`enable_importance_decay`、`raw_compaction_policy`。
 - 压缩重试:`llm_max_retries` 会传给注入的 `LLMClient`;最终仍失败时压缩层不标记已完成,下一轮继续重试。
 - **Chat Output Adapter 设计草案**:标准 JSON 输出契约、`speech` 流式解析、普通文本尽力分段、raw metadata 回写流程见 `docs/chat_output_adapter_v1.md`;工具调用阶段不套该 JSON,只在最终回复阶段输出 memcore JSON。
@@ -48,6 +50,7 @@ mem = MemorySystem(llm=MyLLMClient(), namespace=Namespace(user_id="u1", conversa
                    timezone="Asia/Shanghai", embedding="BAAI/bge-m3")
 cur = mem.record_user_turn("我之前说过爱喝什么")
 ctx = mem.build_prompt_context(current=cur)   # 可见三层;是否检索由聊天模型自行调用 retrieve/read_timeline
+ctx_text = mem.render_prompt_context(ctx)     # 推荐文本渲染:近期 raw 按日期分组,自带星期/时间段
 # ...用 ctx + memcore 的两个检索工具拼你自己的最终聊天 prompt、调你自己的聊天模型...
 # 当前轮工具包装推荐用 retrieve_for_turn(current=cur, ...),避免把 prompt 已可见三层重复检索回来。
 mem.record_assistant_turn(reply, in_reply_to=cur)

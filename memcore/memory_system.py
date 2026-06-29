@@ -318,6 +318,12 @@ class MemorySystem:
         now_ts = int(current.get("timestamp") or 0)
         return self._read.build_context(namespace=self.namespace, now_ts=now_ts)
 
+    def render_prompt_context(self, context: dict[str, Any]) -> str:
+        """把 build_prompt_context 的结构化三层渲染成推荐 prompt 文本。"""
+        from .rendering import render_prompt_context
+
+        return render_prompt_context(context, tz=self.timezone, enable_flavor=self.config.enable_flavor)
+
     def retrieve(self, query: str, **filters: Any) -> list[str]:
         """显式检索(工具式),返回经 verifier 确认的记忆片段文本。"""
         return self._read.retrieve(namespace=self.namespace, query=query, **filters)

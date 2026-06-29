@@ -122,23 +122,49 @@ def render_semantic_snippet(record: dict[str, Any], *, tz: str, enable_flavor: b
 
 def render_timeline(messages: list[dict[str, Any]], *, tz: str) -> str:
     """时间线工具:把按日期范围读出的原始对话渲染成"按天分组、带时刻"的可读文本。"""
+    return _render_grouped_raw_messages(messages, tz=tz, title="【按时间读取的原始对话(精确记录,非摘要)】")
+
+
+def render_visible_raw(messages: list[dict[str, Any]], *, tz: str) -> str:
+    """固定可见 raw:按日期分组,每条只渲染时刻/时间段,减少重复时间标签。"""
+    return _render_grouped_raw_messages(messages, tz=tz, title="【近期原始对话(未摘要)】")
+
+
+def _render_grouped_raw_messages(messages: list[dict[str, Any]], *, tz: str, title: str) -> str:
     if not messages:
         return ""
-    lines: list[str] = ["【按时间读取的原始对话(精确记录,非摘要)】"]
-    current_date = ""
+    lines: list[str] = [title]
+    current_header = ""
     for row in messages:
         ts = row.get("timestamp")
         date_label = str(row.get("date_label") or "")
-        if date_label != current_date:
-            header_label = timestamp_to_date_weekday_label(ts, tz) if ts is not None else date_label
+        header_label = timestamp_to_date_weekday_label(ts, tz) if ts is not None else date_label
+        if header_label and header_label != current_header:
             lines.append(f"[日期 {header_label}]")
-            current_date = date_label
+            current_header = header_label
         stamp = timestamp_to_datetime_weekday_label(ts, tz).rsplit(" ", 1)[-1] if ts is not None else ""  # HH:MM
         period = TIME_PERIOD_LABELS.get(str(row.get("time_of_day") or ""), "")
         head = " | ".join(p for p in (stamp, period) if p)
         speaker = str(row.get("role") or "")
         lines.append(f"[{head}] {speaker}: {normalize_text(row.get('content'))}".rstrip())
     return "\n".join(lines)
+
+
+def render_prompt_context(context: dict[str, Any], *, tz: str, enable_flavor: bool = False) -> str:
+    """把 build_prompt_context 的结构化三层渲染成可直接放进聊天模型 prompt 的文本。"""
+    sections: list[str] = []
+    raw_text = render_visible_raw(list(context.get("raw") or []), tz=tz)
+    if raw_text:
+        sections.append(raw_text)
+
+    episodic = [
+        render_summary_snippet(row, tz=tz, enable_flavor=enable_flavor) for row in list(context.get("episodic") or [])
+    ]
+    semantic = [
+        render_semantic_snippet(row, tz=tz, enable_flavor=enable_flavor) for row in list(context.get("semantic") or [])
+    ]
+    sections.extend(text for text in episodic + semantic if text)
+    return "\n\n".join(sections)
 
 
 def render_raw_snippet(context_rows: list[dict[str, Any]], *, tz: str) -> str:

@@ -208,6 +208,32 @@ class SummaryCycleViaFacade(unittest.TestCase):
         visible = mem.store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10)
         self.assertEqual(visible[0]["source_ids"], ["u1", "a1", "u2", "a2"])
 
+    def test_raw_token_policy_compacts_first_long_turn_without_tail(self) -> None:
+        cfg = MemoryConfig(
+            raw_compaction_policy="token",
+            raw_token_trigger=10,
+            raw_token_batch_ratio=0.67,
+            raw_token_min_remainder_messages=1,
+            episodic_compact_trigger_count=99,
+        )
+        mem = MemorySystem(
+            llm=CannedLLM(),
+            namespace=Namespace(user_id="u1", conversation_id="c1"),
+            timezone="Asia/Shanghai",
+            config=cfg,
+            embedding=HashedEmbeddingProvider(),
+            token_counter=LengthTokenCounter(),
+        )
+        mem.record_user_turn("x" * 50, timestamp=1000, source_id="u1")
+        mem.record_assistant_turn("ok", timestamp=1001, source_id="a1")
+
+        out = mem.compact_due_sync()
+
+        self.assertEqual(out["summaries_created"], 1)
+        self.assertEqual(mem.store.get_unsummarized_messages(namespace=mem.namespace), [])
+        visible = mem.store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10)
+        self.assertEqual(visible[0]["source_ids"], ["u1", "a1"])
+
     def test_raw_is_indexed_on_record(self) -> None:
         mem = MemorySystem(
             llm=CannedLLM(),
