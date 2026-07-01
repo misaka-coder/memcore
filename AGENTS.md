@@ -10,11 +10,12 @@ Read these files in order before coding:
 
 1. `examples/minimal_chat_integration.py` — runnable minimal chat-loop wiring.
 2. `README.md` — current public API, lifecycle, boundaries.
-3. `docs/model_prompt_playbook_v1.md` — how to prompt the chat model so memory works well.
-4. `docs/design_highlights_v1.md` — why the system is designed this way.
-5. `docs/chat_output_adapter_v1.md` — optional final-output JSON contract and streaming speech parsing.
-6. `docs/metadata_prefilter_design_v1.md` — metadata prefilter semantics for retrieval.
-7. `docs/raw_token_compaction_policy_v1.md` — optional token-based raw compaction.
+3. `docs/usage_flow_v1.md` — concise host and AI-agent integration flow.
+4. `docs/model_prompt_playbook_v1.md` — how to prompt the chat model so memory works well.
+5. `docs/design_highlights_v1.md` — why the system is designed this way.
+6. `docs/chat_output_adapter_v1.md` — optional final-output JSON contract and streaming speech parsing.
+7. `docs/metadata_prefilter_design_v1.md` — metadata prefilter semantics for retrieval.
+8. `docs/raw_token_compaction_policy_v1.md` — optional token-based raw compaction.
 
 If you are changing memcore itself, inspect nearby tests first and run the validation commands at the end of this file.
 

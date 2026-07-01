@@ -51,7 +51,8 @@
 metadata 回写 → `record_assistant_turn` → 后台压缩的完整闭环。
 
 设计亮点说明见 `docs/design_highlights_v1.md`;接入聊天模型时建议先读 `docs/model_prompt_playbook_v1.md`。
-如果让 AI 编码助手接入本库,请先把根目录 `AGENTS.md` 交给它读。
+如果让 AI 编码助手接入本库,请先把根目录 `AGENTS.md` 交给它读;独立接入流程见
+`docs/usage_flow_v1.md`。
 模型服务前缀缓存友好的 prompt 拼接顺序见 `docs/model_prompt_playbook_v1.md` 的“缓存友好 Prompt 布局”。
 
 ## 端到端用法
