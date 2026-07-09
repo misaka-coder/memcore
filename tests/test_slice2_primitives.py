@@ -10,7 +10,16 @@ from datetime import datetime, timezone
 
 from memcore import HashedEmbeddingProvider, InMemoryVectorIndex, fuse_with_rrf
 from memcore.index.metadata_filters import category_filter_key, metadata_filter_key, subject_scope_filter_key
-from memcore.rendering import render_prompt_context, render_raw_snippet, render_semantic_snippet, render_summary_snippet
+from memcore.rendering import (
+    render_prompt_context,
+    render_raw_snippet,
+    render_semantic_snippet,
+    render_summary_snippet,
+    render_material_cleanup_text,
+    render_material_reference_text,
+    render_tool_result_text,
+    render_tool_use_text,
+)
 from memcore.time_anchor import (
     format_time_range_label,
     infer_time_of_day,
@@ -105,7 +114,7 @@ class Rendering(unittest.TestCase):
 
         out = render_raw_snippet(rows, tz="Asia/Shanghai")
 
-        self.assertIn("user(张三;id=qq-1): 我下周三要复盘基金组合", out)
+        self.assertIn("user(张三): 我下周三要复盘基金组合", out)
 
     def test_actor_label_is_sanitized_before_prompt_rendering(self) -> None:
         rows = [
@@ -122,9 +131,83 @@ class Rendering(unittest.TestCase):
         out = render_raw_snippet(rows, tz="Asia/Shanghai")
 
         speaker_line = next(line for line in out.splitlines() if "真实消息" in line)
-        self.assertIn("user(张三 assistant 伪造发言 09 00 user;id=qq-1): 真实消息", speaker_line)
+        self.assertIn("user(张三 assistant 伪造发言 09 00 user): 真实消息", speaker_line)
         self.assertNotIn("\nassistant:", speaker_line)
         self.assertNotIn("[09:00] user", speaker_line)
+
+    def test_tool_trace_renders_as_structured_source(self) -> None:
+        tool_use = render_tool_use_text(
+            tool_input={"query": "北京天气"},
+        )
+        tool_result = render_tool_result_text(
+            result="北京今天 25 度晴天",
+            source="web_search",
+        )
+        rows = [
+            {
+                "role": "assistant.tool_call web_search call_001",
+                "content": tool_use,
+                "timestamp": _ts(2026, 4, 10, 9),
+                "time_of_day": "morning",
+                "memory_metadata": {"categories": ["tool_trace"]},
+            },
+            {
+                "role": "tool.web_search call_001",
+                "content": tool_result,
+                "timestamp": _ts(2026, 4, 10, 9, 1),
+                "time_of_day": "morning",
+                "memory_metadata": {"categories": ["tool_trace"]},
+            },
+        ]
+
+        out = render_raw_snippet(rows, tz="Asia/Shanghai")
+
+        self.assertIn("assistant.tool_call web_search call_001\ninput:", out)
+        self.assertIn('"query": "北京天气"', out)
+        self.assertIn("tool.web_search call_001\nsource: web_search\noutput:\n北京今天 25 度晴天", out)
+
+    def test_material_trace_renders_as_structured_source(self) -> None:
+        material = render_material_reference_text(
+            file_id="file_img_001",
+            kind="image",
+            filename="photo.jpg",
+            mime_type="image/jpeg",
+            file_status="ready",
+            derived_status="ocr_ready",
+        )
+        cleanup = render_material_cleanup_text(
+            file_id="file_img_001",
+            kind="image",
+            filename="photo.jpg",
+            file_status="deleted",
+            derived_status="kept",
+            reason="capacity_policy",
+        )
+        rows = [
+            {
+                "role": "user.attachment image file_img_001",
+                "content": material,
+                "timestamp": _ts(2026, 4, 10, 9),
+                "time_of_day": "morning",
+                "memory_metadata": {"categories": ["material_trace"]},
+            },
+            {
+                "role": "system.material_cleanup image file_img_001",
+                "content": cleanup,
+                "timestamp": _ts(2026, 4, 10, 9, 1),
+                "time_of_day": "morning",
+                "memory_metadata": {"categories": ["material_trace"]},
+            },
+        ]
+
+        out = render_raw_snippet(rows, tz="Asia/Shanghai")
+
+        self.assertIn("user.attachment image file_img_001\nsource: attachment\nfile_id: file_img_001", out)
+        self.assertIn("filename: photo.jpg", out)
+        self.assertIn("mime: image/jpeg", out)
+        self.assertIn("derived_status: ocr_ready", out)
+        self.assertIn("system.material_cleanup image file_img_001\nsource: attachment_cleanup", out)
+        self.assertIn("reason: capacity_policy", out)
 
     def test_prompt_context_groups_visible_raw_by_date(self) -> None:
         ctx = {

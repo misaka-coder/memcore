@@ -125,6 +125,65 @@ class SummaryCycleViaFacade(unittest.TestCase):
         self.assertEqual(len(visible), 1)
         self.assertEqual(visible[0]["index_status"], "indexed")
 
+    def test_trace_raw_does_not_count_but_is_included_in_count_compaction_span(self) -> None:
+        cfg = MemoryConfig(raw_trigger_count=4, summary_batch_size=2, episodic_compact_trigger_count=99)
+        llm = CapturingLLM()
+        mem = MemorySystem(
+            llm=llm,
+            namespace=Namespace(user_id="u1", conversation_id="c1"),
+            timezone="Asia/Shanghai",
+            config=cfg,
+            embedding=HashedEmbeddingProvider(),
+        )
+        mem.record_user_turn("普通消息0", timestamp=1000, source_id="m0")
+        tool = mem.record_tool_exchange(
+            tool_name="web_search",
+            tool_call_id="call_001",
+            tool_input={"query": "北京天气"},
+            result="long search output",
+            timestamp=1001,
+            source_id_prefix="tool1",
+            keywords=["搜索结果"],
+        )
+        material = mem.record_material_reference(
+            file_id="file_img_001",
+            kind="image",
+            filename="photo.jpg",
+            mime_type="image/jpeg",
+            file_status="ready",
+            derived_status="ocr_ready",
+            timestamp=1003,
+            source_id="mat1",
+            keywords=["题目图片"],
+        )
+        mem.record_user_turn("普通消息1", timestamp=1004, source_id="m1")
+        mem.record_user_turn("普通消息2", timestamp=1005, source_id="m2")
+        self.assertEqual(tool["tool_use"]["role"], "assistant.tool_call web_search call_001")
+        self.assertEqual(tool["tool_result"]["role"], "tool.web_search call_001")
+        self.assertIn("input:", tool["tool_use"]["content"])
+        self.assertIn("source: web_search\noutput:\nlong search output", tool["tool_result"]["content"])
+        self.assertEqual(tool["tool_result"]["memory_metadata"]["categories"], ["tool_trace"])
+        self.assertEqual(material["role"], "user.attachment image file_img_001")
+        self.assertEqual(material["memory_metadata"]["categories"], ["material_trace"])
+
+        first = mem.compact_due_sync()
+        self.assertEqual(first["summaries_created"], 0)
+
+        mem.record_user_turn("普通消息3", timestamp=1006, source_id="m3")
+        second = mem.compact_due_sync()
+
+        self.assertEqual(second["summaries_created"], 1)
+        remaining = mem.store.get_unsummarized_messages(namespace=mem.namespace)
+        self.assertEqual([m["source_id"] for m in remaining], ["m2", "m3"])
+        visible = mem.store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10)
+        self.assertEqual(visible[0]["source_ids"], ["m0", "tool1:tool_use", "tool1:tool_result", "mat1", "m1"])
+        self.assertIn("tool_trace", visible[0]["memory_metadata"]["categories"])
+        self.assertIn("material_trace", visible[0]["memory_metadata"]["categories"])
+        self.assertIn("file_img_001", visible[0]["memory_metadata"]["keywords"])
+        summary_requests = [req for req in llm.requests if req.task_type == TaskType.SUMMARY]
+        self.assertIn("assistant.tool_call web_search call_001\ninput:", summary_requests[0].user_prompt)
+        self.assertIn("user.attachment image file_img_001\nsource: attachment", summary_requests[0].user_prompt)
+
     def test_raw_token_policy_waits_until_last_message_is_assistant(self) -> None:
         cfg = MemoryConfig(
             raw_compaction_policy="token",
@@ -358,7 +417,7 @@ class SummaryCycleViaFacade(unittest.TestCase):
 
         summary_requests = [req for req in llm.requests if req.task_type == TaskType.SUMMARY]
         self.assertEqual(len(summary_requests), 1)
-        self.assertIn("user(张三;id=qq-1): 我下周三要复盘基金组合", summary_requests[0].user_prompt)
+        self.assertIn("user(张三): 我下周三要复盘基金组合", summary_requests[0].user_prompt)
 
 
 class SemanticAndReinforcement(unittest.TestCase):

@@ -31,6 +31,8 @@ DEFAULT_CATEGORIES: tuple[str, ...] = (
     "life_event",
     "memory_query",
     "system_meta",
+    "tool_trace",
+    "material_trace",
 )
 
 SUBJECT_SCOPES: tuple[str, ...] = ("user", "assistant", "other")

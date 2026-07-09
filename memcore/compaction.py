@@ -22,7 +22,7 @@ from .index.entry_builder import build_semantic_entry, build_summary_entry
 from .llm.base import LLMClient, LLMRequest, ResponseFormat, TaskType
 from .namespace import Namespace
 from .prompts import PromptOverrides, build_reinforcement_prompts, build_semantic_prompts, build_summary_prompts
-from .rendering import render_speaker_label
+from .rendering import render_raw_snippet
 from .schema import coerce_memory_metadata
 from .store.base import MemoryStore
 from .text_utils import normalize_text
@@ -31,7 +31,6 @@ from .time_anchor import (
     format_time_range_label,
     infer_time_of_day,
     timestamp_to_date_label,
-    timestamp_to_datetime_weekday_label,
 )
 from .token_counter import TokenCounter
 
@@ -83,7 +82,6 @@ class Compaction:
     # --- raw → 阶段摘要 ---
 
     def _summarize_raw(self, namespace: Namespace, result: dict[str, int]) -> None:
-        cfg = self.config
         msgs = self.store.get_unsummarized_messages(namespace=namespace)
         while True:
             batch = self._select_raw_summary_batch(msgs)
@@ -104,6 +102,7 @@ class Compaction:
                 result["summary_retry_pending"] += 1
                 return
             payload = call.data
+            memory_metadata = self._summary_memory_metadata(payload.get("memory_metadata"), batch)
             start_ts = min(int(m["timestamp"]) for m in batch)
             end_ts = max(int(m["timestamp"]) for m in batch)
             record = {
@@ -119,10 +118,8 @@ class Compaction:
                 "diary_summary": str(payload.get("diary_summary") or ""),
                 "key_events": _str_list(payload.get("key_events")),
                 "core_facts": _str_list(payload.get("core_facts")),
-                "memory_metadata": coerce_memory_metadata(
-                    payload.get("memory_metadata"), categories=cfg.categories, enable_flavor=cfg.enable_flavor
-                ).to_dict(),
-                "semantic_tags": coerce_memory_metadata(payload.get("memory_metadata")).keywords,
+                "memory_metadata": memory_metadata,
+                "semantic_tags": list(memory_metadata.get("keywords") or []),
                 "source_ids": [str(m["source_id"]) for m in batch],
             }
             saved = self.store.add_summary(namespace=namespace, record=record)
@@ -134,8 +131,21 @@ class Compaction:
     def _select_raw_summary_batch(self, msgs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         cfg = self.config
         if cfg.raw_compaction_policy == "count":
-            return msgs[: cfg.summary_batch_size] if len(msgs) >= cfg.raw_trigger_count else []
+            eligible_indexes = [idx for idx, m in enumerate(msgs) if not self._is_raw_compaction_excluded(m)]
+            if len(eligible_indexes) < cfg.raw_trigger_count:
+                return []
+            start = eligible_indexes[0]
+            end = eligible_indexes[cfg.summary_batch_size - 1]
+            return msgs[start : end + 1]
         return self._select_raw_summary_batch_by_tokens(msgs)
+
+    def _is_raw_compaction_excluded(self, message: dict[str, Any]) -> bool:
+        excluded = {str(item) for item in self.config.raw_compaction_excluded_categories}
+        if not excluded:
+            return False
+        metadata = message.get("memory_metadata") if isinstance(message.get("memory_metadata"), dict) else {}
+        categories = metadata.get("categories") if isinstance(metadata, dict) else []
+        return any(str(category) in excluded for category in (categories or []))
 
     def _select_raw_summary_batch_by_tokens(self, msgs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         cfg = self.config
@@ -190,6 +200,47 @@ class Compaction:
         if count < 0:
             raise ValueError("TokenCounter.count_text() must return a non-negative int")
         return count
+
+    def _summary_memory_metadata(self, payload_metadata: Any, batch: list[dict[str, Any]]) -> dict[str, Any]:
+        cfg = self.config
+        meta = coerce_memory_metadata(
+            payload_metadata,
+            categories=cfg.categories,
+            enable_flavor=cfg.enable_flavor,
+        ).to_dict()
+        trace_categories, trace_keywords, trace_scopes = self._trace_metadata_from_batch(batch)
+        if trace_categories:
+            meta["categories"] = _merge_unique(meta.get("categories"), trace_categories)
+            meta["keywords"] = _merge_unique(meta.get("keywords"), trace_keywords, limit=4)
+            meta["subject_scopes"] = _merge_unique(meta.get("subject_scopes"), trace_scopes)
+            meta["confidence"] = max(_clamp01(meta.get("confidence")), 0.8)
+        return coerce_memory_metadata(
+            meta,
+            categories=cfg.categories,
+            enable_flavor=cfg.enable_flavor,
+        ).to_dict()
+
+    def _trace_metadata_from_batch(self, batch: list[dict[str, Any]]) -> tuple[list[str], list[str], list[str]]:
+        trace_set = {str(item) for item in self.config.raw_compaction_excluded_categories}
+        allowed = set(self.config.categories)
+        categories: list[str] = []
+        keywords: list[str] = []
+        scopes: list[str] = []
+        for message in batch:
+            metadata = message.get("memory_metadata") if isinstance(message.get("memory_metadata"), dict) else {}
+            message_categories = [str(category) for category in (metadata.get("categories") or [])]
+            if not (set(message_categories) & trace_set):
+                continue
+            categories.extend(
+                category for category in message_categories if category in trace_set and category in allowed
+            )
+            keywords.extend(str(keyword) for keyword in (metadata.get("keywords") or []))
+            scopes.extend(str(scope) for scope in (metadata.get("subject_scopes") or []))
+        return (
+            _merge_unique(categories),
+            _merge_unique(keywords, limit=4),
+            _merge_unique(scopes),
+        )
 
     # --- 阶段摘要 → 长期语义记忆(含强化合并) ---
 
@@ -349,15 +400,7 @@ class Compaction:
         return "\n".join(lines)
 
     def _render_transcript(self, batch: list[dict[str, Any]]) -> str:
-        lines: list[str] = []
-        for m in batch:
-            ts = m.get("timestamp")
-            stamp = timestamp_to_datetime_weekday_label(ts, self.timezone) if ts is not None else ""
-            period = TIME_PERIOD_LABELS.get(str(m.get("time_of_day") or ""), "")
-            head = " | ".join(p for p in (stamp, period) if p)
-            prefix = f"[{head}] " if head else ""
-            lines.append(f"{prefix}{render_speaker_label(m)}: {normalize_text(m.get('content'))}")
-        return "\n".join(lines)
+        return render_raw_snippet(batch, tz=self.timezone)
 
     def _render_episodes(self, batch: list[dict[str, Any]]) -> str:
         lines: list[str] = []

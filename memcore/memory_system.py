@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -31,6 +32,8 @@ from .store.base import MemoryStore
 from .store.sqlite_store import SQLiteMemoryStore
 from .time_anchor import infer_time_of_day, timestamp_to_date_label
 from .token_counter import TokenCounter
+
+_TOOL_EVENT_PART = re.compile(r"[^A-Za-z0-9_.-]+")
 
 
 class MemorySystem:
@@ -133,6 +136,195 @@ class MemorySystem:
         self, reply: str, *, in_reply_to: dict[str, Any] | None = None, **fields: Any
     ) -> dict[str, Any]:
         return self._record(role="assistant", content=reply, actor=None, **fields)
+
+    def record_tool_exchange(
+        self,
+        *,
+        tool_name: str,
+        result: Any,
+        tool_input: Any = None,
+        tool_call_id: str = "",
+        source: str = "",
+        timestamp: int | None = None,
+        source_id_prefix: str | None = None,
+        keywords: list[str] | None = None,
+        importance: float = 0.2,
+        confidence: float = 1.0,
+    ) -> dict[str, dict[str, Any]]:
+        """按线性消息序列追加一次工具调用:assistant.tool_call + tool.<name>。"""
+        from .rendering import render_tool_result_text, render_tool_use_text
+
+        tool = str(tool_name or "").strip()
+        prefix = str(source_id_prefix or "").strip()
+        call_id = self._tool_event_part(tool_call_id or prefix or f"call_{uuid.uuid4().hex[:8]}", fallback="call")
+        tool_label = self._tool_event_part(tool, fallback="tool")
+        result_source = str(source or "").strip() or self._default_tool_source(tool)
+        tags = [tool, *[str(item or "").strip() for item in (keywords or [])]]
+        tags = [item for item in tags if item]
+        metadata = {
+            "categories": ["tool_trace"],
+            "keywords": tags[:4],
+            "subject_scopes": ["assistant"],
+            "importance": importance,
+            "confidence": confidence,
+        }
+        ts = timestamp
+        use_fields: dict[str, Any] = {"memory_metadata": metadata}
+        result_fields: dict[str, Any] = {"memory_metadata": metadata}
+        if ts is not None:
+            use_fields["timestamp"] = ts
+            result_fields["timestamp"] = ts + 1
+        if prefix:
+            use_fields["source_id"] = f"{prefix}:tool_use"
+            result_fields["source_id"] = f"{prefix}:tool_result"
+
+        tool_use = self._record(
+            role=f"assistant.tool_call {tool_label} {call_id}",
+            content=render_tool_use_text(tool_input=tool_input),
+            actor=None,
+            **use_fields,
+        )
+        tool_result = self._record(
+            role=f"tool.{tool_label} {call_id}",
+            content=render_tool_result_text(result=result, source=result_source),
+            actor=None,
+            **result_fields,
+        )
+        return {"tool_use": tool_use, "tool_result": tool_result}
+
+    def record_material_reference(
+        self,
+        *,
+        file_id: str,
+        kind: str,
+        filename: str = "",
+        mime_type: str = "",
+        file_status: str = "ready",
+        derived_status: str = "",
+        timestamp: int | None = None,
+        source_id: str | None = None,
+        keywords: list[str] | None = None,
+        importance: float = 0.25,
+        confidence: float = 1.0,
+    ) -> dict[str, Any]:
+        """追加附件/文件引用事件:只记录材料锚点,不把文件本体写进 memory。"""
+        from .rendering import render_material_reference_text
+
+        file_key = self._tool_event_part(file_id, fallback="file")
+        kind_label = self._tool_event_part(kind, fallback="material")
+        tags = self._material_keywords(
+            file_id=file_id,
+            kind=kind,
+            filename=filename,
+            extra=keywords,
+        )
+        metadata = {
+            "categories": ["material_trace"],
+            "keywords": tags,
+            "subject_scopes": ["user"],
+            "importance": importance,
+            "confidence": confidence,
+        }
+        fields: dict[str, Any] = {"memory_metadata": metadata}
+        if timestamp is not None:
+            fields["timestamp"] = timestamp
+        if source_id:
+            fields["source_id"] = source_id
+        return self._record(
+            role=f"user.attachment {kind_label} {file_key}",
+            content=render_material_reference_text(
+                file_id=file_id,
+                kind=kind,
+                filename=filename,
+                mime_type=mime_type,
+                file_status=file_status,
+                derived_status=derived_status,
+            ),
+            actor=None,
+            **fields,
+        )
+
+    def record_material_cleanup(
+        self,
+        *,
+        file_id: str,
+        kind: str = "",
+        filename: str = "",
+        file_status: str = "deleted",
+        derived_status: str = "",
+        reason: str = "",
+        timestamp: int | None = None,
+        source_id: str | None = None,
+        keywords: list[str] | None = None,
+        importance: float = 0.2,
+        confidence: float = 1.0,
+    ) -> dict[str, Any]:
+        """追加材料清理事件,让模型知道旧文件/解析物可能已经不可再读。"""
+        from .rendering import render_material_cleanup_text
+
+        file_key = self._tool_event_part(file_id, fallback="file")
+        kind_label = self._tool_event_part(kind, fallback="material")
+        tags = self._material_keywords(
+            file_id=file_id,
+            kind=kind,
+            filename=filename,
+            extra=keywords,
+        )
+        metadata = {
+            "categories": ["material_trace"],
+            "keywords": tags,
+            "subject_scopes": ["other"],
+            "importance": importance,
+            "confidence": confidence,
+        }
+        fields: dict[str, Any] = {"memory_metadata": metadata}
+        if timestamp is not None:
+            fields["timestamp"] = timestamp
+        if source_id:
+            fields["source_id"] = source_id
+        return self._record(
+            role=f"system.material_cleanup {kind_label} {file_key}",
+            content=render_material_cleanup_text(
+                file_id=file_id,
+                kind=kind,
+                filename=filename,
+                file_status=file_status,
+                derived_status=derived_status,
+                reason=reason,
+            ),
+            actor=None,
+            **fields,
+        )
+
+    @staticmethod
+    def _material_keywords(*, file_id: str, kind: str, filename: str, extra: list[str] | None = None) -> list[str]:
+        tags = [file_id, filename, kind, *[str(item or "").strip() for item in (extra or [])]]
+        out: list[str] = []
+        seen: set[str] = set()
+        for tag in tags:
+            text = str(tag or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            out.append(text)
+            if len(out) >= 4:
+                break
+        return out
+
+    @staticmethod
+    def _tool_event_part(value: str, *, fallback: str) -> str:
+        text = _TOOL_EVENT_PART.sub("_", str(value or "").strip()).strip("._-")
+        return (text[:64] or fallback).rstrip("._-") or fallback
+
+    @staticmethod
+    def _default_tool_source(tool_name: str) -> str:
+        tool = str(tool_name or "").strip()
+        normalized = tool.lower()
+        if normalized in {"retrieve", "retrieve_for_turn"}:
+            return "long_term_memory"
+        if normalized == "read_timeline":
+            return "timeline"
+        return tool or "tool"
 
     def _record(self, *, role: str, content: str, actor: Actor | None, **fields: Any) -> dict[str, Any]:
         ts = int(fields.pop("timestamp", None) or time.time())

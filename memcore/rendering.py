@@ -6,6 +6,7 @@ period_start_ts/period_end_ts/timestamp 取(跨 store 的 seq 解析属于 store
 
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from typing import Any
@@ -132,7 +133,7 @@ def render_visible_raw(messages: list[dict[str, Any]], *, tz: str) -> str:
     return _render_grouped_raw_messages(messages, tz=tz, title="【近期原始对话(未摘要)】")
 
 
-_SPEAKER_LABEL_MAX_CHARS = 40
+_SPEAKER_LABEL_MAX_CHARS = 80
 _SPEAKER_STRUCTURAL_CHARS = re.compile(r"[:：\[\]\(\)（）{}<>]")
 _WHITESPACE = re.compile(r"\s+")
 
@@ -153,14 +154,115 @@ def render_speaker_label(row: dict[str, Any]) -> str:
     """渲染 role + actor 显示名,让群聊/多方场景不丢"谁说的"。"""
     role = _sanitize_speaker_part(row.get("role"))
     actor_name = _sanitize_speaker_part(row.get("actor_display_name"))
-    actor_id = _sanitize_speaker_part(row.get("actor_id"))
-    if actor_name and actor_id and actor_name != actor_id:
-        actor = f"{actor_name};id={actor_id}"
-    else:
-        actor = actor_name or actor_id
+    actor = actor_name
     if role and actor:
         return f"{role}({actor})"
     return role or actor
+
+
+def _is_trace_event(row: dict[str, Any]) -> bool:
+    metadata = row.get("memory_metadata") if isinstance(row.get("memory_metadata"), dict) else {}
+    categories = metadata.get("categories") if isinstance(metadata, dict) else []
+    return bool({"tool_trace", "material_trace"} & {str(category) for category in (categories or [])})
+
+
+def _format_tool_value(value: Any) -> str:
+    if isinstance(value, (list, tuple)):
+        return "\n\n".join(_format_tool_value(item) for item in value)
+    if isinstance(value, (dict, bool, int, float)) or value is None:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return normalize_text(value)
+
+
+def _format_event_scalar(value: Any) -> str:
+    text = normalize_text(value)
+    if not text:
+        return ""
+    text = "".join(" " if unicodedata.category(ch).startswith("C") else ch for ch in text)
+    return _WHITESPACE.sub(" ", text).strip()
+
+
+def render_tool_use_text(
+    *,
+    tool_input: Any = None,
+) -> str:
+    """把跨轮保留的工具调用内容渲染成稳定 input 块。"""
+    lines = ["input:"]
+    lines.append(_format_tool_value(tool_input if tool_input is not None else {}))
+    return "\n".join(lines)
+
+
+def render_tool_result_text(
+    *,
+    result: Any,
+    source: str = "",
+) -> str:
+    """把跨轮保留的工具结果内容渲染成稳定 source/output 块。"""
+    lines: list[str] = []
+    src = normalize_text(source)
+    if src:
+        lines.append(f"source: {src}")
+    lines.append("output:")
+    formatted = _format_tool_value(result)
+    if formatted:
+        lines.append(formatted)
+    return "\n".join(lines)
+
+
+def render_material_reference_text(
+    *,
+    file_id: str,
+    kind: str,
+    filename: str = "",
+    mime_type: str = "",
+    file_status: str = "",
+    derived_status: str = "",
+    source: str = "attachment",
+) -> str:
+    """把附件/文件引用渲染成模型可读的材料事件,不包含文件本体。"""
+    fields = [
+        ("source", source),
+        ("file_id", file_id),
+        ("kind", kind),
+        ("filename", filename),
+        ("mime", mime_type),
+        ("file_status", file_status),
+        ("derived_status", derived_status),
+    ]
+    return "\n".join(f"{key}: {text}" for key, value in fields if (text := _format_event_scalar(value)))
+
+
+def render_material_cleanup_text(
+    *,
+    file_id: str,
+    kind: str = "",
+    filename: str = "",
+    file_status: str = "deleted",
+    derived_status: str = "",
+    reason: str = "",
+    source: str = "attachment_cleanup",
+) -> str:
+    """把材料清理事件渲染成可追踪但不承诺文件仍可读取的块。"""
+    fields = [
+        ("source", source),
+        ("file_id", file_id),
+        ("kind", kind),
+        ("filename", filename),
+        ("file_status", file_status),
+        ("derived_status", derived_status),
+        ("reason", reason),
+    ]
+    return "\n".join(f"{key}: {text}" for key, value in fields if (text := _format_event_scalar(value)))
+
+
+def _append_raw_message_line(lines: list[str], *, head: str, speaker: str, content: str, is_trace_event: bool) -> None:
+    prefix = f"[{head}] {speaker}".rstrip()
+    if is_trace_event:
+        lines.append(prefix)
+        if content:
+            lines.append(content)
+        return
+    lines.append(f"{prefix}: {content}".rstrip())
 
 
 def _render_grouped_raw_messages(messages: list[dict[str, Any]], *, tz: str, title: str) -> str:
@@ -179,7 +281,13 @@ def _render_grouped_raw_messages(messages: list[dict[str, Any]], *, tz: str, tit
         period = TIME_PERIOD_LABELS.get(str(row.get("time_of_day") or ""), "")
         head = " | ".join(p for p in (stamp, period) if p)
         speaker = render_speaker_label(row)
-        lines.append(f"[{head}] {speaker}: {normalize_text(row.get('content'))}".rstrip())
+        _append_raw_message_line(
+            lines,
+            head=head,
+            speaker=speaker,
+            content=normalize_text(row.get("content")),
+            is_trace_event=_is_trace_event(row),
+        )
     return "\n".join(lines)
 
 
@@ -209,5 +317,11 @@ def render_raw_snippet(context_rows: list[dict[str, Any]], *, tz: str) -> str:
         period = TIME_PERIOD_LABELS.get(str(row.get("time_of_day") or ""), "")
         speaker = render_speaker_label(row)
         head = " | ".join(p for p in (stamp, period) if p)
-        lines.append(f"[{head}] {speaker}: {normalize_text(row.get('content'))}".rstrip())
+        _append_raw_message_line(
+            lines,
+            head=head,
+            speaker=speaker,
+            content=normalize_text(row.get("content")),
+            is_trace_event=_is_trace_event(row),
+        )
     return "\n".join(lines)

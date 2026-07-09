@@ -102,6 +102,43 @@ class ExplicitRetrieve(unittest.TestCase):
         self.assertTrue(any("可乐" in s for s in hits))
         store.close()
 
+    def test_tool_trace_is_excluded_from_default_retrieve_but_explicitly_searchable(self) -> None:
+        store, index, emb = _shared_backends()
+        mem = _mem(store, index, emb, conversation="c1", config=MemoryConfig(enable_verifier=False))
+        mem.record_tool_exchange(
+            tool_name="web_search",
+            tool_input={"query": "北京天气"},
+            result="北京今天 25 度晴天",
+            timestamp=1000,
+            source_id_prefix="tool1",
+            keywords=["北京天气"],
+        )
+
+        self.assertEqual(mem.retrieve("北京天气", keywords=["北京天气"]), [])
+        hits = mem.retrieve("北京天气", keywords=["北京天气"], categories=["tool_trace"])
+        self.assertTrue(any("25 度晴天" in s for s in hits))
+        store.close()
+
+    def test_material_trace_is_excluded_from_default_retrieve_but_explicitly_searchable(self) -> None:
+        store, index, emb = _shared_backends()
+        mem = _mem(store, index, emb, conversation="c1", config=MemoryConfig(enable_verifier=False))
+        mem.record_material_reference(
+            file_id="file_img_001",
+            kind="image",
+            filename="photo.jpg",
+            mime_type="image/jpeg",
+            file_status="ready",
+            derived_status="ocr_ready",
+            timestamp=1000,
+            source_id="mat1",
+            keywords=["题目图片"],
+        )
+
+        self.assertEqual(mem.retrieve("photo.jpg", keywords=["photo.jpg"]), [])
+        hits = mem.retrieve("photo.jpg", keywords=["photo.jpg"], categories=["material_trace"])
+        self.assertTrue(any("file_img_001" in s and "photo.jpg" in s for s in hits))
+        store.close()
+
     def test_verifier_mismatch_returns_nothing(self) -> None:
         store, index, emb = _shared_backends()
         mem = _mem(store, index, emb, conversation="c1", llm=ReadLLM(verifier_match=False))

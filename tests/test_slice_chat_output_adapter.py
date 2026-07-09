@@ -117,6 +117,8 @@ class ChatOutputPrompt(unittest.TestCase):
         self.assertIn("工具调用阶段不适用本 JSON 契约", prompt)
         self.assertIn("不是摆设", prompt)
         self.assertIn("可以继续补查", prompt)
+        self.assertIn("结构化信息通道", prompt)
+        self.assertIn("legacy 文本 followup", prompt)
         self.assertIn("最终回复", prompt)
         self.assertIn("每个完整句子", prompt)
         self.assertIn("read_timeline", prompt)

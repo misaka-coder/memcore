@@ -180,10 +180,12 @@ class ReadPipeline:
             "categories": categories or [],
             "importance_min": importance_min,
         }
+        default_excluded_categories = self._default_excluded_categories(requested["categories"])
         selected: list[dict[str, Any]] = []
         search_cache: dict[str, list[dict[str, Any]]] = {}
         for stage in self._build_stages(requested):
             where = self._build_where(namespace, time_hint)
+            where.update(self._default_exclusion_where(default_excluded_categories))
             where.update(self._stage_index_where(stage))
             cache_key = repr((where, excluded))
             if cache_key not in search_cache:
@@ -200,6 +202,17 @@ class ReadPipeline:
         selected = selected[: self.config.retrieval_limit]
         snippets = self._build_snippets(selected, exclude_context_source_ids=exclude_source_ids)
         return self._verify(query=query, snippets=snippets)
+
+    def _default_excluded_categories(self, requested_categories: list[str]) -> list[str]:
+        excluded = [str(c) for c in self.config.retrieval_default_excluded_categories if str(c).strip()]
+        requested = {str(c) for c in (requested_categories or [])}
+        return [] if requested & set(excluded) else excluded
+
+    @staticmethod
+    def _default_exclusion_where(categories: list[str]) -> dict[str, Any]:
+        if not categories:
+            return {}
+        return {category_filter_key(category): {"$ne": True} for category in categories}
 
     def _build_where(self, namespace: Namespace, time_hint: dict[str, Any] | None) -> dict[str, Any]:
         tenant, user, domain = namespace.hard_key()

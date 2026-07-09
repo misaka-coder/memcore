@@ -119,6 +119,9 @@ cfg = MemoryConfig(
 ```
 
 Never let the model invent category names. memcore will drop values outside the enum.
+If the host records tool calls/results into raw memory, prefer `record_tool_exchange(...)` so the trace is stored as linear `assistant.tool_call <tool> <call_id>` and `tool.<tool> <call_id>` blocks with `categories=["tool_trace"]`. The default config excludes `tool_trace` from count-based raw compaction triggers and from normal retrieval unless `categories=["tool_trace"]` is explicitly requested. If you override `categories`, keep `tool_trace` in the enum if you need this behavior.
+
+If the host records images/files into raw memory, prefer `record_material_reference(...)` and `record_material_cleanup(...)`. These store only file/material anchors as `user.attachment <kind> <file_id>` and `system.material_cleanup <kind> <file_id>` blocks with `categories=["material_trace"]`; original files and OCR/vision/document chunks stay in host storage. The default config excludes `material_trace` from count-based raw compaction triggers and from normal retrieval unless `categories=["material_trace"]` is explicitly requested. If you override `categories`, keep `material_trace` in the enum if you need this behavior.
 
 ## Retrieval Tools To Expose
 
@@ -176,7 +179,8 @@ Cache-friendly ordering:
 
 Important model guidance:
 
-- Treat exposed tools as part of the model's working ability, not optional decoration. If an answer depends on facts not clearly visible in the current prompt, old memory, exact timelines, attribution, preferences, relationships, promises, or platform events, the model should proactively call the appropriate tool. Multi-step tool use is allowed when the first result is insufficient.
+- Treat exposed tools as part of the model's working ability and structured information channel, not optional decoration. If an answer depends on facts not clearly visible in the current prompt, old memory, exact timelines, attribution, preferences, relationships, promises, or platform events, the model should proactively call the appropriate tool. Multi-step tool use is allowed when the first result is insufficient.
+- Prefer native tool calling/tool result blocks when the host model provider supports them. Preserve tool id/name/arguments/result boundaries. Legacy text followup should be a compatibility fallback, not the primary path.
 - Relative time words must be interpreted from the visible date/weekday anchors.
 - In group chat, preserve who said what. Do not merge different speakers into "the user".
 - For attribution questions such as who said, poked, promised, or owns a task, answer only from visible raw text or tool results. If evidence is missing, call `read_timeline`/`retrieve_for_turn` or say there is no clear record; do not guess a name.

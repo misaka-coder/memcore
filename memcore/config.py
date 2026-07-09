@@ -28,6 +28,10 @@ class MemoryConfig:
     raw_token_batch_ratio: float = 0.67  # token policy:触发后压缩 trigger 的多少比例,默认约等于 20/30
     raw_token_min_remainder_messages: int = 1  # token policy:压缩后至少保留多少条 raw 近期上下文
     raw_token_boundary_role: str = "assistant"  # token policy:批次边界对齐到 assistant 回复
+    raw_compaction_excluded_categories: tuple[str, ...] = (
+        "tool_trace",
+        "material_trace",
+    )  # count policy:不计入 30 条普通对话压缩节奏
     episodic_visible_max: int = 8  # 可见阶段摘要数
     episodic_compact_trigger_count: int = 10  # 阶段摘要达到多少条触发语义压缩
     episodic_compact_batch_size: int = 5  # 每次压缩多少条阶段摘要(必须 < trigger)
@@ -40,6 +44,10 @@ class MemoryConfig:
     # --- 检索 ---
     retrieval_limit: int = 6  # 默认返回片段数
     relaxation_stop_candidate_count: int = 12  # 候选达到多少就停止放宽
+    retrieval_default_excluded_categories: tuple[str, ...] = (
+        "tool_trace",
+        "material_trace",
+    )  # 普通检索默认不捞工具/材料轨迹
     enable_verifier: bool = True  # verifier 门:片段进 prompt 前先校验筛选
     llm_max_retries: int = 2  # 结构化 LLM 调用建议重试次数;失败仍不提交空记忆
 
@@ -92,6 +100,12 @@ class MemoryConfig:
             raise ConfigError(
                 f"raw_token_boundary_role currently supports only 'assistant', got {self.raw_token_boundary_role!r}"
             )
+        self.raw_compaction_excluded_categories = self._clean_tuple(
+            self.raw_compaction_excluded_categories, "raw_compaction_excluded_categories"
+        )
+        self.retrieval_default_excluded_categories = self._clean_tuple(
+            self.retrieval_default_excluded_categories, "retrieval_default_excluded_categories"
+        )
 
         # 焊死的差值关系:批量必须严格小于触发数,否则层间记忆会重叠 / 出现空窗。
         if self.summary_batch_size >= self.raw_trigger_count:
@@ -122,3 +136,16 @@ class MemoryConfig:
         if len(set(cats)) != len(cats):
             raise ConfigError(f"categories must not contain duplicates: {self.categories!r}")
         self.categories = cats
+
+    @staticmethod
+    def _clean_tuple(value: tuple[str, ...], name: str) -> tuple[str, ...]:
+        if not isinstance(value, tuple):
+            raise ConfigError(f"{name} must be a tuple[str, ...], got {type(value).__name__}")
+        out: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            text = str(item or "").strip()
+            if text and text not in seen:
+                seen.add(text)
+                out.append(text)
+        return tuple(out)

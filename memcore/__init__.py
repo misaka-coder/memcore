@@ -22,6 +22,12 @@ from .embedding.http import HTTPEmbeddingProvider
 from .embedding.verify import verify_embedding
 from .errors import ConfigError, MemcoreError, NamespaceError, PromptError, SchemaError
 from .prompts import PromptOverrides
+from .rendering import (
+    render_material_cleanup_text,
+    render_material_reference_text,
+    render_tool_result_text,
+    render_tool_use_text,
+)
 from .index.base import VectorIndex
 from .index.memory_index import InMemoryVectorIndex
 from .index.rrf import fuse_with_rrf
@@ -91,4 +97,8 @@ __all__ = [
     "PromptError",
     # 提示词治理
     "PromptOverrides",
+    "render_material_reference_text",
+    "render_material_cleanup_text",
+    "render_tool_use_text",
+    "render_tool_result_text",
 ]

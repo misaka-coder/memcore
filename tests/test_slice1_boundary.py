@@ -39,6 +39,12 @@ class ConfigInvariants(unittest.TestCase):
     def test_default_config_valid(self) -> None:
         cfg = MemoryConfig()
         self.assertLess(cfg.summary_batch_size, cfg.raw_trigger_count)
+        self.assertIn("tool_trace", cfg.categories)
+        self.assertIn("material_trace", cfg.categories)
+        self.assertIn("tool_trace", cfg.raw_compaction_excluded_categories)
+        self.assertIn("material_trace", cfg.raw_compaction_excluded_categories)
+        self.assertIn("tool_trace", cfg.retrieval_default_excluded_categories)
+        self.assertIn("material_trace", cfg.retrieval_default_excluded_categories)
 
     def test_differential_relationship_enforced(self) -> None:
         # 批量 >= 触发数 必须被拒绝(防层间记忆重叠的承重约束)。
@@ -66,6 +72,12 @@ class ConfigInvariants(unittest.TestCase):
             MemoryConfig(raw_token_batch_ratio=1)
         with self.assertRaises(ConfigError):
             MemoryConfig(raw_token_batch_ratio=0)
+
+    def test_excluded_category_configs_must_be_tuples(self) -> None:
+        with self.assertRaises(ConfigError):
+            MemoryConfig(raw_compaction_excluded_categories=["tool_trace"])  # type: ignore[arg-type]
+        with self.assertRaises(ConfigError):
+            MemoryConfig(retrieval_default_excluded_categories=["tool_trace"])  # type: ignore[arg-type]
 
 
 class MetadataCoercion(unittest.TestCase):

@@ -109,6 +109,24 @@ message.
 Do not turn invalid filters into broad successful searches. Return structured
 tool errors according to host policy.
 
+If the host app records tool calls or tool results into raw memory, prefer
+`record_tool_exchange(...)`. It writes `assistant.tool_call <tool> <call_id>`
+and `tool.<tool> <call_id>` blocks with `categories=["tool_trace"]`. The
+default config keeps these records visible as raw context but excludes them
+from count-based raw compaction triggers and from normal retrieval unless the
+model explicitly asks for `tool_trace`.
+
+If the host app handles images or files, record only material references with
+`record_material_reference(...)` and cleanup events with
+`record_material_cleanup(...)`. These write `user.attachment <kind> <file_id>`
+and `system.material_cleanup <kind> <file_id>` blocks with
+`categories=["material_trace"]`. Store original files and derived OCR, vision
+descriptions, or document chunks in the host file/derived stores. Current-turn
+multimodal models may receive the image through the provider request; non-
+multimodal models should receive derived text. Historical follow-ups should
+find the `material_trace` anchor first, then load available derived content via
+host tools.
+
 ## Prompt Composition
 
 When building the final chat model prompt:

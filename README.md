@@ -39,6 +39,13 @@
   再计算分数。安装 `memcore[speed]` 后向量以 float32 存储,语义 cosine 自动走可选 NumPy 批量计算。
 - **模型协作提示词 ✅**:标准输出契约与压缩链提示词已补充时间锚点、工具选择、群聊归因、metadata 标注规则。
   接入方提示词指南见 `docs/model_prompt_playbook_v1.md`。
+- **工具轨迹类别 ✅**:`record_tool_exchange(...)` 可把工具调用/结果以 `assistant.tool_call ...` +
+  `tool.<name> ...` 的线性事件块追加进 raw。
+  默认不计入 count-based raw 压缩触发数量,普通检索也默认排除;显式 `categories=["tool_trace"]` 时可检索工具轨迹。
+- **材料轨迹类别 ✅**:`record_material_reference(...)` / `record_material_cleanup(...)` 可把图片、文件、解析物状态以
+  `user.attachment ...` / `system.material_cleanup ...` 事件块追加进 raw。事件只保存 file_id、文件名、类型和状态;
+  原始文件与 OCR/视觉描述/文档 chunks 由宿主 file_store/derived_store 管理。默认不计入 count-based raw 压缩触发数量,
+  普通检索也默认排除;显式 `categories=["material_trace"]` 时可检索材料锚点。
 - 可配置:`visible_memory_scope`(conversation/user)、`enable_verifier`、`enable_flavor`、`enable_importance_decay`、`raw_compaction_policy`。
 - 压缩重试:`llm_max_retries` 会传给注入的 `LLMClient`;最终仍失败时压缩层不标记已完成,下一轮继续重试。
 - **Chat Output Adapter 设计草案**:标准 JSON 输出契约、`speech` 流式解析、普通文本尽力分段、raw metadata 回写流程见 `docs/chat_output_adapter_v1.md`;工具调用阶段不套该 JSON,只在最终回复阶段输出 memcore JSON。
@@ -65,6 +72,20 @@ ctx = mem.build_prompt_context(current=cur)   # 可见三层;是否检索由聊�
 ctx_text = mem.render_prompt_context(ctx)     # 推荐文本渲染:近期 raw 按日期分组,自带星期/时间段
 # ...用 ctx + memcore 的两个检索工具拼你自己的最终聊天 prompt、调你自己的聊天模型...
 # 当前轮工具包装推荐用 retrieve_for_turn(current=cur, ...),避免把 prompt 已可见三层重复检索回来。
+mem.record_tool_exchange(
+    tool_name="web_search",
+    tool_call_id="call_001",
+    tool_input={"query": "北京天气"},
+    result="北京今天 25°C,晴天",
+)
+mem.record_material_reference(
+    file_id="file_img_001",
+    kind="image",
+    filename="photo.jpg",
+    mime_type="image/jpeg",
+    file_status="ready",
+    derived_status="ocr_ready",  # 多模态可直接看当前图片;非多模态可读取宿主保存的 OCR/描述
+)
 mem.record_assistant_turn(reply, in_reply_to=cur)
 future = mem.compact_due_background()          # 聊天链路推荐后台沉淀,不阻塞用户可见回复
 # 可忽略 future 做 fire-and-forget;测试/脚本可 future.result() 读取压缩统计
