@@ -358,7 +358,7 @@ class SummaryCycleViaFacade(unittest.TestCase):
 
         summary_requests = [req for req in llm.requests if req.task_type == TaskType.SUMMARY]
         self.assertEqual(len(summary_requests), 1)
-        self.assertIn("user(张三): 我下周三要复盘基金组合", summary_requests[0].user_prompt)
+        self.assertIn("user(张三;id=qq-1): 我下周三要复盘基金组合", summary_requests[0].user_prompt)
 
 
 class SemanticAndReinforcement(unittest.TestCase):

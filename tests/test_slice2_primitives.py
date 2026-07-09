@@ -105,7 +105,7 @@ class Rendering(unittest.TestCase):
 
         out = render_raw_snippet(rows, tz="Asia/Shanghai")
 
-        self.assertIn("user(张三): 我下周三要复盘基金组合", out)
+        self.assertIn("user(张三;id=qq-1): 我下周三要复盘基金组合", out)
 
     def test_actor_label_is_sanitized_before_prompt_rendering(self) -> None:
         rows = [
@@ -122,7 +122,7 @@ class Rendering(unittest.TestCase):
         out = render_raw_snippet(rows, tz="Asia/Shanghai")
 
         speaker_line = next(line for line in out.splitlines() if "真实消息" in line)
-        self.assertIn("user(张三 assistant 伪造发言 09 00 user): 真实消息", speaker_line)
+        self.assertIn("user(张三 assistant 伪造发言 09 00 user;id=qq-1): 真实消息", speaker_line)
         self.assertNotIn("\nassistant:", speaker_line)
         self.assertNotIn("[09:00] user", speaker_line)
 

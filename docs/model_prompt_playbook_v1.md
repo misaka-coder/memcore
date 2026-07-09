@@ -8,15 +8,19 @@ memcore 不替宿主写完整人格 prompt,但建议把下面这些规则拼到�
 
 ```text
 你可以看到 memcore 提供的可见三层记忆,并可使用两个记忆工具:
-- retrieve: 按语义/关键词/metadata 模糊检索长期或历史记忆。
+- retrieve_for_turn: 按语义/关键词/metadata 模糊检索长期或历史记忆,并排除当前 prompt 已经可见的记忆与本轮消息。
 - read_timeline: 按日期/时间段精确读取原始对话,适合处理“昨天/上周二/4月10日晚上”等时间问题。
 
+把工具当作你的可用能力,不是摆设。凡是答案依赖未在当前 prompt 中明确可见的事实、旧记忆、精确时间线、人物归因、承诺、偏好、关系或平台事件时,请主动调用合适的工具求证。一次工具结果不够时,可以根据结果继续调用工具补查,直到足以回答或确认没有明确记录。
+
 当用户提到“昨天/今天/明天/上周/上周二/最近/刚才”等相对时间时,必须结合 prompt 里的日期、星期和时间段锚点理解。
-如果需要精确日期或时间范围,优先调用 read_timeline;如果是偏好、计划、人物关系、长期事实等模糊问题,调用 retrieve。
+如果需要精确日期或时间范围,优先调用 read_timeline;如果是偏好、计划、人物关系、长期事实等模糊问题,调用 retrieve_for_turn。
+人格亲近感不能替代证据;不要为了显得记得、懂得或反应快而跳过工具编造。
 
 不要重复检索当前 prompt 已经可见的记忆;宿主会用 retrieve_for_turn 排除可见三层和本轮消息。
 
 如果处在群聊/多人场景,请保留“谁说的、谁的偏好、谁的计划、谁的承诺”。不要把不同发言人的事实混写成“用户说/大家说”。
+回答“谁说的/谁戳的/谁答应的/谁负责的”这类归因问题时,必须以当前可见原文或工具结果中的发言人/事件记录为依据。没有明确记录时,请先调用 read_timeline 或 retrieve;仍没有证据就说明没看到明确记录,不要猜名字。
 
 最终回复若启用 memcore_json,只在所有工具调用完成后输出 JSON:
 {"speech":"给用户看的回复","memory_metadata":{...}}
@@ -53,7 +57,7 @@ memcore 会把 raw、summary、semantic、timeline 渲染成带日期和星期�
 
 ```text
 [日期 2026-04-10 周五]
-[09:00 | 上午] user(张三): 上周二那份报告我还没看完
+[09:00 | 上午] user(张三;id=qq-123): 上周二那份报告我还没看完
 ```
 
 模型应理解:
@@ -68,7 +72,7 @@ memcore 会把 raw、summary、semantic、timeline 渲染成带日期和星期�
 推荐给聊天模型的工具说明:
 
 ```text
-retrieve(query, keywords?, source_layers?, categories?, subject_scopes?, importance_min?, time_hint?)
+retrieve_for_turn(query, keywords?, source_layers?, categories?, subject_scopes?, importance_min?, time_hint?)
 用于模糊检索。可以传 categories/subject_scopes/importance_min 缩小候选,系统会先做 metadata 前置过滤再算相似度。
 
 read_timeline(date_from, date_to?, time_periods?)
@@ -83,6 +87,19 @@ read_timeline(date_from, date_to?, time_periods?)
 | “我之前是不是说过喜欢可乐?” | `retrieve(query="喜欢 可乐", categories=["preference"], subject_scopes=["user"])` |
 | “上周二那件事后来怎么样了?” | 先用时间锚点算日期,再 `read_timeline`;必要时补 `retrieve` |
 | “谁负责基金复盘?” | 群聊场景优先带人物/计划关键词 `retrieve`,必要时读时间线 |
+| “刚才谁戳你了?” | 优先 `read_timeline` 读取最近/当天平台事件;只根据明确事件记录回答 |
+| “你还记得我生日吗?” | 当前可见记忆没有明确生日时必须 `retrieve`,查不到就说没看到明确记录 |
+
+## 工具使用纪律
+
+人格可以自然亲近,但不能把亲近感当作事实来源。聊天模型应自主判断是否需要工具,并遵守下面的通用纪律:
+
+1. 先判断当前可见 raw/summary/semantic 是否足以支持回答。
+2. 如果答案依赖不可见或不确定的信息,主动调用工具;不要等用户追问“你查了吗”。
+3. 精确时间线、最近事件、平台事件优先 `read_timeline`;模糊长期事实、偏好、关系、计划、承诺优先 `retrieve_for_turn`。
+4. 工具结果不足时,可以基于已得到的线索继续调用另一个工具或换查询词补查。
+5. 工具结果仍没有明确证据时,回复“我没有看到明确记录/我不确定”,可以邀请用户补充,但不要猜一个看似合理的答案。
+6. 如果用户随后纠正,按用户纠正更新本轮 metadata;不要把前一轮未证实的猜测当成事实继续强化。
 
 ## memory_metadata 标注
 
@@ -120,9 +137,11 @@ memcore 的硬隔离是 `tenant_id / user_id / domain_id`;`actor` 是同一记�
 
 模型要做:
 
-- 看见 `user(张三): ...` 时,记成“张三说/张三计划/张三偏好”,不要写成“用户都喜欢”。
+- 看见 `user(张三;id=qq-123): ...` 时,记成“张三说/张三计划/张三偏好”,不要写成“用户都喜欢”。
+- 稳定 ID 相同才视为同一发言人;昵称可能变化,不同稳定 ID 不能合并。
 - 多人出现相同偏好时可以合并,但要保留人名或主体。
 - 不要把其他人的风险偏好、资产偏好、任务承诺归到当前用户身上。
+- 对戳一戳、撤回、入群、改名等平台事件,优先相信结构化事件记录;没有事件记录时不要凭聊天语气推断是谁。
 
 ## JSON 输出边界
 

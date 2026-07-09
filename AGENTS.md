@@ -176,8 +176,11 @@ Cache-friendly ordering:
 
 Important model guidance:
 
+- Treat exposed tools as part of the model's working ability, not optional decoration. If an answer depends on facts not clearly visible in the current prompt, old memory, exact timelines, attribution, preferences, relationships, promises, or platform events, the model should proactively call the appropriate tool. Multi-step tool use is allowed when the first result is insufficient.
 - Relative time words must be interpreted from the visible date/weekday anchors.
 - In group chat, preserve who said what. Do not merge different speakers into "the user".
+- For attribution questions such as who said, poked, promised, or owns a task, answer only from visible raw text or tool results. If evidence is missing, call `read_timeline`/`retrieve_for_turn` or say there is no clear record; do not guess a name.
+- For memory questions about birthdays, preferences, relationships, past statements, promises, or old events, do not answer from persona confidence. If the answer is not clearly visible, call `retrieve_for_turn` or `read_timeline`; if still unsupported, say there is no clear record instead of inventing one.
 - `memory_metadata` describes the current raw user message, not the assistant reply.
 - `memory_metadata.keywords` should be reusable tags, not sentences. Choose terms likely to be used in a future natural chat query; add broader/field/intent tags only when they improve recall, such as `可乐 / 饮料 / 偏好`.
 - If unsure about metadata, use empty arrays and lower `confidence`; do not invent tags.

@@ -154,7 +154,10 @@ def render_speaker_label(row: dict[str, Any]) -> str:
     role = _sanitize_speaker_part(row.get("role"))
     actor_name = _sanitize_speaker_part(row.get("actor_display_name"))
     actor_id = _sanitize_speaker_part(row.get("actor_id"))
-    actor = actor_name or actor_id
+    if actor_name and actor_id and actor_name != actor_id:
+        actor = f"{actor_name};id={actor_id}"
+    else:
+        actor = actor_name or actor_id
     if role and actor:
         return f"{role}({actor})"
     return role or actor
