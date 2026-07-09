@@ -122,10 +122,11 @@ Never let the model invent category names. memcore will drop values outside the 
 If the host records tool calls/results into raw memory, prefer `record_tool_exchange(...)` so the trace is stored as linear `assistant.tool_call <tool> <call_id>` and `tool.<tool> <call_id>` blocks with `categories=["tool_trace"]`. The default config excludes `tool_trace` from count-based raw compaction triggers and from normal retrieval unless `categories=["tool_trace"]` is explicitly requested. If you override `categories`, keep `tool_trace` in the enum if you need this behavior.
 
 If the host records images/files into raw memory, prefer `record_material_reference(...)` and `record_material_cleanup(...)`. These store only file/material anchors as `user.attachment <kind> <file_id>` and `system.material_cleanup <kind> <file_id>` blocks with `categories=["material_trace"]`; original files and OCR/vision/document chunks stay in host storage. The default config excludes `material_trace` from count-based raw compaction triggers and from normal retrieval unless `categories=["material_trace"]` is explicitly requested. If you override `categories`, keep `material_trace` in the enum if you need this behavior.
+For group or multi-speaker uploads, pass `actor=Actor(stable_id=..., display_name=...)` to `record_material_reference(...)` so the attachment keeps uploader attribution.
 
 ## Retrieval Tools To Expose
 
-Expose two tools to the chat model:
+Expose memory tools to the chat model:
 
 ### `retrieve_for_turn`
 
@@ -154,17 +155,32 @@ Recommended tool parameters:
 - `time_periods: list[str]` optional, such as morning/afternoon/night or localized aliases supported by the host
 - `cross_conversation: bool` only if the product allows it
 
+### `load_material` optional
+
+If the host supports images/files, expose this as a provider-native tool backed by host file/derived storage. Use it after the model has found a `material_trace` anchor in visible raw context, `read_timeline`, or `retrieve_for_turn(categories=["material_trace"])`.
+
+Recommended tool parameters:
+
+- `file_id: str`
+- `kind: str` optional, such as image/pdf/file
+- `preferred_source: str` optional — `auto`, `original`, `derived`
+- `purpose: str` optional
+
 Tell the chat model:
 
 - Use `read_timeline` for "yesterday", "last Tuesday", "that night", exact date ranges.
 - Use `retrieve_for_turn` for preferences, plans, long-term facts, people, topics, and fuzzy recall.
+- Use `load_material` for historical image/file/PDF content only after a visible or retrieved material anchor provides the `file_id`. If no anchor or retained derived content exists, say the evidence is unavailable instead of guessing.
+
+For provider-native tool loops, prefer `build_native_memory_tool_specs(...)` and
+`dispatch_native_memory_tool(...)` over legacy text wrappers. The dispatcher strictly rejects invalid filters instead of broadening them.
 
 ## Prompt Requirements
 
 When building the final chat model prompt, include:
 
 - Rendered visible memory from `render_prompt_context`.
-- Tool descriptions for `retrieve_for_turn` and `read_timeline`.
+- Tool descriptions for `retrieve_for_turn`, `read_timeline`, and optional `load_material`.
 - Time-anchor instruction from `docs/model_prompt_playbook_v1.md`.
 - Group-chat attribution instruction if `Actor` is used.
 - Optional `build_chat_output_contract_prompt(...)` if using memcore JSON.

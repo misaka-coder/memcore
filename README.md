@@ -3,7 +3,7 @@
 领域无关、可扩展、可授权的**分层记忆内核**。
 
 - **写侧**:working(原始对话)→ episodic(阶段摘要)→ semantic(长期事实)三层压缩 + 强化合并。
-- **读侧**:显式 `retrieve` / `read_timeline` 双工具 + 向量/关键词混合检索 + RRF + verifier + 五级自动放宽。
+- **读侧**:显式 `retrieve` / `read_timeline` 核心读工具 + 可选原生 `load_material` 分发 + 向量/关键词混合检索 + RRF + verifier + 五级自动放宽。
 - **贯穿**:时间锚点(带时区)、命名空间硬隔离、温度层可关、注入防线。
 
 设计规格见桌面《可复用记忆库_设计文档_v1.md》(v1.1),提示词原文见《Akane记忆系统提示词原文.md》。
@@ -25,7 +25,7 @@
 - **切片 5(读侧)✅**:`retrieval` —— 显式 retrieve 工具 → 混合检索 + RRF + 五级放宽 + raw 扩窗 → verifier 门;
   `build_prompt_context` 只拼可见三层,是否检索交给聊天模型调用工具决定。**读写侧全闭环。**
 - **时间线工具 ✅**:`read_timeline(date_from, date_to, time_periods)` —— 按时间精确读原始对话(不走向量),
-  与 `retrieve`(向量模糊检索)互补,双工具对齐参考实现。
+  与 `retrieve`(向量模糊检索)互补,构成核心读工具对。
 - **embedding 三条路 + 自检 ✅**:`HuggingFaceEmbeddingProvider`(本地 BGE-M3)/ `HTTPEmbeddingProvider`(OpenAI 兼容 API,纯 stdlib 零依赖)/ `HashedEmbeddingProvider`(仅测试)。
   `verify_embedding()` 自检语义是否真有效(近义词应明显更近),hashed/弱模型会被响亮标记。**不捆绑任何模型权重。**
 - **outbox 自愈 ✅**:向量后端故障时记录仍安全落库(pending),`reindex_pending()` 恢复后补齐索引;
@@ -57,6 +57,11 @@
 `record_user_turn` → 可见三层 → `retrieve_for_turn` / `read_timeline` 工具 → final JSON 解析 →
 metadata 回写 → `record_assistant_turn` → 后台压缩的完整闭环。
 
+原生 tool calling 接入可用 `build_native_memory_tool_specs(...)` 生成工具 schema,再用
+`dispatch_native_memory_tool(...)` 分发 `retrieve_for_turn` / `read_timeline` / `load_material`。
+`load_material` 只调用宿主传入的 `material_loader` 回调,用于读取 file_store/derived_store 中的原图、
+OCR、视觉描述、文档 chunks 或当前清理状态;memcore 不保存文件本体。
+
 设计亮点说明见 `docs/design_highlights_v1.md`;接入聊天模型时建议先读 `docs/model_prompt_playbook_v1.md`。
 如果让 AI 编码助手接入本库,请先把根目录 `AGENTS.md` 交给它读;独立接入流程见
 `docs/usage_flow_v1.md`。
@@ -70,7 +75,7 @@ mem = MemorySystem(llm=MyLLMClient(), namespace=Namespace(user_id="u1", conversa
 cur = mem.record_user_turn("我之前说过爱喝什么")
 ctx = mem.build_prompt_context(current=cur)   # 可见三层;是否检索由聊天模型自行调用 retrieve/read_timeline
 ctx_text = mem.render_prompt_context(ctx)     # 推荐文本渲染:近期 raw 按日期分组,自带星期/时间段
-# ...用 ctx + memcore 的两个检索工具拼你自己的最终聊天 prompt、调你自己的聊天模型...
+# ...用 ctx + memcore 的原生记忆工具拼你自己的最终聊天 prompt、调你自己的聊天模型...
 # 当前轮工具包装推荐用 retrieve_for_turn(current=cur, ...),避免把 prompt 已可见三层重复检索回来。
 mem.record_tool_exchange(
     tool_name="web_search",
@@ -81,6 +86,7 @@ mem.record_tool_exchange(
 mem.record_material_reference(
     file_id="file_img_001",
     kind="image",
+    actor=actor_or_none,  # 群聊/多人上传时传 Actor,保留上传者归因
     filename="photo.jpg",
     mime_type="image/jpeg",
     file_status="ready",
@@ -89,6 +95,23 @@ mem.record_material_reference(
 mem.record_assistant_turn(reply, in_reply_to=cur)
 future = mem.compact_due_background()          # 聊天链路推荐后台沉淀,不阻塞用户可见回复
 # 可忽略 future 做 fire-and-forget;测试/脚本可 future.result() 读取压缩统计
+```
+
+原生工具循环示意:
+
+```python
+tools = build_native_memory_tool_specs(categories=config.categories)
+
+tool_payload = dispatch_native_memory_tool(
+    tool_name=tool_call.name,
+    arguments=tool_call.arguments,
+    mem=mem,
+    current=cur,
+    material_loader=load_material_from_host_store,  # 宿主实现
+)
+
+# 把 tool_payload 作为 provider 原生 tool_result 回给聊天模型。
+# 如需跨轮追问该工具结果,再用 record_tool_exchange(...) 写入 tool_trace。
 ```
 
 进程重启、换一个新的内存索引实例,或升级索引 metadata 字段后,可以从 SQLite 真相源补建/热加载索引:
@@ -123,7 +146,7 @@ memcore 是**纯机制**:它不含任何具体人格、领域调教或模型权�
 | memcore 提供(机制) | 接入方自备(你的资产) |
 |---|---|
 | 三层记忆、压缩、强化、时间锚点 | 具体**人格文本**(经 `persona_text` / `PromptOverrides` 运行时注入) |
-| 混合检索、verifier、放宽、双工具 | 你的**聊天模型**(`LLMClient` 适配器) |
+| 混合检索、verifier、放宽、核心读工具与原生工具分发辅助 | 你的**聊天模型**(`LLMClient` 适配器) |
 | 焊死提示词骨架 + 校验插槽 | **领域词表**(`categories`)与**调参**(窗口/阈值) |
 | embedding 接口 + 三路适配器 + 自检 | **embedding 模型**(本地 / API / 自有) |
 | 隔离、outbox 自愈、遗忘、评测台 | 领域**合规规则**(memcore 只保证记忆不越权变指令) |
@@ -141,7 +164,8 @@ memcore 是**纯机制**:它不含任何具体人格、领域调教或模型权�
 `import memcore` 暴露:`MemorySystem`、`MemoryConfig`、`Namespace`/`Actor`、`PromptOverrides`、
 `LLMClient`/`LLMRequest`/`LLMResult`、`MemoryStore`/`VectorIndex`/`EmbeddingProvider`/`TokenCounter` 接口、
 默认实现 `SQLiteMemoryStore`/`InMemoryVectorIndex`/`HashedEmbeddingProvider`/`HTTPEmbeddingProvider`、
-`verify_embedding`、契约 `MemoryMetadata`/`SummaryRecord`/`SemanticRecord`、异常类。
+`verify_embedding`、`build_native_memory_tool_specs` / `dispatch_native_memory_tool`、契约
+`MemoryMetadata`/`SummaryRecord`/`SemanticRecord`、异常类。
 
 ## 跑测试
 

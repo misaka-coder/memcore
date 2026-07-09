@@ -197,6 +197,7 @@ class MemorySystem:
         *,
         file_id: str,
         kind: str,
+        actor: Actor | None = None,
         filename: str = "",
         mime_type: str = "",
         file_status: str = "ready",
@@ -240,7 +241,7 @@ class MemorySystem:
                 file_status=file_status,
                 derived_status=derived_status,
             ),
-            actor=None,
+            actor=actor,
             **fields,
         )
 

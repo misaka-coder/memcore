@@ -148,6 +148,7 @@ class SummaryCycleViaFacade(unittest.TestCase):
         material = mem.record_material_reference(
             file_id="file_img_001",
             kind="image",
+            actor=Actor(stable_id="qq-1", display_name="张三"),
             filename="photo.jpg",
             mime_type="image/jpeg",
             file_status="ready",
@@ -164,6 +165,8 @@ class SummaryCycleViaFacade(unittest.TestCase):
         self.assertIn("source: web_search\noutput:\nlong search output", tool["tool_result"]["content"])
         self.assertEqual(tool["tool_result"]["memory_metadata"]["categories"], ["tool_trace"])
         self.assertEqual(material["role"], "user.attachment image file_img_001")
+        self.assertEqual(material["actor_id"], "qq-1")
+        self.assertEqual(material["actor_display_name"], "张三")
         self.assertEqual(material["memory_metadata"]["categories"], ["material_trace"])
 
         first = mem.compact_due_sync()
@@ -182,7 +185,10 @@ class SummaryCycleViaFacade(unittest.TestCase):
         self.assertIn("file_img_001", visible[0]["memory_metadata"]["keywords"])
         summary_requests = [req for req in llm.requests if req.task_type == TaskType.SUMMARY]
         self.assertIn("assistant.tool_call web_search call_001\ninput:", summary_requests[0].user_prompt)
-        self.assertIn("user.attachment image file_img_001\nsource: attachment", summary_requests[0].user_prompt)
+        self.assertIn(
+            "user.attachment image file_img_001(张三;id=qq-1)\nsource: attachment",
+            summary_requests[0].user_prompt,
+        )
 
     def test_raw_token_policy_waits_until_last_message_is_assistant(self) -> None:
         cfg = MemoryConfig(
@@ -417,7 +423,7 @@ class SummaryCycleViaFacade(unittest.TestCase):
 
         summary_requests = [req for req in llm.requests if req.task_type == TaskType.SUMMARY]
         self.assertEqual(len(summary_requests), 1)
-        self.assertIn("user(张三): 我下周三要复盘基金组合", summary_requests[0].user_prompt)
+        self.assertIn("user(张三;id=qq-1): 我下周三要复盘基金组合", summary_requests[0].user_prompt)
 
 
 class SemanticAndReinforcement(unittest.TestCase):

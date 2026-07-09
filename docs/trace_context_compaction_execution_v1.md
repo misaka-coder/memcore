@@ -150,6 +150,7 @@ metadata:
 mem.record_material_reference(
     file_id="file_img_001",
     kind="image",
+    actor=Actor(stable_id="qq-1", display_name="张三"),  # 群聊/多人上传时保留上传者归因
     filename="photo.jpg",
     mime_type="image/jpeg",
     file_status="ready",

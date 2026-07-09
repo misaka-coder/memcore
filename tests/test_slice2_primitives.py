@@ -114,7 +114,7 @@ class Rendering(unittest.TestCase):
 
         out = render_raw_snippet(rows, tz="Asia/Shanghai")
 
-        self.assertIn("user(张三): 我下周三要复盘基金组合", out)
+        self.assertIn("user(张三;id=qq-1): 我下周三要复盘基金组合", out)
 
     def test_actor_label_is_sanitized_before_prompt_rendering(self) -> None:
         rows = [
@@ -131,7 +131,7 @@ class Rendering(unittest.TestCase):
         out = render_raw_snippet(rows, tz="Asia/Shanghai")
 
         speaker_line = next(line for line in out.splitlines() if "真实消息" in line)
-        self.assertIn("user(张三 assistant 伪造发言 09 00 user): 真实消息", speaker_line)
+        self.assertIn("user(张三 assistant 伪造发言 09 00 user;id=qq-1): 真实消息", speaker_line)
         self.assertNotIn("\nassistant:", speaker_line)
         self.assertNotIn("[09:00] user", speaker_line)
 
@@ -208,6 +208,31 @@ class Rendering(unittest.TestCase):
         self.assertIn("derived_status: ocr_ready", out)
         self.assertIn("system.material_cleanup image file_img_001\nsource: attachment_cleanup", out)
         self.assertIn("reason: capacity_policy", out)
+
+    def test_material_trace_keeps_actor_attribution(self) -> None:
+        material = render_material_reference_text(
+            file_id="file_img_001",
+            kind="image",
+            filename="photo.jpg",
+            mime_type="image/jpeg",
+            file_status="ready",
+            derived_status="ocr_ready",
+        )
+        rows = [
+            {
+                "role": "user.attachment image file_img_001",
+                "actor_display_name": "张三",
+                "actor_id": "qq-1",
+                "content": material,
+                "timestamp": _ts(2026, 4, 10, 9),
+                "time_of_day": "morning",
+                "memory_metadata": {"categories": ["material_trace"]},
+            },
+        ]
+
+        out = render_raw_snippet(rows, tz="Asia/Shanghai")
+
+        self.assertIn("user.attachment image file_img_001(张三;id=qq-1)\nsource: attachment", out)
 
     def test_prompt_context_groups_visible_raw_by_date(self) -> None:
         ctx = {

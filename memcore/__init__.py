@@ -33,6 +33,11 @@ from .index.memory_index import InMemoryVectorIndex
 from .index.rrf import fuse_with_rrf
 from .llm.base import LLMClient, LLMRequest, LLMResult, ResponseFormat, TaskType
 from .memory_system import MemorySystem
+from .native_tools import (
+    NATIVE_MEMORY_TOOL_NAMES,
+    build_native_memory_tool_specs,
+    dispatch_native_memory_tool,
+)
 from .namespace import Actor, Namespace
 from .schema import (
     DEFAULT_CATEGORIES,
@@ -53,6 +58,9 @@ __all__ = [
     "__version__",
     # 门面
     "MemorySystem",
+    "NATIVE_MEMORY_TOOL_NAMES",
+    "build_native_memory_tool_specs",
+    "dispatch_native_memory_tool",
     # 配置 / 命名空间
     "MemoryConfig",
     "ChatOutputConfig",

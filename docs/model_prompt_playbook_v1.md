@@ -7,14 +7,16 @@ memcore 不替宿主写完整人格 prompt,但建议把下面这些规则拼到�
 ## 最小推荐提示词
 
 ```text
-你可以看到 memcore 提供的可见三层记忆,并可使用两个记忆工具:
+你可以看到 memcore 提供的可见三层记忆,并可使用记忆工具:
 - retrieve_for_turn: 按语义/关键词/metadata 模糊检索长期或历史记忆,并排除当前 prompt 已经可见的记忆与本轮消息。
 - read_timeline: 按日期/时间段精确读取原始对话,适合处理“昨天/上周二/4月10日晚上”等时间问题。
+- load_material: 若宿主支持图片/文件,按 file_id 读取当前可用的原文件、OCR、视觉描述、文档 chunks 或清理状态。
 
 把工具当作你的可用能力和结构化信息通道,不是摆设。凡是答案依赖未在当前 prompt 中明确可见的事实、旧记忆、精确时间线、人物归因、承诺、偏好、关系或平台事件时,请主动调用合适的工具求证。一次工具结果不够时,可以根据结果继续调用工具补查,直到足以回答或确认没有明确记录。
 
 当用户提到“昨天/今天/明天/上周/上周二/最近/刚才”等相对时间时,必须结合 prompt 里的日期、星期和时间段锚点理解。
 如果需要精确日期或时间范围,优先调用 read_timeline;如果是偏好、计划、人物关系、长期事实等模糊问题,调用 retrieve_for_turn。
+如果问题依赖“刚才那张图/之前那个文件/PDF 第几页”等材料内容,先通过可见 raw 或 retrieve_for_turn(categories=["material_trace"]) 找到 file_id,再调用 load_material。
 人格亲近感不能替代证据;不要为了显得记得、懂得或反应快而跳过工具编造。
 
 不要重复检索当前 prompt 已经可见的记忆;宿主会用 retrieve_for_turn 排除可见三层和本轮消息。
@@ -57,7 +59,7 @@ memcore 会把 raw、summary、semantic、timeline 渲染成带日期和星期�
 
 ```text
 [日期 2026-04-10 周五]
-[09:00 | 上午] user(张三): 上周二那份报告我还没看完
+[09:00 | 上午] user(张三;id=qq-1): 上周二那份报告我还没看完
 ```
 
 模型应理解:
@@ -65,7 +67,7 @@ memcore 会把 raw、summary、semantic、timeline 渲染成带日期和星期�
 - “上周二”要以这条消息自己的时间锚点 `2026-04-10 周五` 为参照。
 - 摘要或长期记忆里不要留下未锚定的“昨天/上周/最近”;需要写入记忆时改成绝对日期或日期范围。
 - 用户问精确时间问题时,`read_timeline` 比向量检索更可靠。
-- 用户问“我是不是说过喜欢什么/计划过什么/谁负责什么”这类模糊事实时,`retrieve` 更合适。
+- 用户问“我是不是说过喜欢什么/计划过什么/谁负责什么”这类模糊事实时,`retrieve_for_turn` 更合适。
 
 ## 工具选择
 
@@ -77,6 +79,9 @@ retrieve_for_turn(query, keywords?, source_layers?, categories?, subject_scopes?
 
 read_timeline(date_from, date_to?, time_periods?)
 用于精确读取某天或日期范围的原始对话。日期必须是 YYYY-MM-DD。
+
+load_material(file_id, kind?, preferred_source?, purpose?)
+用于读取宿主保存的图片/附件/PDF 当前可用内容或状态。先从可见 raw、read_timeline 或 retrieve_for_turn(categories=["material_trace"]) 找到 file_id,再调用它。
 ```
 
 常见选择:
@@ -88,11 +93,12 @@ read_timeline(date_from, date_to?, time_periods?)
 | “上周二那件事后来怎么样了?” | 先用时间锚点算日期,再 `read_timeline`;必要时补 `retrieve_for_turn` |
 | “谁负责基金复盘?” | 群聊场景优先带人物/计划关键词 `retrieve_for_turn`,必要时读时间线 |
 | “刚才谁戳你了?” | 优先 `read_timeline` 读取最近/当天平台事件;只根据明确事件记录回答 |
+| “之前那张图/PDF 里是什么?” | 先找 `material_trace` 锚点拿 `file_id`,再 `load_material(file_id=..., preferred_source="derived")` |
 | “你还记得我生日吗?” | 当前可见记忆没有明确生日时必须 `retrieve_for_turn`,查不到就说没看到明确记录 |
 
 ## 结构化上下文与工具通道
 
-宿主应优先使用模型服务原生 tool calling / tool result 机制,让工具调用、工具结果、调用 ID、参数和返回值保持结构化。不要把工具结果降级成一段普通自然语言塞进用户消息尾部,除非接入方只能使用 legacy 通道。
+宿主应优先使用模型服务原生 tool calling / tool result 机制,让工具调用、工具结果、调用 ID、参数和返回值保持结构化。不要把工具结果降级成一段普通自然语言塞进用户消息尾部,除非接入方只能使用 legacy 通道。memcore 提供 `build_native_memory_tool_specs(...)` 和 `dispatch_native_memory_tool(...)` 作为原生工具 schema 与分发辅助。
 
 推荐分层:
 
@@ -100,7 +106,7 @@ read_timeline(date_from, date_to?, time_periods?)
 2. `tool_trace` raw:宿主可选地把工具调用/工具结果追加进 memcore raw,用于“刚才那个搜索结果/上次读的文件”这类追问。默认配置下,`tool_trace` 不计入 count-based raw 压缩触发数量,普通检索也默认排除它;只有显式 `categories=["tool_trace"]` 时才检索工具轨迹。
 3. `material_trace` raw:宿主可选地把图片/文件上传、解析状态、清理状态追加进 memcore raw,用于“刚才那张图/之前那个 PDF”这类追问。事件只记录 file_id、文件名、类型、file_status、derived_status;文件本体和 OCR/视觉描述/文档 chunks 应由宿主 file_store/derived_store 保存。默认配置下,`material_trace` 也不计入 count-based raw 压缩触发数量,普通检索默认排除;只有显式 `categories=["material_trace"]` 时才检索材料轨迹。
 4. `render_prompt_context(ctx)`:memcore 的可见 raw/summary/semantic 记忆,用于长期连续性和可见上下文。
-5. `retrieve_for_turn/read_timeline`:需要更多记忆证据时由模型主动调用。
+5. `retrieve_for_turn/read_timeline/load_material`:需要更多记忆证据或材料内容时由模型主动调用。
 
 如果只能走 legacy 文本 followup,请用清晰边界标出工具名、输入、输出和时间,并告诉模型这段是工具结果而非用户原话。但这只是兼容方案,效果不如原生结构化工具通道。
 
@@ -140,6 +146,7 @@ output:
 mem.record_material_reference(
     file_id="file_img_001",
     kind="image",
+    actor=Actor(stable_id="qq-1", display_name="张三"),  # 群聊/多人上传时保留上传者归因
     filename="photo.jpg",
     mime_type="image/jpeg",
     file_status="ready",
@@ -162,7 +169,7 @@ file_status: ready
 derived_status: ocr_ready
 ```
 
-多模态模型当前轮需要看图时,宿主可以在 provider 请求里直接附图片;非多模态模型则应使用宿主保存的 OCR、图片描述或文档解析结果。历史追问时,模型先通过可见 raw、`read_timeline` 或 `retrieve_for_turn(categories=["material_trace"])` 找到材料锚点,再按宿主暴露的文件/解析工具读取可用内容。若材料已清理且没有保留解析结果,模型必须说明无法确认,不要假装看到了原文件。
+多模态模型当前轮需要看图时,宿主可以在 provider 请求里直接附图片;非多模态模型则应使用宿主保存的 OCR、图片描述或文档解析结果。历史追问时,模型先通过可见 raw、`read_timeline` 或 `retrieve_for_turn(categories=["material_trace"])` 找到材料锚点,再调用宿主暴露的 `load_material` 工具读取可用内容。若材料已清理且没有保留解析结果,模型必须说明无法确认,不要假装看到了原文件。
 
 如果接入方自定义 `MemoryConfig.categories`,仍想使用材料轨迹机制,需要把 `material_trace` 保留在枚举里。
 
@@ -213,8 +220,8 @@ memcore 的硬隔离是 `tenant_id / user_id / domain_id`;`actor` 是同一记�
 
 模型要做:
 
-- 看见 `user(张三): ...` 时,记成“张三说/张三计划/张三偏好”,不要写成“用户都喜欢”。
-- 逐行绑定昵称和内容。不要因为相邻消息、上下文语气或同一话题,把不同昵称的人合并。
+- 看见 `user(张三;id=qq-1): ...` 时,记成“qq-1/张三说、计划或偏好”,不要写成“用户都喜欢”。
+- 逐行绑定稳定 ID、昵称和内容。稳定 ID 不同的人不要因为昵称、相邻消息、上下文语气或同一话题被合并。
 - 多人出现相同偏好时可以合并,但要保留人名或主体。
 - 不要把其他人的风险偏好、资产偏好、任务承诺归到当前用户身上。
 - 对戳一戳、撤回、入群、改名等平台事件,优先相信结构化事件记录;没有事件记录时不要凭聊天语气推断是谁。

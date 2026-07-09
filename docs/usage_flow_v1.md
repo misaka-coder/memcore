@@ -95,12 +95,18 @@ A production host must provide or choose:
 
 ## Retrieval Tools To Expose
 
-Expose two memory tools to the final chat model:
+Expose memory tools to the final chat model:
 
 - `retrieve_for_turn(current=cur, ...)` for fuzzy preferences, plans, people,
   topics, and long-term facts.
 - `read_timeline(...)` for exact date/time questions such as yesterday, last
   Tuesday, or a date range.
+
+If the host supports images/files, also expose `load_material(file_id, kind?,
+preferred_source?, purpose?)` as a provider-native tool backed by host
+file/derived storage. Historical image/file follow-ups should find a
+`material_trace` anchor first, then call `load_material` for current original
+content, OCR, image descriptions, document chunks, or an expired status.
 
 Prefer `retrieve_for_turn` over direct `retrieve` during live turns because it
 excludes memory already visible in the prompt and excludes the current user
@@ -108,6 +114,23 @@ message.
 
 Do not turn invalid filters into broad successful searches. Return structured
 tool errors according to host policy.
+
+memcore provides optional native-tool helpers:
+
+```python
+tools = build_native_memory_tool_specs(categories=mem.config.categories)
+tool_result = dispatch_native_memory_tool(
+    tool_name=tool_call.name,
+    arguments=tool_call.arguments,
+    mem=mem,
+    current=cur,
+    material_loader=load_material_from_host_store,
+)
+```
+
+Send `tool_result` back through the model provider's native tool-result channel.
+If the product wants cross-turn recall of tool calls/results, record them with
+`record_tool_exchange(...)` after the native tool call completes.
 
 If the host app records tool calls or tool results into raw memory, prefer
 `record_tool_exchange(...)`. It writes `assistant.tool_call <tool> <call_id>`
@@ -126,6 +149,8 @@ multimodal models may receive the image through the provider request; non-
 multimodal models should receive derived text. Historical follow-ups should
 find the `material_trace` anchor first, then load available derived content via
 host tools.
+In group or multi-speaker uploads, pass `actor=Actor(stable_id=..., display_name=...)`
+to `record_material_reference(...)` so the attachment keeps uploader attribution.
 
 ## Prompt Composition
 
