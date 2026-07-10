@@ -10,6 +10,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from memcore import (
+    Actor,
     HashedEmbeddingProvider,
     InMemoryVectorIndex,
     MemoryConfig,
@@ -325,6 +326,55 @@ class ExplicitRetrieve(unittest.TestCase):
         self.assertFalse(out["ok"])
         self.assertEqual(out["status"], "not_found")
         self.assertEqual(out["reason"], "source_id_not_found_or_not_raw")
+        store.close()
+
+    def test_update_turn_metadata_accepts_matching_actor_owner(self) -> None:
+        store, index, emb = _shared_backends()
+        mem = _mem(store, index, emb, conversation="group-1", config=MemoryConfig(enable_verifier=False))
+        actor = Actor(stable_id="qq:10001", display_name="张三")
+        rec = mem.record_user_turn(
+            "我最近更关注新能源板块。",
+            actor=actor,
+            timestamp=1000,
+            source_id="actor-message-1",
+        )
+
+        out = mem.update_turn_metadata(
+            rec["source_id"],
+            {
+                "keywords": ["新能源", "关注板块"],
+                "categories": ["preference"],
+                "subject_scopes": ["user"],
+                "importance": 0.8,
+            },
+            actor=actor,
+        )
+
+        self.assertTrue(out["ok"])
+        stored = store.get_record_by_source_id(rec["source_id"])
+        self.assertEqual(stored["actor_id"], "qq:10001")
+        self.assertEqual(stored["actor_display_name"], "张三")
+        self.assertEqual(stored["memory_metadata"]["keywords"], ["新能源", "关注板块"])
+        self.assertTrue(any("新能源板块" in item for item in mem.retrieve("新能源", keywords=["新能源"])))
+        store.close()
+
+    def test_update_turn_metadata_rejects_wrong_actor_owner(self) -> None:
+        store, index, emb = _shared_backends()
+        mem = _mem(store, index, emb, conversation="group-1")
+        mem.record_user_turn(
+            "这是张三的关注方向。",
+            actor=Actor(stable_id="qq:10001", display_name="张三"),
+            timestamp=1000,
+            source_id="actor-message-1",
+        )
+
+        with self.assertRaises(NamespaceError):
+            mem.update_turn_metadata(
+                "actor-message-1",
+                {"keywords": ["污染"]},
+                actor=Actor(stable_id="qq:10002", display_name="李四"),
+            )
+        self.assertEqual(store.get_record_by_source_id("actor-message-1")["memory_metadata"]["keywords"], [])
         store.close()
 
     def test_update_turn_metadata_rejects_cross_namespace_source_id(self) -> None:

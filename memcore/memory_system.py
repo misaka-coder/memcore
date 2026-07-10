@@ -475,11 +475,18 @@ class MemorySystem:
         self.index.upsert([entry])
         self.store.set_index_status(entry["source_id"], "indexed")
 
-    def update_turn_metadata(self, source_id: str, memory_metadata: dict[str, Any] | None) -> dict[str, Any]:
+    def update_turn_metadata(
+        self,
+        source_id: str,
+        memory_metadata: dict[str, Any] | None,
+        *,
+        actor: Actor | None = None,
+    ) -> dict[str, Any]:
         """回写 raw turn 的 memory_metadata,并重建 raw 向量索引。
 
         用于 Chat Output Adapter:先安全记录用户原文,等聊天模型 final JSON 出来后,
-        再把模型本人给出的 memory_metadata 回写到该 raw message。
+        再把模型本人给出的 memory_metadata 回写到该 raw message。群聊 user raw
+        若使用 Actor 写入,回写时必须传入同一个稳定 Actor,避免跨发言人覆盖。
         """
         sid = str(source_id or "").strip()
         if not sid:
@@ -496,8 +503,9 @@ class MemorySystem:
             categories=self.config.categories,
             enable_flavor=self.config.enable_flavor,
         ).to_dict()
+        owner_namespace = self.namespace if actor is None else self._with_actor(actor)
         rec = self.store.update_message_memory_metadata(
-            namespace=self.namespace, source_id=sid, memory_metadata=metadata
+            namespace=owner_namespace, source_id=sid, memory_metadata=metadata
         )
         if rec is None:
             return {
