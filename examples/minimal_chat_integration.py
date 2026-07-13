@@ -1,6 +1,6 @@
 """Minimal memcore chat integration demo.
 
-Run from the repository root:
+Run in an environment containing the released `memcore` package:
 
     python examples/minimal_chat_integration.py
 
@@ -13,19 +13,13 @@ semantic recall.
 from __future__ import annotations
 
 import json
-import sys
 from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 from zoneinfo import ZoneInfo
 
-# Let `python examples/minimal_chat_integration.py` import the local source tree.
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from memcore import (  # noqa: E402
+from memcore import (
     HashedEmbeddingProvider,
     InMemoryVectorIndex,
     LLMClient,
