@@ -35,6 +35,8 @@ DEFAULT_CATEGORIES: tuple[str, ...] = (
     "material_trace",
 )
 
+TRACE_CATEGORIES: tuple[str, ...] = ("tool_trace", "material_trace")
+
 SUBJECT_SCOPES: tuple[str, ...] = ("user", "assistant", "other")
 
 MOOD_TAGS: tuple[str, ...] = (

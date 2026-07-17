@@ -125,7 +125,53 @@ class SummaryCycleViaFacade(unittest.TestCase):
         self.assertEqual(len(visible), 1)
         self.assertEqual(visible[0]["index_status"], "indexed")
 
-    def test_trace_raw_does_not_count_but_is_included_in_count_compaction_span(self) -> None:
+    def test_tool_trace_counts_toward_count_compaction_and_keeps_metadata(self) -> None:
+        cfg = MemoryConfig(raw_trigger_count=4, summary_batch_size=2, episodic_compact_trigger_count=99)
+        llm = CapturingLLM()
+        mem = MemorySystem(
+            llm=llm,
+            namespace=Namespace(user_id="u1", conversation_id="c1"),
+            timezone="Asia/Shanghai",
+            config=cfg,
+            embedding=HashedEmbeddingProvider(),
+        )
+        first_tool = mem.record_tool_exchange(
+            tool_name="web_search",
+            tool_call_id="call_001",
+            tool_input={"query": "第一条搜索"},
+            result="first search output",
+            timestamp=1000,
+            source_id_prefix="tool1",
+            keywords=["第一条搜索"],
+        )
+        second_tool = mem.record_tool_exchange(
+            tool_name="quote_snapshot",
+            tool_call_id="call_002",
+            tool_input={"code": "NIKKEI225.INDEX"},
+            result="second tool output",
+            timestamp=1002,
+            source_id_prefix="tool2",
+            keywords=["日经225"],
+        )
+
+        out = mem.compact_due_sync()
+
+        self.assertEqual(out["summaries_created"], 1)
+        self.assertEqual(first_tool["tool_result"]["memory_metadata"]["categories"], ["tool_trace"])
+        self.assertEqual(second_tool["tool_result"]["memory_metadata"]["categories"], ["tool_trace"])
+        remaining = mem.store.get_unsummarized_messages(namespace=mem.namespace)
+        self.assertEqual([m["source_id"] for m in remaining], ["tool2:tool_use", "tool2:tool_result"])
+        visible = mem.store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10)
+        self.assertEqual(visible[0]["source_ids"], ["tool1:tool_use", "tool1:tool_result"])
+        self.assertIn("tool_trace", visible[0]["memory_metadata"]["categories"])
+        summary_requests = [req for req in llm.requests if req.task_type == TaskType.SUMMARY]
+        self.assertIn("assistant.tool_call web_search call_001\ninput:", summary_requests[0].user_prompt)
+        self.assertIn(
+            "tool.web_search call_001\nsource: web_search\noutput:\nfirst search output",
+            summary_requests[0].user_prompt,
+        )
+
+    def test_material_trace_does_not_count_but_is_included_in_count_compaction_span(self) -> None:
         cfg = MemoryConfig(raw_trigger_count=4, summary_batch_size=2, episodic_compact_trigger_count=99)
         llm = CapturingLLM()
         mem = MemorySystem(
@@ -136,15 +182,6 @@ class SummaryCycleViaFacade(unittest.TestCase):
             embedding=HashedEmbeddingProvider(),
         )
         mem.record_user_turn("普通消息0", timestamp=1000, source_id="m0")
-        tool = mem.record_tool_exchange(
-            tool_name="web_search",
-            tool_call_id="call_001",
-            tool_input={"query": "北京天气"},
-            result="long search output",
-            timestamp=1001,
-            source_id_prefix="tool1",
-            keywords=["搜索结果"],
-        )
         material = mem.record_material_reference(
             file_id="file_img_001",
             kind="image",
@@ -159,11 +196,6 @@ class SummaryCycleViaFacade(unittest.TestCase):
         )
         mem.record_user_turn("普通消息1", timestamp=1004, source_id="m1")
         mem.record_user_turn("普通消息2", timestamp=1005, source_id="m2")
-        self.assertEqual(tool["tool_use"]["role"], "assistant.tool_call web_search call_001")
-        self.assertEqual(tool["tool_result"]["role"], "tool.web_search call_001")
-        self.assertIn("input:", tool["tool_use"]["content"])
-        self.assertIn("source: web_search\noutput:\nlong search output", tool["tool_result"]["content"])
-        self.assertEqual(tool["tool_result"]["memory_metadata"]["categories"], ["tool_trace"])
         self.assertEqual(material["role"], "user.attachment image file_img_001")
         self.assertEqual(material["actor_id"], "qq-1")
         self.assertEqual(material["actor_display_name"], "张三")
@@ -179,12 +211,10 @@ class SummaryCycleViaFacade(unittest.TestCase):
         remaining = mem.store.get_unsummarized_messages(namespace=mem.namespace)
         self.assertEqual([m["source_id"] for m in remaining], ["m2", "m3"])
         visible = mem.store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10)
-        self.assertEqual(visible[0]["source_ids"], ["m0", "tool1:tool_use", "tool1:tool_result", "mat1", "m1"])
-        self.assertIn("tool_trace", visible[0]["memory_metadata"]["categories"])
+        self.assertEqual(visible[0]["source_ids"], ["m0", "mat1", "m1"])
         self.assertIn("material_trace", visible[0]["memory_metadata"]["categories"])
         self.assertIn("file_img_001", visible[0]["memory_metadata"]["keywords"])
         summary_requests = [req for req in llm.requests if req.task_type == TaskType.SUMMARY]
-        self.assertIn("assistant.tool_call web_search call_001\ninput:", summary_requests[0].user_prompt)
         self.assertIn(
             "user.attachment image file_img_001(张三;id=qq-1)\nsource: attachment",
             summary_requests[0].user_prompt,

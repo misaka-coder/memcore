@@ -41,7 +41,7 @@
   接入方提示词指南见 `docs/model_prompt_playbook_v1.md`。
 - **工具轨迹类别 ✅**:`record_tool_exchange(...)` 可把工具调用/结果以 `assistant.tool_call ...` +
   `tool.<name> ...` 的线性事件块追加进 raw。
-  默认不计入 count-based raw 压缩触发数量,普通检索也默认排除;显式 `categories=["tool_trace"]` 时可检索工具轨迹。
+  默认参与 count-based raw 压缩触发并进入正常摘要生命周期;普通检索仍默认排除,显式 `categories=["tool_trace"]` 时可检索工具轨迹。
 - **材料轨迹类别 ✅**:`record_material_reference(...)` / `record_material_cleanup(...)` 可把图片、文件、解析物状态以
   `user.attachment ...` / `system.material_cleanup ...` 事件块追加进 raw。事件只保存 file_id、文件名、类型和状态;
   原始文件与 OCR/视觉描述/文档 chunks 由宿主 file_store/derived_store 管理。默认不计入 count-based raw 压缩触发数量,

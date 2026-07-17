@@ -6,12 +6,13 @@
 
 截至本版文档,memcore 已落地:
 
-- `tool_trace` / `material_trace` 默认 category、默认 count 压缩触发排除、默认普通检索排除。
+- `tool_trace` / `material_trace` 是稳定 trace category;默认普通检索排除两者。
 - `record_tool_exchange(...)`、`record_material_reference(...)`、`record_material_cleanup(...)` 三个事件写入入口。
 - 可见 raw、raw snippet、summary transcript 均使用 trace-aware 渲染,工具/材料事件不伪装成普通用户消息。
-- count policy 已改为“触发排除 trace、summary batch 包含跨度内 trace”。
+- count policy 默认让 `tool_trace`参与触发;`material_trace`仍不计数,但位于 batch 跨度内时会进入 summary。
 - raw -> summary 保存前会确定性合并跨度内 trace category/keywords/source scopes。
-- 相关单测覆盖默认配置、渲染、count 压缩跨度、summary metadata 继承、默认检索排除与显式检索。
+- trace 身份由 `TRACE_CATEGORIES`定义,不再借用压缩排除配置判断。
+- 相关单测覆盖纯工具轨迹触发、材料跨度、summary metadata 继承、默认检索排除与显式检索。
 
 ## 当前代码勘探结论
 
@@ -23,12 +24,10 @@
   - `_select_raw_summary_batch(...)` 决定是否压缩、压缩哪批 raw。
   - `_render_transcript(batch)` 把 batch 渲染给 summary LLM。
   - summary 成功后写 `summaries`,再 `mark_messages_summarized(source_ids, summary_id)`。
-- 旧 count policy 的行为:
-  - `raw_compaction_excluded_categories` 已用于触发计数排除。
-  - 但 batch 当前只取 eligible 消息,也就是说被排除的 trace 不进入 summary batch。
-- 新 count policy 的行为:
-  - `raw_compaction_excluded_categories` 只影响触发计数和普通消息边界。
-  - summary batch 会包含两个普通消息边界之间的完整 raw 跨度,夹在中间的 trace 会一起被压缩。
+- 当前 count policy 的行为:
+  - `raw_compaction_excluded_categories` 只影响触发计数和 batch 边界;默认值只有 `material_trace`。
+  - `tool_trace`默认参与条数触发,所以纯工具时间线也会达到阈值并进入摘要。
+  - summary batch 会包含两个 eligible 边界之间的完整 raw 跨度,夹在中间的 `material_trace`会一起被压缩。
 - 当前 token policy 的行为:
   - 按所有未摘要 raw 的 content token 总量触发。
   - 批次边界要求最后一条 raw 的 `role == "assistant"`。
@@ -60,22 +59,23 @@ output:
 - 可见 raw 和 raw snippet 已对 `tool_trace` 做特殊渲染:事件头独立一行,正文接在下面。
 - `_render_transcript()` 已复用 trace-aware raw 渲染,summary prompt 中的工具/材料事件不会退回成普通聊天行。
 
-### 已有未提交变更状态
+### 当前配置状态
 
-- `tool_trace` 已经作为默认 category、默认压缩触发排除、默认检索排除存在。
-- `material_trace` 已加入 `DEFAULT_CATEGORIES` 和默认排除配置,并已有 facade、渲染、测试和文档闭环。
+- `TRACE_CATEGORIES=("tool_trace", "material_trace")`是压缩 metadata 继承的稳定身份权威。
+- `raw_compaction_excluded_categories=("material_trace",)`;`tool_trace`默认参与 count 生命周期。
+- `retrieval_default_excluded_categories=("tool_trace", "material_trace")`;普通检索排除行为不变。
 
 ## 总体设计
 
 ### 核心规则
 
-1. **触发压缩时排除 trace**
+1. **工具轨迹参与正常压缩生命周期**
 
-   count policy 下,`tool_trace` / `material_trace` 不计入 `raw_trigger_count`。普通对话达到触发阈值才触发压缩。
+   count policy 下,`tool_trace`计入 `raw_trigger_count`。即使没有普通聊天,连续工具调用与结果也能自行达到阈值并进入 summary。
 
-2. **真正压缩时包含跨度内 trace**
+2. **材料锚点不计数,但包含在跨度内**
 
-   触发和 batch 边界按普通消息决定,但 summary batch 应取从第 1 条 eligible 到第 N 条 eligible 之间的完整 raw 跨度。中间夹着的工具调用、工具结果、附件上传、材料清理事件都进入 transcript。
+   默认只有 `material_trace`不计入触发和 batch 边界。summary batch 仍取从第 1 条 eligible 到第 N 条 eligible 之间的完整 raw 跨度,中间夹着的附件上传和材料清理事件会进入 transcript。
 
 3. **压缩后保留可接续锚点**
 
@@ -236,16 +236,9 @@ output:
 
 ## 压缩算法变更
 
-### Count policy:触发排除,跨度包含
+### Count policy:工具计数,材料跨度包含
 
 当前逻辑:
-
-```python
-eligible = [m for m in msgs if not excluded(m)]
-return eligible[:summary_batch_size] if len(eligible) >= raw_trigger_count else []
-```
-
-目标逻辑:
 
 ```python
 eligible_indexes = [i for i, m in enumerate(msgs) if not excluded(m)]
@@ -259,10 +252,11 @@ return msgs[start : end + 1]
 
 含义:
 
-- 触发数只数普通消息。
-- 压缩 batch 覆盖最老 `summary_batch_size` 条普通消息。
-- 跨度内夹着的 `tool_trace/material_trace` 一起进入 summary。
-- 跨度前只有 trace、还没有普通消息时,这些 trace 暂不压缩,等待后续普通消息形成可叙述上下文。
+- 默认 eligible 包含普通消息和 `tool_trace`,只排除 `material_trace`。
+- 压缩 batch 覆盖最老 `summary_batch_size` 条 eligible raw。
+- 跨度内夹着的 `material_trace`一起进入 summary。
+- 纯工具时间线达到 `raw_trigger_count`后会正常创建 summary,不会等待普通聊天替它触发。
+- 接入方仍可显式覆盖 `raw_compaction_excluded_categories`,但 trace metadata 身份始终由 `TRACE_CATEGORIES`判断。
 
 ### Token policy:容量兜底
 
@@ -368,7 +362,8 @@ uploaded_at: ...
 
 1. **默认枚举和排除项**
    - `DEFAULT_CATEGORIES` 加 `material_trace`。
-   - `raw_compaction_excluded_categories` 默认包含 `tool_trace/material_trace`。
+   - `TRACE_CATEGORIES` 固定包含 `tool_trace/material_trace`。
+   - `raw_compaction_excluded_categories` 默认只包含 `material_trace`;`tool_trace`参与 count 触发。
    - `retrieval_default_excluded_categories` 默认包含 `tool_trace/material_trace`。
 
 2. **材料事件 facade**
@@ -383,9 +378,9 @@ uploaded_at: ...
    - content 采用 `source/filename/mime/file_status/derived_status/reason` 多行块。
    - `material_trace` 与 `tool_trace` 一样使用独立事件头,不渲染成 `speaker: content`。
 
-4. **Count batch 选择改为跨度包含**
-   - 触发和 eligible 边界排除 trace。
-   - 返回 batch 时包含两个 eligible 边界之间的所有消息。
+4. **Count batch 选择使用独立容量与身份规则**
+   - `tool_trace`默认参与触发和 eligible 边界。
+   - `material_trace`默认不计数,返回 batch 时仍包含两个 eligible 边界之间的所有消息。
 
 5. **Summary transcript 复用 trace-aware 渲染**
    - 避免工具/材料事件在压缩提示词里退化成普通聊天行。
@@ -400,8 +395,10 @@ uploaded_at: ...
 
 8. **测试**
    - 默认 config 含 `material_trace`。
+   - 只有 tool exchange、没有普通聊天时也能达到 count trigger 并创建 summary。
+   - summary source_ids 包含完整 tool use/result,metadata 继续继承 `tool_trace`。
    - `material_trace` 默认不计入 count 触发。
-   - count batch 包含跨度内 tool/material trace。
+   - count batch 包含跨度内 material trace。
    - summary source_ids 包含跨度内 trace。
    - summary metadata 继承 trace category/关键词。
    - 默认 retrieve 不搜 material trace。

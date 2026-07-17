@@ -103,7 +103,7 @@ load_material(file_id, kind?, preferred_source?, purpose?)
 推荐分层:
 
 1. `tool_use/tool_result`:当前轮工具调用的结构化通道。模型能区分工具结果和用户文本,也能关联结果属于哪次调用。
-2. `tool_trace` raw:宿主可选地把工具调用/工具结果追加进 memcore raw,用于“刚才那个搜索结果/上次读的文件”这类追问。默认配置下,`tool_trace` 不计入 count-based raw 压缩触发数量,普通检索也默认排除它;只有显式 `categories=["tool_trace"]` 时才检索工具轨迹。
+2. `tool_trace` raw:宿主可选地把工具调用/工具结果追加进 memcore raw,用于“刚才那个搜索结果/上次读的文件”这类追问。默认配置下,`tool_trace` 参与 count-based raw 压缩触发并进入正常摘要生命周期;普通检索仍默认排除它,只有显式 `categories=["tool_trace"]` 时才检索工具轨迹。
 3. `material_trace` raw:宿主可选地把图片/文件上传、解析状态、清理状态追加进 memcore raw,用于“刚才那张图/之前那个 PDF”这类追问。事件只记录 file_id、文件名、类型、file_status、derived_status;文件本体和 OCR/视觉描述/文档 chunks 应由宿主 file_store/derived_store 保存。默认配置下,`material_trace` 也不计入 count-based raw 压缩触发数量,普通检索默认排除;只有显式 `categories=["material_trace"]` 时才检索材料轨迹。
 4. `render_prompt_context(ctx)`:memcore 的可见 raw/summary/semantic 记忆,用于长期连续性和可见上下文。
 5. `retrieve_for_turn/read_timeline/load_material`:需要更多记忆证据或材料内容时由模型主动调用。

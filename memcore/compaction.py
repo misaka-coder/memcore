@@ -23,7 +23,7 @@ from .llm.base import LLMClient, LLMRequest, ResponseFormat, TaskType
 from .namespace import Namespace
 from .prompts import PromptOverrides, build_reinforcement_prompts, build_semantic_prompts, build_summary_prompts
 from .rendering import render_raw_snippet
-from .schema import coerce_memory_metadata
+from .schema import TRACE_CATEGORIES, coerce_memory_metadata
 from .store.base import MemoryStore
 from .text_utils import normalize_text
 from .time_anchor import (
@@ -221,7 +221,7 @@ class Compaction:
         ).to_dict()
 
     def _trace_metadata_from_batch(self, batch: list[dict[str, Any]]) -> tuple[list[str], list[str], list[str]]:
-        trace_set = {str(item) for item in self.config.raw_compaction_excluded_categories}
+        trace_set = set(TRACE_CATEGORIES)
         allowed = set(self.config.categories)
         categories: list[str] = []
         keywords: list[str] = []

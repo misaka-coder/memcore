@@ -135,9 +135,9 @@ If the product wants cross-turn recall of tool calls/results, record them with
 If the host app records tool calls or tool results into raw memory, prefer
 `record_tool_exchange(...)`. It writes `assistant.tool_call <tool> <call_id>`
 and `tool.<tool> <call_id>` blocks with `categories=["tool_trace"]`. The
-default config keeps these records visible as raw context but excludes them
-from count-based raw compaction triggers and from normal retrieval unless the
-model explicitly asks for `tool_trace`.
+default count policy lets these records contribute to raw compaction triggers,
+so tool-only timelines enter the normal summary lifecycle. Normal retrieval
+still excludes them unless the model explicitly asks for `tool_trace`.
 
 If the host app handles images or files, record only material references with
 `record_material_reference(...)` and cleanup events with

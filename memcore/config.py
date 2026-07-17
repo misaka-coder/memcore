@@ -29,9 +29,8 @@ class MemoryConfig:
     raw_token_min_remainder_messages: int = 1  # token policy:压缩后至少保留多少条 raw 近期上下文
     raw_token_boundary_role: str = "assistant"  # token policy:批次边界对齐到 assistant 回复
     raw_compaction_excluded_categories: tuple[str, ...] = (
-        "tool_trace",
         "material_trace",
-    )  # count policy:不计入 30 条普通对话压缩节奏
+    )  # count policy:材料锚点不计数;工具轨迹参与正常 raw 生命周期
     episodic_visible_max: int = 8  # 可见阶段摘要数
     episodic_compact_trigger_count: int = 10  # 阶段摘要达到多少条触发语义压缩
     episodic_compact_batch_size: int = 5  # 每次压缩多少条阶段摘要(必须 < trigger)
