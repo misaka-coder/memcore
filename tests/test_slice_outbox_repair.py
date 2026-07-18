@@ -59,6 +59,39 @@ class OutboxResilience(unittest.TestCase):
         self.assertIsNotNone(self.store.get_record_by_source_id("s1"))  # 消息安全落库
         self.assertEqual({r["source_id"] for r in self.store.list_pending_index()}, {"s1"})
 
+    def test_vector_opt_out_keeps_raw_and_never_enters_outbox(self) -> None:
+        mem = self._mem()
+        rec = mem.record_user_turn(
+            "这条只保留原始时间线",
+            timestamp=1000,
+            source_id="raw-only",
+            index_in_vector=False,
+        )
+
+        self.assertEqual(rec["index_status"], "skipped")
+        stored = self.store.get_record_by_source_id("raw-only")
+        self.assertIsNotNone(stored)
+        self.assertEqual(stored["content"], "这条只保留原始时间线")
+        self.assertEqual(self.store.list_pending_index(), [])
+        self.assertEqual(self.index.count(), 0)
+
+        self.index.fail = False
+        self.assertEqual(mem.reindex_pending(), {"scanned": 0, "repaired": 0, "failed": 0})
+        self.assertEqual(mem.reindex_all(), {"scanned": 0, "reindexed": 0, "failed": 0})
+
+    def test_metadata_update_preserves_vector_opt_out(self) -> None:
+        mem = self._mem()
+        mem.record_user_turn("原始但不参与检索", timestamp=1000, source_id="raw-only", index_in_vector=False)
+        self.index.fail = False
+
+        out = mem.update_turn_metadata("raw-only", {"keywords": ["时间线"]})
+
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["index_status"], "skipped")
+        self.assertEqual(out["reason"], "index_in_vector_disabled")
+        self.assertEqual(self.store.get_record_by_source_id("raw-only")["index_status"], "skipped")
+        self.assertEqual(self.index.count(), 0)
+
     def test_reindex_pending_heals_after_backend_recovers(self) -> None:
         mem = self._mem()
         mem.record_user_turn("待补索引", timestamp=1000, source_id="s1")

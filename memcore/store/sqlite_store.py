@@ -507,12 +507,12 @@ class SQLiteMemoryStore(MemoryStore):
                     if remaining <= 0:
                         break
                     rows = self._conn.execute(
-                        f"SELECT * FROM {table} WHERE {scope_clause} {order_by} LIMIT ?",
+                        f"SELECT * FROM {table} WHERE {scope_clause} AND index_status != 'skipped' {order_by} LIMIT ?",
                         [*params, remaining],
                     ).fetchall()
                 else:
                     rows = self._conn.execute(
-                        f"SELECT * FROM {table} WHERE {scope_clause} {order_by}",
+                        f"SELECT * FROM {table} WHERE {scope_clause} AND index_status != 'skipped' {order_by}",
                         params,
                     ).fetchall()
                 out.extend(self._row_to_record(r, table) for r in rows)

@@ -43,7 +43,7 @@ class MemoryStore(ABC):
 
     @abstractmethod
     def set_index_status(self, source_id: str, status: str) -> None:
-        """outbox 状态机:pending / indexed(向量 upsert 成功后置 indexed)。"""
+        """设置索引状态:pending / indexed / skipped(明确不进入向量索引)。"""
         raise NotImplementedError
 
     @abstractmethod

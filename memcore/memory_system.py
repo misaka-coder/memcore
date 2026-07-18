@@ -329,6 +329,10 @@ class MemorySystem:
 
     def _record(self, *, role: str, content: str, actor: Actor | None, **fields: Any) -> dict[str, Any]:
         ts = int(fields.pop("timestamp", None) or time.time())
+        # ``index_in_vector`` is a retrieval-routing decision, not a write
+        # decision.  Even when a caller opts this turn out of vector search,
+        # the SQLite raw record remains the truth source and must be kept.
+        index_in_vector = bool(fields.pop("index_in_vector", True))
         ns = self.namespace if actor is None else self._with_actor(actor)
         rec = self.store.add_message(
             namespace=ns,
@@ -344,6 +348,13 @@ class MemorySystem:
                 enable_flavor=self.config.enable_flavor,
             ).to_dict(),
         )
+        if not index_in_vector:
+            # Keep the opt-out durable and out of the repair outbox.  This is
+            # intentionally distinct from ``pending``: no vector upsert is
+            # expected for this record.
+            self.store.set_index_status(rec["source_id"], "skipped")
+            rec["index_status"] = "skipped"
+            return rec
         # outbox:写库已成功(pending);向量 upsert 失败就留 pending,交给 reindex_pending 自愈,不阻断记录。
         try:
             self.index.upsert([build_raw_entry(rec)])
@@ -504,6 +515,8 @@ class MemorySystem:
             enable_flavor=self.config.enable_flavor,
         ).to_dict()
         owner_namespace = self.namespace if actor is None else self._with_actor(actor)
+        previous = self.store.get_record_by_source_id(sid)
+        preserve_index_opt_out = bool(previous and str(previous.get("index_status") or "") == "skipped")
         rec = self.store.update_message_memory_metadata(
             namespace=owner_namespace, source_id=sid, memory_metadata=metadata
         )
@@ -515,6 +528,20 @@ class MemorySystem:
                 "memory_metadata": metadata,
                 "index_status": "",
                 "reason": "source_id_not_found_or_not_raw",
+            }
+        if preserve_index_opt_out:
+            # Metadata updates must preserve a prior retrieval opt-out.  The
+            # store marks every metadata update pending while the raw index is
+            # rebuilt; restore the durable opt-out without calling upsert.
+            self.store.set_index_status(sid, "skipped")
+            rec["index_status"] = "skipped"
+            return {
+                "ok": True,
+                "status": "updated",
+                "source_id": sid,
+                "memory_metadata": metadata,
+                "index_status": "skipped",
+                "reason": "index_in_vector_disabled",
             }
         try:
             self.index.upsert([build_raw_entry(rec)])
