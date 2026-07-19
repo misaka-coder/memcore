@@ -171,6 +171,34 @@ class SummaryCycleViaFacade(unittest.TestCase):
             summary_requests[0].user_prompt,
         )
 
+    def test_external_event_counts_toward_normal_compaction(self) -> None:
+        cfg = MemoryConfig(raw_trigger_count=2, summary_batch_size=1, episodic_compact_trigger_count=99)
+        llm = CapturingLLM()
+        mem = MemorySystem(
+            llm=llm,
+            namespace=Namespace(user_id="u1", conversation_id="c1"),
+            timezone="Asia/Shanghai",
+            config=cfg,
+            embedding=HashedEmbeddingProvider(),
+        )
+        event = mem.record_external_event(
+            event_type="finance",
+            source="public_news",
+            fields={"title": "虚构事件", "summary": "只用于测试"},
+            timestamp=1000,
+            source_id="event-1",
+        )
+        mem.record_assistant_turn("条件式分析", timestamp=1001, source_id="assistant-1")
+
+        out = mem.compact_due_sync()
+
+        self.assertEqual(event["role"], "event.finance")
+        self.assertEqual(event["memory_metadata"]["categories"], ["event_trace"])
+        self.assertEqual(out["summaries_created"], 1)
+        visible = mem.store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10)
+        self.assertEqual(visible[0]["source_ids"], ["event-1"])
+        self.assertIn("event.finance\nsource: public_news\ntitle: 虚构事件", llm.requests[0].user_prompt)
+
     def test_material_trace_does_not_count_but_is_included_in_count_compaction_span(self) -> None:
         cfg = MemoryConfig(raw_trigger_count=4, summary_batch_size=2, episodic_compact_trigger_count=99)
         llm = CapturingLLM()

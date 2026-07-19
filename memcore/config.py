@@ -44,9 +44,10 @@ class MemoryConfig:
     retrieval_limit: int = 6  # 默认返回片段数
     relaxation_stop_candidate_count: int = 12  # 候选达到多少就停止放宽
     retrieval_default_excluded_categories: tuple[str, ...] = (
+        "event_trace",
         "tool_trace",
         "material_trace",
-    )  # 普通检索默认不捞工具/材料轨迹
+    )  # 普通检索默认不捞外部事件/工具/材料轨迹
     enable_verifier: bool = True  # verifier 门:片段进 prompt 前先校验筛选
     llm_max_retries: int = 2  # 结构化 LLM 调用建议重试次数;失败仍不提交空记忆
 

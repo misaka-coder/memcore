@@ -31,11 +31,12 @@ DEFAULT_CATEGORIES: tuple[str, ...] = (
     "life_event",
     "memory_query",
     "system_meta",
+    "event_trace",
     "tool_trace",
     "material_trace",
 )
 
-TRACE_CATEGORIES: tuple[str, ...] = ("tool_trace", "material_trace")
+TRACE_CATEGORIES: tuple[str, ...] = ("event_trace", "tool_trace", "material_trace")
 
 SUBJECT_SCOPES: tuple[str, ...] = ("user", "assistant", "other")
 

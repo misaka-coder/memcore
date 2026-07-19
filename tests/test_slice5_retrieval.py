@@ -120,6 +120,28 @@ class ExplicitRetrieve(unittest.TestCase):
         self.assertTrue(any("25 度晴天" in s for s in hits))
         store.close()
 
+    def test_event_trace_is_excluded_from_default_retrieve_but_explicitly_searchable(self) -> None:
+        store, index, emb = _shared_backends()
+        mem = _mem(store, index, emb, conversation="c1", config=MemoryConfig(enable_verifier=False))
+        mem.record_external_event(
+            event_type="finance",
+            source="public_news",
+            fields={
+                "published_at": "2026-07-20 14:29",
+                "title": "虚构科创债事件",
+                "summary": "只用于事件检索测试",
+                "url": "https://example.com/news",
+            },
+            timestamp=1000,
+            source_id="event1",
+            keywords=["科创债"],
+        )
+
+        self.assertEqual(mem.retrieve("科创债", keywords=["科创债"]), [])
+        hits = mem.retrieve("科创债", keywords=["科创债"], categories=["event_trace"])
+        self.assertTrue(any("虚构科创债事件" in item for item in hits))
+        store.close()
+
     def test_material_trace_is_excluded_from_default_retrieve_but_explicitly_searchable(self) -> None:
         store, index, emb = _shared_backends()
         mem = _mem(store, index, emb, conversation="c1", config=MemoryConfig(enable_verifier=False))

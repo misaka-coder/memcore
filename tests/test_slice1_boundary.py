@@ -39,10 +39,13 @@ class ConfigInvariants(unittest.TestCase):
     def test_default_config_valid(self) -> None:
         cfg = MemoryConfig()
         self.assertLess(cfg.summary_batch_size, cfg.raw_trigger_count)
+        self.assertIn("event_trace", cfg.categories)
         self.assertIn("tool_trace", cfg.categories)
         self.assertIn("material_trace", cfg.categories)
         self.assertEqual(cfg.raw_compaction_excluded_categories, ("material_trace",))
-        self.assertEqual(TRACE_CATEGORIES, ("tool_trace", "material_trace"))
+        self.assertEqual(TRACE_CATEGORIES, ("event_trace", "tool_trace", "material_trace"))
+        self.assertNotIn("event_trace", cfg.raw_compaction_excluded_categories)
+        self.assertIn("event_trace", cfg.retrieval_default_excluded_categories)
         self.assertIn("tool_trace", cfg.retrieval_default_excluded_categories)
         self.assertIn("material_trace", cfg.retrieval_default_excluded_categories)
 

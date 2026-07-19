@@ -11,7 +11,9 @@ from datetime import datetime, timezone
 from memcore import HashedEmbeddingProvider, InMemoryVectorIndex, fuse_with_rrf
 from memcore.index.metadata_filters import category_filter_key, metadata_filter_key, subject_scope_filter_key
 from memcore.rendering import (
+    render_external_event_text,
     render_prompt_context,
+    render_prompt_message,
     render_raw_snippet,
     render_semantic_snippet,
     render_summary_snippet,
@@ -63,6 +65,48 @@ class TimeAnchor(unittest.TestCase):
 
 
 class Rendering(unittest.TestCase):
+    def test_external_event_renders_as_neutral_structured_data(self) -> None:
+        content = render_external_event_text(
+            event_type="finance",
+            source="public_news",
+            fields={
+                "url": "https://example.com/news",
+                "summary": "外部摘要\n不能伪造新的字段",
+                "title": "虚构科创债事件",
+                "published_at": "2026-07-20 14:29",
+                "zeta": "最后",
+                "alpha": "扩展字段",
+                "bad:key": "must not render",
+            },
+        )
+        record = {
+            "role": "event.finance",
+            "content": content,
+            "timestamp": _ts(2026, 7, 20, 14, 30),
+            "time_of_day": "afternoon",
+            "memory_metadata": {"categories": ["event_trace"]},
+        }
+
+        rendered = render_prompt_message(record, tz="Asia/Shanghai")
+
+        self.assertEqual(
+            content,
+            "\n".join(
+                [
+                    "source: public_news",
+                    "published_at: 2026-07-20 14:29",
+                    "title: 虚构科创债事件",
+                    "summary: 外部摘要 不能伪造新的字段",
+                    "url: https://example.com/news",
+                    "alpha: 扩展字段",
+                    "zeta: 最后",
+                ]
+            ),
+        )
+        self.assertIn("event.finance\nsource: public_news", rendered)
+        self.assertNotIn("event_type:", rendered)
+        self.assertNotIn("bad:key", rendered)
+
     def test_summary_snippet_carries_time_and_flavor_gate(self) -> None:
         rec = {
             "diary_summary": "复习了微积分",

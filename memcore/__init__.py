@@ -23,8 +23,10 @@ from .embedding.verify import verify_embedding
 from .errors import ConfigError, MemcoreError, NamespaceError, PromptError, SchemaError
 from .prompts import PromptOverrides
 from .rendering import (
+    render_external_event_text,
     render_material_cleanup_text,
     render_material_reference_text,
+    render_prompt_message,
     render_tool_result_text,
     render_tool_use_text,
 )
@@ -105,6 +107,8 @@ __all__ = [
     "PromptError",
     # 提示词治理
     "PromptOverrides",
+    "render_external_event_text",
+    "render_prompt_message",
     "render_material_reference_text",
     "render_material_cleanup_text",
     "render_tool_use_text",

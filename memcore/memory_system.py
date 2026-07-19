@@ -137,6 +137,47 @@ class MemorySystem:
     ) -> dict[str, Any]:
         return self._record(role="assistant", content=reply, actor=None, **fields)
 
+    def record_external_event(
+        self,
+        *,
+        event_type: str,
+        fields: dict[str, Any] | None = None,
+        source: str = "",
+        timestamp: int | None = None,
+        source_id: str | None = None,
+        keywords: list[str] | None = None,
+        importance: float = 0.4,
+        confidence: float = 1.0,
+    ) -> dict[str, Any]:
+        """Append one typed external event to the same linear raw timeline."""
+
+        from .rendering import render_external_event_text
+
+        label = self._tool_event_part(event_type, fallback="external")
+        tags = [label, *[str(item or "").strip() for item in (keywords or [])]]
+        metadata = {
+            "categories": ["event_trace"],
+            "keywords": [item for item in tags if item][:4],
+            "subject_scopes": ["other"],
+            "importance": importance,
+            "confidence": confidence,
+        }
+        record_fields: dict[str, Any] = {"memory_metadata": metadata}
+        if timestamp is not None:
+            record_fields["timestamp"] = timestamp
+        if str(source_id or "").strip():
+            record_fields["source_id"] = str(source_id).strip()
+        return self._record(
+            role=f"event.{label}",
+            content=render_external_event_text(
+                event_type=label,
+                fields=dict(fields or {}),
+                source=source,
+            ),
+            actor=None,
+            **record_fields,
+        )
+
     def record_tool_exchange(
         self,
         *,

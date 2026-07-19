@@ -167,7 +167,7 @@ def render_speaker_label(row: dict[str, Any]) -> str:
 def _is_trace_event(row: dict[str, Any]) -> bool:
     metadata = row.get("memory_metadata") if isinstance(row.get("memory_metadata"), dict) else {}
     categories = metadata.get("categories") if isinstance(metadata, dict) else []
-    return bool({"tool_trace", "material_trace"} & {str(category) for category in (categories or [])})
+    return bool({"event_trace", "tool_trace", "material_trace"} & {str(category) for category in (categories or [])})
 
 
 def _format_tool_value(value: Any) -> str:
@@ -210,6 +210,56 @@ def render_tool_result_text(
     formatted = _format_tool_value(result)
     if formatted:
         lines.append(formatted)
+    return "\n".join(lines)
+
+
+_EVENT_FIELD_KEY = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
+_EVENT_FIELD_ORDER = {name: index for index, name in enumerate(("published_at", "title", "summary", "url"))}
+
+
+def render_external_event_text(
+    *,
+    event_type: str,
+    fields: dict[str, Any] | None = None,
+    source: str = "",
+) -> str:
+    """Render one external event as a stable data block, never as instructions."""
+
+    if not _format_event_scalar(event_type):
+        return ""
+    lines: list[str] = []
+    rendered_source = _format_event_scalar(source)
+    if rendered_source:
+        lines.append(f"source: {rendered_source}")
+    rendered_fields: list[tuple[str, str]] = []
+    for raw_key, value in dict(fields or {}).items():
+        key = str(raw_key or "").strip()
+        if key in {"event_type", "source"} or _EVENT_FIELD_KEY.fullmatch(key) is None:
+            continue
+        rendered = _format_event_scalar(value)
+        if rendered:
+            rendered_fields.append((key, rendered))
+    rendered_fields.sort(key=lambda item: (_EVENT_FIELD_ORDER.get(item[0], len(_EVENT_FIELD_ORDER)), item[0]))
+    lines.extend(f"{key}: {rendered}" for key, rendered in rendered_fields)
+    return "\n".join(lines)
+
+
+def render_prompt_message(record: dict[str, Any], *, tz: str) -> str:
+    """Render one raw record exactly as a provider history/current turn."""
+
+    ts = record.get("timestamp")
+    full_stamp = timestamp_to_datetime_weekday_label(ts, tz) if ts is not None else ""
+    period = TIME_PERIOD_LABELS.get(str(record.get("time_of_day") or ""), "")
+    head = " | ".join(part for part in (full_stamp, period) if part)
+    speaker = render_speaker_label(record)
+    lines: list[str] = []
+    _append_raw_message_line(
+        lines,
+        head=head,
+        speaker=speaker,
+        content=normalize_text(record.get("content")),
+        is_trace_event=_is_trace_event(record),
+    )
     return "\n".join(lines)
 
 
