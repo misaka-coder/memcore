@@ -12,15 +12,27 @@ Timeline V2 另有 turn / projection / conversation coordination 表，不建立
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import sqlite3
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import replace
-from typing import Any
+from typing import Any, Iterator
 
 from ..errors import NamespaceError, SchemaError
+from ..compaction_v2 import (
+    CompactionSnapshot,
+    SemanticBatchCommitResult,
+    SemanticCommitInput,
+    SemanticSnapshot,
+    SummaryBatchCommitResult,
+    SummaryRecordInput,
+    TurnBundle,
+)
 from ..namespace import Namespace
 from ..projection import (
     ProjectionAudit,
@@ -106,6 +118,12 @@ def _has_semantic_metadata(value: Any) -> bool:
 
 class SQLiteMemoryStore(MemoryStore):
     def __init__(self, db_path: str = ":memory:") -> None:
+        path_text = str(db_path or ":memory:")
+        self._runtime_identity = (
+            f"sqlite-memory:{uuid.uuid4().hex}"
+            if path_text == ":memory:"
+            else "sqlite-file:" + hashlib.sha256(os.path.normcase(os.path.abspath(path_text)).encode()).hexdigest()
+        )
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.RLock()
@@ -121,9 +139,24 @@ class SQLiteMemoryStore(MemoryStore):
             row = self._conn.execute("PRAGMA user_version").fetchone()
         return int(row[0]) if row is not None else 0
 
+    def runtime_identity(self) -> str:
+        return self._runtime_identity
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()
+
+    @contextmanager
+    def _immediate_transaction(self) -> Iterator[None]:
+        """Serialize snapshot validation before writes across SQLite connections."""
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+        except BaseException:
+            self._conn.rollback()
+            raise
+        else:
+            self._conn.commit()
 
     # --- 内部工具 ---
 
@@ -607,14 +640,14 @@ class SQLiteMemoryStore(MemoryStore):
         turn = self._conn.execute("SELECT * FROM turns WHERE turn_id = ?", (normalized_turn_id,)).fetchone()
         if turn is not None:
             self._assert_scope_owner(turn, namespace, id_label=f"turn_id={normalized_turn_id!r}")
-        elif not normalized_turn_id.startswith("legacy."):
+        elif not normalized_turn_id.startswith(("legacy.", "summary.", "semantic.")):
             raise SchemaError("turn_not_found")
 
         source_rows = self._projection_source_rows_locked(
             namespace=namespace,
             turn_id=normalized_turn_id,
             projections=projections,
-            legacy_turn=turn is None,
+            synthetic_turn=turn is None,
         )
         if not source_rows:
             raise SchemaError("projection_source_ids_required")
@@ -764,22 +797,30 @@ class SQLiteMemoryStore(MemoryStore):
         namespace: Namespace,
         turn_id: str,
         projections: list[ProjectionMessageInput],
-        legacy_turn: bool,
+        synthetic_turn: bool,
     ) -> dict[str, sqlite3.Row]:
         source_ids = tuple(dict.fromkeys(source_id for item in projections for source_id in item.source_ids))
         if not source_ids:
             return {}
         placeholders = ",".join("?" for _ in source_ids)
+        if turn_id.startswith("summary."):
+            table, id_column = "summaries", "summary_id"
+        elif turn_id.startswith("semantic."):
+            table, id_column = "semantic_summaries", "semantic_id"
+        else:
+            table, id_column = "messages", "source_id"
         rows = self._conn.execute(
-            f"SELECT * FROM messages WHERE source_id IN ({placeholders})", list(source_ids)
+            f"SELECT * FROM {table} WHERE {id_column} IN ({placeholders})", list(source_ids)
         ).fetchall()
-        by_source_id = {str(row["source_id"]): row for row in rows}
+        by_source_id = {str(row[id_column]): row for row in rows}
         if set(by_source_id) != set(source_ids):
             raise SchemaError("projection_source_not_found")
         for source_id, row in by_source_id.items():
             self._assert_scope_owner(row, namespace, id_label=f"source_id={source_id!r}")
+            if table != "messages":
+                continue
             source_turn_id = str(row["turn_id"] or "")
-            if legacy_turn:
+            if synthetic_turn:
                 if source_turn_id:
                     raise SchemaError("projection_source_turn_mismatch")
             elif source_turn_id != turn_id:
@@ -864,6 +905,351 @@ class SQLiteMemoryStore(MemoryStore):
         if row is None:
             raise SchemaError("projection_audit_insert_failed")
         return ProjectionAudit.from_record(dict(row))
+
+    def list_compaction_bundles(self, *, namespace: Namespace) -> list[TurnBundle]:
+        scope_clause, params = self._scope_clause(namespace, with_conversation=True)
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT * FROM messages WHERE {scope_clause} AND is_summarized = 0 ORDER BY seq_no",
+                params,
+            ).fetchall()
+            grouped: dict[str, list[sqlite3.Row]] = {}
+            legacy_rows: list[sqlite3.Row] = []
+            for row in rows:
+                turn_id = str(row["turn_id"] or "")
+                if turn_id:
+                    grouped.setdefault(turn_id, []).append(row)
+                else:
+                    legacy_rows.append(row)
+
+            bundles: list[TurnBundle] = []
+            for turn_id, turn_rows in grouped.items():
+                turn = self._conn.execute("SELECT * FROM turns WHERE turn_id = ?", (turn_id,)).fetchone()
+                if turn is None:
+                    raise SchemaError("compaction_turn_not_found")
+                self._assert_scope_owner(turn, namespace, id_label=f"turn_id={turn_id!r}")
+                all_rows = self._conn.execute(
+                    "SELECT source_id, is_summarized FROM messages WHERE turn_id = ?",
+                    (turn_id,),
+                ).fetchall()
+                if any(int(row["is_summarized"] or 0) for row in all_rows):
+                    raise SchemaError("compaction_partial_turn")
+                entries = tuple(TimelineEntry.from_record(self._row_to_record(row, "messages")) for row in turn_rows)
+                bundles.append(
+                    TurnBundle(
+                        turn_id=turn_id,
+                        status=TurnStatus(str(turn["status"] or TurnStatus.OPEN.value)),
+                        entries=entries,
+                        turn_row_version=int(turn["row_version"] or 0),
+                        first_seq_no=min(entry.seq_no for entry in entries),
+                        last_seq_no=max(entry.seq_no for entry in entries),
+                    )
+                )
+
+            for row in legacy_rows:
+                entry = TimelineEntry.from_record(self._row_to_record(row, "messages"))
+                bundles.append(
+                    TurnBundle(
+                        turn_id=f"legacy.{stable_projection_hash({'source_id': entry.source_id})}",
+                        status=TurnStatus.CLOSED,
+                        entries=(entry,),
+                        turn_row_version=entry.row_version,
+                        first_seq_no=entry.seq_no,
+                        last_seq_no=entry.seq_no,
+                        legacy=True,
+                    )
+                )
+        return sorted(bundles, key=lambda item: (item.first_seq_no, item.last_seq_no, item.turn_id))
+
+    def commit_summary_batch(
+        self,
+        *,
+        namespace: Namespace,
+        snapshot: CompactionSnapshot,
+        records: list[SummaryRecordInput],
+    ) -> SummaryBatchCommitResult:
+        if not isinstance(snapshot, CompactionSnapshot):
+            raise TypeError("snapshot must be a CompactionSnapshot")
+        if not records or any(not isinstance(item, SummaryRecordInput) for item in records):
+            raise TypeError("records must contain SummaryRecordInput values")
+        expected_namespace = (
+            namespace.tenant_id or "",
+            namespace.user_id,
+            namespace.domain_id or "",
+            namespace.conversation_id or "",
+        )
+        if snapshot.namespace_key != expected_namespace:
+            raise NamespaceError("compaction_snapshot belongs to a different namespace/conversation")
+        assigned: dict[str, str] = {}
+        for item in records:
+            if not item.source_ids:
+                raise SchemaError("compaction_summary_sources_required")
+            if str(item.record.get("summary_id") or item.summary_id) != item.summary_id:
+                raise SchemaError("compaction_summary_id_mismatch")
+            for source_id in item.source_ids:
+                if source_id in assigned:
+                    raise SchemaError("compaction_source_assignment_overlap")
+                assigned[source_id] = item.summary_id
+        if set(assigned) != set(snapshot.ordered_source_ids):
+            raise SchemaError("compaction_source_partition_mismatch")
+
+        with self._lock, self._immediate_transaction():
+            placeholders = ",".join("?" for _ in snapshot.ordered_source_ids)
+            rows = self._conn.execute(
+                f"SELECT * FROM messages WHERE source_id IN ({placeholders})",
+                list(snapshot.ordered_source_ids),
+            ).fetchall()
+            by_source = {str(row["source_id"]): row for row in rows}
+            if set(by_source) != set(snapshot.ordered_source_ids):
+                return SummaryBatchCommitResult(status="stale_batch", reason="source_missing")
+            for source_id, row in by_source.items():
+                self._assert_scope_owner(row, namespace, id_label=f"source_id={source_id!r}")
+
+            if all(int(row["is_summarized"] or 0) for row in rows):
+                if all(
+                    str(by_source[source_id]["summary_id"] or "") == summary_id
+                    for source_id, summary_id in assigned.items()
+                ):
+                    summary_rows = tuple(
+                        self._conn.execute(
+                            "SELECT * FROM summaries WHERE summary_id = ?", (item.summary_id,)
+                        ).fetchone()
+                        for item in records
+                    )
+                    if any(row is None for row in summary_rows):
+                        return SummaryBatchCommitResult(status="stale_batch", reason="summary_missing")
+                    summaries = tuple(self._row_to_record(row, "summaries") for row in summary_rows)
+                    return SummaryBatchCommitResult(
+                        status="already_committed",
+                        summaries=summaries,
+                        compaction_generation=self._compaction_generation_locked(namespace),
+                    )
+                return SummaryBatchCommitResult(status="stale_batch", reason="source_already_summarized")
+            if any(int(row["is_summarized"] or 0) for row in rows):
+                return SummaryBatchCommitResult(status="stale_batch", reason="partial_source_assignment")
+            if self._compaction_generation_locked(namespace) != snapshot.compaction_generation:
+                return SummaryBatchCommitResult(status="stale_batch", reason="generation_changed")
+            expected_versions = dict(snapshot.message_row_versions)
+            if any(
+                int(row["row_version"] or 0) != expected_versions.get(source_id) for source_id, row in by_source.items()
+            ):
+                return SummaryBatchCommitResult(status="stale_batch", reason="source_version_changed")
+
+            scope_clause, params = self._scope_clause(namespace, with_conversation=True)
+            prefix_rows = self._conn.execute(
+                f"SELECT source_id FROM messages WHERE {scope_clause} AND is_summarized = 0 ORDER BY seq_no LIMIT ?",
+                [*params, len(snapshot.ordered_source_ids)],
+            ).fetchall()
+            if tuple(str(row["source_id"]) for row in prefix_rows) != snapshot.ordered_source_ids:
+                return SummaryBatchCommitResult(status="stale_batch", reason="prefix_changed")
+
+            for turn_id, row_version in snapshot.turn_row_versions:
+                turn = self._conn.execute("SELECT * FROM turns WHERE turn_id = ?", (turn_id,)).fetchone()
+                if turn is None or int(turn["row_version"] or 0) != row_version:
+                    return SummaryBatchCommitResult(status="stale_batch", reason="turn_version_changed")
+                if str(turn["status"] or "") != TurnStatus.CLOSED.value:
+                    return SummaryBatchCommitResult(status="stale_batch", reason="turn_not_closed")
+
+            current_hashes = self._projection_hashes_by_source_locked(
+                namespace=namespace,
+                provider_profile=snapshot.provider_profile,
+                source_ids=snapshot.ordered_source_ids,
+            )
+            if (
+                tuple((source_id, current_hashes.get(source_id, ())) for source_id, _ in snapshot.projection_hashes)
+                != snapshot.projection_hashes
+            ):
+                return SummaryBatchCommitResult(status="stale_batch", reason="projection_changed")
+
+            for item in records:
+                existing = self._conn.execute(
+                    "SELECT * FROM summaries WHERE summary_id = ?", (item.summary_id,)
+                ).fetchone()
+                if existing is not None:
+                    self._assert_scope_owner(existing, namespace, id_label=f"summary_id={item.summary_id!r}")
+                    return SummaryBatchCommitResult(status="stale_batch", reason="summary_id_conflict")
+
+            saved: list[dict[str, Any]] = []
+            for item in records:
+                record = {**dict(item.record), "summary_id": item.summary_id, "source_ids": list(item.source_ids)}
+                saved.append(self._add_summary_locked(namespace=namespace, record=record))
+                record_placeholders = ",".join("?" for _ in item.source_ids)
+                cursor = self._conn.execute(
+                    f"""
+                    UPDATE messages
+                    SET is_summarized = 1, summary_id = ?, row_version = row_version + 1
+                    WHERE source_id IN ({record_placeholders}) AND is_summarized = 0
+                    """,
+                    [item.summary_id, *item.source_ids],
+                )
+                if cursor.rowcount != len(item.source_ids):
+                    raise SchemaError("compaction_atomic_source_update_failed")
+            generation = self._increment_compaction_generation_locked(namespace)
+            return SummaryBatchCommitResult(
+                status="committed",
+                summaries=tuple(saved),
+                compaction_generation=generation,
+            )
+
+    def commit_semantic_batch(
+        self,
+        *,
+        namespace: Namespace,
+        commit: SemanticCommitInput,
+    ) -> SemanticBatchCommitResult:
+        if not isinstance(commit, SemanticCommitInput):
+            raise TypeError("commit must be a SemanticCommitInput")
+        snapshot = commit.snapshot
+        if not isinstance(snapshot, SemanticSnapshot):
+            raise TypeError("commit.snapshot must be a SemanticSnapshot")
+        expected_namespace = (
+            namespace.tenant_id or "",
+            namespace.user_id,
+            namespace.domain_id or "",
+            namespace.conversation_id or "",
+        )
+        if snapshot.namespace_key != expected_namespace:
+            raise NamespaceError("semantic_snapshot belongs to a different namespace/conversation")
+        semantic_record = dict(commit.semantic_record)
+        semantic_id = str(semantic_record.get("semantic_id") or "").strip()
+        if not semantic_id:
+            raise SchemaError("semantic_commit_id_required")
+
+        with self._lock, self._immediate_transaction():
+            placeholders = ",".join("?" for _ in snapshot.summary_ids)
+            rows = self._conn.execute(
+                f"SELECT * FROM summaries WHERE summary_id IN ({placeholders})",
+                list(snapshot.summary_ids),
+            ).fetchall()
+            by_id = {str(row["summary_id"]): row for row in rows}
+            if set(by_id) != set(snapshot.summary_ids):
+                return SemanticBatchCommitResult(status="stale_batch", reason="summary_missing")
+            for summary_id, row in by_id.items():
+                self._assert_scope_owner(row, namespace, id_label=f"summary_id={summary_id!r}")
+            if all(int(row["is_semanticized"] or 0) for row in rows):
+                if all(str(row["semantic_id"] or "") == semantic_id for row in rows):
+                    existing = self._conn.execute(
+                        "SELECT * FROM semantic_summaries WHERE semantic_id = ?", (semantic_id,)
+                    ).fetchone()
+                    if existing is None:
+                        return SemanticBatchCommitResult(status="stale_batch", reason="semantic_missing")
+                    return SemanticBatchCommitResult(
+                        status="already_committed",
+                        semantic_record=self._row_to_record(existing, "semantic_summaries"),
+                        compaction_generation=self._compaction_generation_locked(namespace),
+                    )
+                return SemanticBatchCommitResult(status="stale_batch", reason="summary_already_semanticized")
+            if any(int(row["is_semanticized"] or 0) for row in rows):
+                return SemanticBatchCommitResult(status="stale_batch", reason="partial_semantic_assignment")
+            if self._compaction_generation_locked(namespace) != snapshot.compaction_generation:
+                return SemanticBatchCommitResult(status="stale_batch", reason="generation_changed")
+            expected_versions = dict(snapshot.summary_row_versions)
+            if any(
+                int(row["row_version"] or 0) != expected_versions.get(summary_id) for summary_id, row in by_id.items()
+            ):
+                return SemanticBatchCommitResult(status="stale_batch", reason="summary_version_changed")
+
+            existing_semantic = self._conn.execute(
+                "SELECT * FROM semantic_summaries WHERE semantic_id = ?", (semantic_id,)
+            ).fetchone()
+            if snapshot.reinforcement_target_id:
+                if snapshot.reinforcement_target_id != semantic_id or existing_semantic is None:
+                    return SemanticBatchCommitResult(status="stale_batch", reason="reinforcement_target_missing")
+                self._assert_scope_owner(existing_semantic, namespace, id_label=f"semantic_id={semantic_id!r}")
+                if int(existing_semantic["row_version"] or 0) != snapshot.reinforcement_target_row_version:
+                    return SemanticBatchCommitResult(status="stale_batch", reason="reinforcement_target_changed")
+            elif existing_semantic is not None:
+                return SemanticBatchCommitResult(status="stale_batch", reason="semantic_id_conflict")
+
+            if snapshot.reinforcement_target_id:
+                semantic_turn_id = f"semantic.{stable_projection_hash({'semantic_id': semantic_id})}"
+                scope_clause, scope_params = self._scope_clause(namespace, with_conversation=True)
+                self._conn.execute(
+                    f"DELETE FROM prompt_projections WHERE {scope_clause} AND turn_id = ?",
+                    [*scope_params, semantic_turn_id],
+                )
+                self._increment_projection_generation_locked(namespace)
+            saved = self._add_semantic_summary_locked(namespace=namespace, record=semantic_record)
+            cursor = self._conn.execute(
+                f"""
+                UPDATE summaries
+                SET is_semanticized = 1, semantic_id = ?, row_version = row_version + 1
+                WHERE summary_id IN ({placeholders}) AND is_semanticized = 0
+                """,
+                [semantic_id, *snapshot.summary_ids],
+            )
+            if cursor.rowcount != len(snapshot.summary_ids):
+                raise SchemaError("semantic_atomic_source_update_failed")
+            generation = self._increment_compaction_generation_locked(namespace)
+            return SemanticBatchCommitResult(
+                status="committed",
+                semantic_record=saved,
+                compaction_generation=generation,
+            )
+
+    def _projection_hashes_by_source_locked(
+        self,
+        *,
+        namespace: Namespace,
+        provider_profile: str,
+        source_ids: tuple[str, ...],
+    ) -> dict[str, tuple[str, ...]]:
+        scope_clause, params = self._scope_clause(namespace, with_conversation=True)
+        rows = self._conn.execute(
+            f"""
+            SELECT source_ids_json, payload_hash FROM prompt_projections
+            WHERE {scope_clause} AND provider_profile = ?
+            ORDER BY turn_id, projection_index
+            """,
+            [*params, provider_profile],
+        ).fetchall()
+        wanted = set(source_ids)
+        hashes: dict[str, list[str]] = {}
+        for row in rows:
+            for source_id in self._json_list(row["source_ids_json"]):
+                if source_id in wanted:
+                    hashes.setdefault(source_id, []).append(str(row["payload_hash"] or ""))
+        return {source_id: tuple(values) for source_id, values in hashes.items()}
+
+    def _compaction_generation_locked(self, namespace: Namespace) -> int:
+        scope_clause, params = self._scope_clause(namespace, with_conversation=True)
+        row = self._conn.execute(
+            f"SELECT compaction_generation FROM conversation_states WHERE {scope_clause}", params
+        ).fetchone()
+        return int(row["compaction_generation"] or 0) if row is not None else 0
+
+    def _increment_compaction_generation_locked(self, namespace: Namespace) -> int:
+        now = int(time.time())
+        self._ensure_conversation_state_locked(namespace=namespace, updated_at=now)
+        scope_clause, params = self._scope_clause(namespace, with_conversation=True)
+        self._conn.execute(
+            f"""
+            UPDATE conversation_states
+            SET compaction_generation = compaction_generation + 1,
+                row_version = row_version + 1, updated_at = ?
+            WHERE {scope_clause}
+            """,
+            [now, *params],
+        )
+        return self._compaction_generation_locked(namespace)
+
+    def _increment_projection_generation_locked(self, namespace: Namespace) -> int:
+        now = int(time.time())
+        self._ensure_conversation_state_locked(namespace=namespace, updated_at=now)
+        scope_clause, params = self._scope_clause(namespace, with_conversation=True)
+        self._conn.execute(
+            f"""
+            UPDATE conversation_states
+            SET projection_generation = projection_generation + 1,
+                row_version = row_version + 1, updated_at = ?
+            WHERE {scope_clause}
+            """,
+            [now, *params],
+        )
+        row = self._conn.execute(
+            f"SELECT projection_generation FROM conversation_states WHERE {scope_clause}", params
+        ).fetchone()
+        return int(row["projection_generation"] or 0) if row is not None else 0
 
     def _add_timeline_entry_locked(self, *, namespace: Namespace, entry: TimelineEntryInput) -> dict[str, Any]:
         entry_namespace = self._entry_namespace(namespace=namespace, actor=entry.actor)
@@ -1197,111 +1583,115 @@ class SQLiteMemoryStore(MemoryStore):
         )
 
     def add_summary(self, *, namespace: Namespace, record: dict[str, Any]) -> dict[str, Any]:
-        summary_id = str(record.get("summary_id") or "").strip() or uuid.uuid4().hex
         with self._lock, self._conn:
-            prior = self._conn.execute("SELECT * FROM summaries WHERE summary_id = ?", (summary_id,)).fetchone()
-            if prior is not None:  # 同 namespace 内覆盖允许;跨 namespace 拒绝
-                self._assert_namespace_owner(prior, namespace, id_label=f"summary_id={summary_id!r}")
-            kind = str(record.get("kind") or "memory.episode_summary")
-            pure_operation = kind == "memory.operation_digest"
-            values = {
-                "summary_id": summary_id,
-                "tenant_id": namespace.tenant_id or "",
-                "user_id": namespace.user_id,
-                "domain_id": namespace.domain_id or "",
-                "conversation_id": namespace.conversation_id or "",
-                "timestamp": int(record.get("timestamp") or 0),
-                "period_start_ts": int(record.get("period_start_ts") or 0),
-                "period_end_ts": int(record.get("period_end_ts") or 0),
-                "date_label": str(record.get("date_label") or ""),
-                "time_of_day": str(record.get("time_of_day") or ""),
-                "period_label": str(record.get("period_label") or ""),
-                "event_type": str(record.get("event_type") or ""),
-                "importance": float(record.get("importance") or 0.0),
-                "diary_summary": str(record.get("diary_summary") or ""),
-                "key_events_json": _json_dumps(record.get("key_events") or []),
-                "core_facts_json": _json_dumps(record.get("core_facts") or []),
-                "semantic_tags_json": _json_dumps(record.get("semantic_tags") or []),
-                "memory_metadata_json": _json_dumps(record.get("memory_metadata") or {}),
-                "source_ids_json": _json_dumps(record.get("source_ids") or []),
-                "is_semanticized": int(record.get("is_semanticized") or 0),
-                "semantic_id": str(record.get("semantic_id") or ""),
-                "index_status": "pending",
-                "kind": kind,
-                "trace_metadata_json": _json_dumps(record.get("trace_metadata") or {}),
-                "annotation_status": str(record.get("annotation_status") or "derived"),
-                "retrieval_visibility": str(
-                    record.get("retrieval_visibility") or ("explicit" if pure_operation else "default")
-                ),
-                "semanticize": int(record.get("semanticize", not pure_operation)),
-                "lineage_status": str(record.get("lineage_status") or "valid"),
-                "compaction_schema_version": int(record.get("compaction_schema_version") or 1),
-                "row_version": int(prior["row_version"] if prior is not None else 0) + 1,
-                "index_schema_version": int(record.get("index_schema_version") or 0),
-                "index_key": str(record.get("index_key") or ""),
-            }
-            columns = tuple(values)
-            placeholders = ",".join("?" for _ in columns)
-            self._conn.execute(
-                f"INSERT OR REPLACE INTO summaries ({','.join(columns)}) VALUES ({placeholders})",
-                [values[column] for column in columns],
-            )
-            return self._row_to_record(
-                self._conn.execute("SELECT * FROM summaries WHERE summary_id = ?", (summary_id,)).fetchone(),
-                "summaries",
-            )
+            return self._add_summary_locked(namespace=namespace, record=record)
+
+    def _add_summary_locked(self, *, namespace: Namespace, record: dict[str, Any]) -> dict[str, Any]:
+        summary_id = str(record.get("summary_id") or "").strip() or uuid.uuid4().hex
+        prior = self._conn.execute("SELECT * FROM summaries WHERE summary_id = ?", (summary_id,)).fetchone()
+        if prior is not None:  # 同 namespace 内覆盖允许;跨 namespace 拒绝
+            self._assert_namespace_owner(prior, namespace, id_label=f"summary_id={summary_id!r}")
+        kind = str(record.get("kind") or "memory.episode_summary")
+        pure_operation = kind == "memory.operation_digest"
+        values = {
+            "summary_id": summary_id,
+            "tenant_id": namespace.tenant_id or "",
+            "user_id": namespace.user_id,
+            "domain_id": namespace.domain_id or "",
+            "conversation_id": namespace.conversation_id or "",
+            "timestamp": int(record.get("timestamp") or 0),
+            "period_start_ts": int(record.get("period_start_ts") or 0),
+            "period_end_ts": int(record.get("period_end_ts") or 0),
+            "date_label": str(record.get("date_label") or ""),
+            "time_of_day": str(record.get("time_of_day") or ""),
+            "period_label": str(record.get("period_label") or ""),
+            "event_type": str(record.get("event_type") or ""),
+            "importance": float(record.get("importance") or 0.0),
+            "diary_summary": str(record.get("diary_summary") or ""),
+            "key_events_json": _json_dumps(record.get("key_events") or []),
+            "core_facts_json": _json_dumps(record.get("core_facts") or []),
+            "semantic_tags_json": _json_dumps(record.get("semantic_tags") or []),
+            "memory_metadata_json": _json_dumps(record.get("memory_metadata") or {}),
+            "source_ids_json": _json_dumps(record.get("source_ids") or []),
+            "is_semanticized": int(record.get("is_semanticized") or 0),
+            "semantic_id": str(record.get("semantic_id") or ""),
+            "index_status": "pending",
+            "kind": kind,
+            "trace_metadata_json": _json_dumps(record.get("trace_metadata") or {}),
+            "annotation_status": str(record.get("annotation_status") or "derived"),
+            "retrieval_visibility": str(
+                record.get("retrieval_visibility") or ("explicit" if pure_operation else "default")
+            ),
+            "semanticize": int(record.get("semanticize", not pure_operation)),
+            "lineage_status": str(record.get("lineage_status") or "valid"),
+            "compaction_schema_version": int(record.get("compaction_schema_version") or 1),
+            "row_version": int(prior["row_version"] if prior is not None else 0) + 1,
+            "index_schema_version": int(record.get("index_schema_version") or 0),
+            "index_key": str(record.get("index_key") or ""),
+        }
+        columns = tuple(values)
+        placeholders = ",".join("?" for _ in columns)
+        self._conn.execute(
+            f"INSERT OR REPLACE INTO summaries ({','.join(columns)}) VALUES ({placeholders})",
+            [values[column] for column in columns],
+        )
+        return self._row_to_record(
+            self._conn.execute("SELECT * FROM summaries WHERE summary_id = ?", (summary_id,)).fetchone(),
+            "summaries",
+        )
 
     def add_semantic_summary(self, *, namespace: Namespace, record: dict[str, Any]) -> dict[str, Any]:
+        with self._lock, self._conn:
+            return self._add_semantic_summary_locked(namespace=namespace, record=record)
+
+    def _add_semantic_summary_locked(self, *, namespace: Namespace, record: dict[str, Any]) -> dict[str, Any]:
         semantic_id = str(record.get("semantic_id") or "").strip() or uuid.uuid4().hex
         ts = int(record.get("timestamp") or 0)
-        with self._lock, self._conn:
-            prior = self._conn.execute(
-                "SELECT * FROM semantic_summaries WHERE semantic_id = ?", (semantic_id,)
-            ).fetchone()
-            if prior is not None:  # 同 namespace 内覆盖(强化合并需要);跨 namespace 拒绝
-                self._assert_namespace_owner(prior, namespace, id_label=f"semantic_id={semantic_id!r}")
-            values = {
-                "semantic_id": semantic_id,
-                "tenant_id": namespace.tenant_id or "",
-                "user_id": namespace.user_id,
-                "domain_id": namespace.domain_id or "",
-                "conversation_id": namespace.conversation_id or "",
-                "timestamp": ts,
-                "period_start_ts": int(record.get("period_start_ts") or 0),
-                "period_end_ts": int(record.get("period_end_ts") or 0),
-                "date_label": str(record.get("date_label") or ""),
-                "time_of_day": str(record.get("time_of_day") or ""),
-                "importance": float(record.get("importance") or 0.0),
-                "semantic_summary": str(record.get("semantic_summary") or ""),
-                "stable_facts_json": _json_dumps(record.get("stable_facts") or []),
-                "recurring_topics_json": _json_dumps(record.get("recurring_topics") or []),
-                "important_people_json": _json_dumps(record.get("important_people") or []),
-                "open_loops_json": _json_dumps(record.get("open_loops") or []),
-                "semantic_tags_json": _json_dumps(record.get("semantic_tags") or []),
-                "memory_metadata_json": _json_dumps(record.get("memory_metadata") or {}),
-                "source_summary_ids_json": _json_dumps(record.get("source_summary_ids") or []),
-                "reinforcement_count": int(record.get("reinforcement_count") or 1),
-                "last_reinforced_ts": int(record.get("last_reinforced_ts") or ts),
-                "index_status": "pending",
-                "kind": str(record.get("kind") or "memory.semantic_summary"),
-                "annotation_status": str(record.get("annotation_status") or "derived"),
-                "retrieval_visibility": str(record.get("retrieval_visibility") or "default"),
-                "lineage_status": str(record.get("lineage_status") or "valid"),
-                "semantic_schema_version": int(record.get("semantic_schema_version") or 1),
-                "row_version": int(prior["row_version"] if prior is not None else 0) + 1,
-                "index_schema_version": int(record.get("index_schema_version") or 0),
-                "index_key": str(record.get("index_key") or ""),
-            }
-            columns = tuple(values)
-            placeholders = ",".join("?" for _ in columns)
-            self._conn.execute(
-                f"INSERT OR REPLACE INTO semantic_summaries ({','.join(columns)}) VALUES ({placeholders})",
-                [values[column] for column in columns],
-            )
-            return self._row_to_record(
-                self._conn.execute("SELECT * FROM semantic_summaries WHERE semantic_id = ?", (semantic_id,)).fetchone(),
-                "semantic_summaries",
-            )
+        prior = self._conn.execute("SELECT * FROM semantic_summaries WHERE semantic_id = ?", (semantic_id,)).fetchone()
+        if prior is not None:  # 同 namespace 内覆盖(强化合并需要);跨 namespace 拒绝
+            self._assert_namespace_owner(prior, namespace, id_label=f"semantic_id={semantic_id!r}")
+        values = {
+            "semantic_id": semantic_id,
+            "tenant_id": namespace.tenant_id or "",
+            "user_id": namespace.user_id,
+            "domain_id": namespace.domain_id or "",
+            "conversation_id": namespace.conversation_id or "",
+            "timestamp": ts,
+            "period_start_ts": int(record.get("period_start_ts") or 0),
+            "period_end_ts": int(record.get("period_end_ts") or 0),
+            "date_label": str(record.get("date_label") or ""),
+            "time_of_day": str(record.get("time_of_day") or ""),
+            "importance": float(record.get("importance") or 0.0),
+            "semantic_summary": str(record.get("semantic_summary") or ""),
+            "stable_facts_json": _json_dumps(record.get("stable_facts") or []),
+            "recurring_topics_json": _json_dumps(record.get("recurring_topics") or []),
+            "important_people_json": _json_dumps(record.get("important_people") or []),
+            "open_loops_json": _json_dumps(record.get("open_loops") or []),
+            "semantic_tags_json": _json_dumps(record.get("semantic_tags") or []),
+            "memory_metadata_json": _json_dumps(record.get("memory_metadata") or {}),
+            "source_summary_ids_json": _json_dumps(record.get("source_summary_ids") or []),
+            "reinforcement_count": int(record.get("reinforcement_count") or 1),
+            "last_reinforced_ts": int(record.get("last_reinforced_ts") or ts),
+            "index_status": "pending",
+            "kind": str(record.get("kind") or "memory.semantic_summary"),
+            "annotation_status": str(record.get("annotation_status") or "derived"),
+            "retrieval_visibility": str(record.get("retrieval_visibility") or "default"),
+            "lineage_status": str(record.get("lineage_status") or "valid"),
+            "semantic_schema_version": int(record.get("semantic_schema_version") or 1),
+            "row_version": int(prior["row_version"] if prior is not None else 0) + 1,
+            "index_schema_version": int(record.get("index_schema_version") or 0),
+            "index_key": str(record.get("index_key") or ""),
+        }
+        columns = tuple(values)
+        placeholders = ",".join("?" for _ in columns)
+        self._conn.execute(
+            f"INSERT OR REPLACE INTO semantic_summaries ({','.join(columns)}) VALUES ({placeholders})",
+            [values[column] for column in columns],
+        )
+        return self._row_to_record(
+            self._conn.execute("SELECT * FROM semantic_summaries WHERE semantic_id = ?", (semantic_id,)).fetchone(),
+            "semantic_summaries",
+        )
 
     def mark_messages_summarized(self, source_ids: list[str], summary_id: str) -> None:
         if not source_ids:
@@ -1629,7 +2019,10 @@ class SQLiteMemoryStore(MemoryStore):
     ) -> list[dict[str, Any]]:
         # 压缩始终按会话(与展示作用域无关),最老在前。
         scope_clause, params = self._scope_clause(namespace, with_conversation=True)
-        sql = f"SELECT * FROM summaries WHERE {scope_clause} AND is_semanticized = 0 ORDER BY timestamp ASC"
+        sql = (
+            f"SELECT * FROM summaries WHERE {scope_clause} "
+            "AND is_semanticized = 0 AND semanticize = 1 ORDER BY timestamp ASC"
+        )
         if limit is not None:
             sql += " LIMIT ?"
             params = [*params, int(limit)]

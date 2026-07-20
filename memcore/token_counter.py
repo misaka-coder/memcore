@@ -9,6 +9,11 @@ from abc import ABC, abstractmethod
 
 
 class TokenCounter(ABC):
+    @property
+    def quality(self) -> str:
+        """Override with ``estimated`` when the implementation is not an exact tokenizer."""
+        return "exact"
+
     @abstractmethod
     def count_text(self, text: str) -> int:
         """返回 text 在接入方模型 tokenizer 下的 token 数。"""

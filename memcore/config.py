@@ -36,6 +36,17 @@ class MemoryConfig:
     episodic_compact_batch_size: int = 5  # 每次压缩多少条阶段摘要(必须 < trigger)
     semantic_visible_limit: int = 5  # 可见长期记忆数
 
+    # --- Unified Timeline V2 压缩预算 ---
+    compaction_policy: str = "projected_tokens"  # "projected_tokens" | "count_compat"
+    max_prompt_history_tokens: int = 16000
+    target_prompt_history_tokens: int = 10000
+    reserved_current_turn_tokens: int = 2000
+    reserved_retrieval_tokens: int = 2000
+    projection_profile: str = "canonical_user_assistant"
+    compaction_min_recent_turns: int = 1
+    compaction_schema_version: int = 2
+    summary_profile: str = "timeline_v2"
+
     # --- 强化合并 ---
     semantic_reinforcement_lookback: int = 8  # 回看最近多少条长期记忆找合并目标
     semantic_reinforcement_min_overlap: int = 2  # 触发合并的最小重叠分
@@ -78,6 +89,10 @@ class MemoryConfig:
             "episodic_compact_trigger_count": self.episodic_compact_trigger_count,
             "episodic_compact_batch_size": self.episodic_compact_batch_size,
             "semantic_visible_limit": self.semantic_visible_limit,
+            "max_prompt_history_tokens": self.max_prompt_history_tokens,
+            "target_prompt_history_tokens": self.target_prompt_history_tokens,
+            "compaction_min_recent_turns": self.compaction_min_recent_turns,
+            "compaction_schema_version": self.compaction_schema_version,
             "semantic_reinforcement_lookback": self.semantic_reinforcement_lookback,
             "retrieval_limit": self.retrieval_limit,
             "relaxation_stop_candidate_count": self.relaxation_stop_candidate_count,
@@ -100,6 +115,27 @@ class MemoryConfig:
             raise ConfigError(
                 f"raw_token_boundary_role currently supports only 'assistant', got {self.raw_token_boundary_role!r}"
             )
+        if self.compaction_policy not in ("projected_tokens", "count_compat"):
+            raise ConfigError(
+                f"compaction_policy must be 'projected_tokens' or 'count_compat', got {self.compaction_policy!r}"
+            )
+        for name in ("reserved_current_turn_tokens", "reserved_retrieval_tokens"):
+            value = getattr(self, name)
+            if not isinstance(value, int) or value < 0:
+                raise ConfigError(f"{name} must be a non-negative int, got {value!r}")
+        if self.target_prompt_history_tokens >= self.max_prompt_history_tokens:
+            raise ConfigError("target_prompt_history_tokens must be < max_prompt_history_tokens")
+        reserved = self.reserved_current_turn_tokens + self.reserved_retrieval_tokens
+        if reserved >= self.target_prompt_history_tokens:
+            raise ConfigError(
+                "reserved_current_turn_tokens + reserved_retrieval_tokens must be < target_prompt_history_tokens"
+            )
+        self.projection_profile = str(self.projection_profile or "").strip().lower()
+        if not self.projection_profile:
+            raise ConfigError("projection_profile must be non-empty")
+        self.summary_profile = str(self.summary_profile or "").strip()
+        if not self.summary_profile:
+            raise ConfigError("summary_profile must be non-empty")
         self.raw_compaction_excluded_categories = self._clean_tuple(
             self.raw_compaction_excluded_categories, "raw_compaction_excluded_categories"
         )

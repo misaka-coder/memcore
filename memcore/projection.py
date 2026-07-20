@@ -16,6 +16,8 @@ from enum import Enum
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from .errors import SchemaError
+from .namespace import Namespace
+from .rendering import render_semantic_snippet, render_summary_snippet
 from .text_utils import normalize_text
 from .time_anchor import TIME_PERIOD_LABELS, timestamp_to_datetime_weekday_label
 from .timeline import TimelineEntry, TimelineEntryInput, TurnRole
@@ -628,6 +630,44 @@ class ProjectionAdapter:
             raw = self._project_canonical(visible)
         return tuple(replace(message, projection_index=start_index + index) for index, message in enumerate(raw))
 
+    def project_memory_record(
+        self,
+        record: Mapping[str, Any],
+        *,
+        provider_profile: str,
+        source_id: str,
+        projection_index: int = 0,
+        enable_flavor: bool = False,
+    ) -> ProjectionMessageInput:
+        profile = _validated_profile(provider_profile)
+        if profile not in STANDARD_PROJECTION_PROFILES:
+            raise SchemaError("projection_profile_unsupported")
+        kind = str(record.get("kind") or "")
+        if kind == "memory.semantic_summary":
+            text = render_semantic_snippet(dict(record), tz=self.timezone, enable_flavor=enable_flavor)
+        elif kind == "memory.operation_digest":
+            text = self._render_operation_digest(record)
+        else:
+            text = render_summary_snippet(dict(record), tz=self.timezone, enable_flavor=enable_flavor)
+        if profile == ANTHROPIC_PROFILE:
+            payload: dict[str, Any] = {"role": "user", "content": [{"type": "text", "text": text}]}
+        else:
+            payload = {"role": "user", "content": text}
+        return ProjectionMessageInput(
+            provider_profile=profile,
+            payload=payload,
+            source_ids=(source_id,),
+            projection_index=projection_index,
+            projection_status=ProjectionStatus.CANONICAL_FALLBACK,
+        )
+
+    @staticmethod
+    def _render_operation_digest(record: Mapping[str, Any]) -> str:
+        lines = ["【运行摘要】", str(record.get("diary_summary") or "").strip()]
+        if record.get("core_facts"):
+            lines.append("运行事实:" + ";".join(str(item) for item in record.get("core_facts") or ()))
+        return "\n".join(line for line in lines if line)
+
     def _render(self, entry: TimelineEntry) -> RendererResult:
         return self.renderer_registry.render(entry, timezone=self.timezone)
 
@@ -808,6 +848,98 @@ class ProjectionAdapter:
         return messages
 
 
+class ProjectionLedger:
+    """Single orchestration path for freezing raw turns and derived memory records."""
+
+    def __init__(self, *, store: Any, adapter: ProjectionAdapter, enable_flavor: bool = False) -> None:
+        self.store = store
+        self.adapter = adapter
+        self.enable_flavor = bool(enable_flavor)
+
+    def freeze_turn_entries(
+        self,
+        *,
+        namespace: Namespace,
+        turn_id: str,
+        entries: Sequence[TimelineEntry],
+        provider_profile: str,
+    ) -> list[ProjectionMessage]:
+        profile = _validated_profile(provider_profile)
+        saved = self.store.get_turn_projections(
+            namespace=namespace,
+            turn_id=turn_id,
+            provider_profile=profile,
+        )
+        visible_entries = [entry for entry in entries if entry.prompt_visible]
+        covered = tuple(source_id for message in saved for source_id in message.source_ids)
+        expected = tuple(entry.source_id for entry in visible_entries)
+        if covered != expected[: len(covered)]:
+            raise SchemaError("projection_history_not_append_only")
+        remaining = visible_entries[len(covered) :]
+        if remaining:
+            start_index = max((message.projection_index for message in saved), default=-1) + 1
+            generated = list(
+                self.adapter.project_entries(
+                    remaining,
+                    provider_profile=profile,
+                    start_index=start_index,
+                )
+            )
+            self.store.save_turn_projections(
+                namespace=namespace,
+                turn_id=turn_id,
+                projections=generated,
+            )
+            saved = self.store.get_turn_projections(
+                namespace=namespace,
+                turn_id=turn_id,
+                provider_profile=profile,
+            )
+        return saved
+
+    def freeze_memory_record(
+        self,
+        *,
+        namespace: Namespace,
+        record: Mapping[str, Any],
+        id_key: str,
+        turn_prefix: str,
+        provider_profile: str,
+    ) -> list[ProjectionMessage]:
+        profile = _validated_profile(provider_profile)
+        source_id = str(record.get(id_key) or "").strip()
+        if not source_id:
+            raise SchemaError("projection_memory_source_id_required")
+        turn_id = self.memory_turn_id(source_id=source_id, id_key=id_key, turn_prefix=turn_prefix)
+        saved = self.store.get_turn_projections(
+            namespace=namespace,
+            turn_id=turn_id,
+            provider_profile=profile,
+        )
+        if saved:
+            return saved
+        generated = self.adapter.project_memory_record(
+            record,
+            provider_profile=profile,
+            source_id=source_id,
+            enable_flavor=self.enable_flavor,
+        )
+        self.store.save_turn_projections(
+            namespace=namespace,
+            turn_id=turn_id,
+            projections=[generated],
+        )
+        return self.store.get_turn_projections(
+            namespace=namespace,
+            turn_id=turn_id,
+            provider_profile=profile,
+        )
+
+    @staticmethod
+    def memory_turn_id(*, source_id: str, id_key: str, turn_prefix: str) -> str:
+        return f"{turn_prefix}.{stable_projection_hash({id_key: source_id})}"
+
+
 def build_projection_audit_input(
     *,
     turn_id: str,
@@ -877,6 +1009,7 @@ __all__ = [
     "ProjectionAuditInput",
     "ProjectionMessage",
     "ProjectionMessageInput",
+    "ProjectionLedger",
     "ProjectionStatus",
     "RendererRegistry",
     "RequestProjectionResult",

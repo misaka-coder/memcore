@@ -12,6 +12,14 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
+from ..compaction_v2 import (
+    CompactionSnapshot,
+    SemanticBatchCommitResult,
+    SemanticCommitInput,
+    SummaryBatchCommitResult,
+    SummaryRecordInput,
+    TurnBundle,
+)
 from ..namespace import Namespace
 from ..projection import (
     ProjectionAudit,
@@ -31,6 +39,10 @@ from ..timeline import (
 
 
 class MemoryStore(ABC):
+    def runtime_identity(self) -> str:
+        """Safe process-local identity; must never expose a database path."""
+        return f"{type(self).__module__}.{type(self).__qualname__}:{id(self)}"
+
     # --- 写 ---
     def begin_turn(
         self,
@@ -69,6 +81,26 @@ class MemoryStore(ABC):
         projections: list[ProjectionMessageInput],
         audit: ProjectionAuditInput,
     ) -> RequestProjectionResult:
+        raise NotImplementedError
+
+    def list_compaction_bundles(self, *, namespace: Namespace) -> list[TurnBundle]:
+        raise NotImplementedError
+
+    def commit_summary_batch(
+        self,
+        *,
+        namespace: Namespace,
+        snapshot: CompactionSnapshot,
+        records: list[SummaryRecordInput],
+    ) -> SummaryBatchCommitResult:
+        raise NotImplementedError
+
+    def commit_semantic_batch(
+        self,
+        *,
+        namespace: Namespace,
+        commit: SemanticCommitInput,
+    ) -> SemanticBatchCommitResult:
         raise NotImplementedError
 
     @abstractmethod

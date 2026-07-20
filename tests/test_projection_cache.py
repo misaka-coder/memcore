@@ -513,7 +513,7 @@ class PrefixAndLedgerTests(ProjectionBase):
 
 
 class SafetyAndIsolationTests(ProjectionBase):
-    def test_legacy_compacted_context_fails_explicitly_until_compaction_v2(self) -> None:
+    def test_compacted_context_projects_summary_without_silently_dropping_it(self) -> None:
         self.store.add_summary(
             namespace=self.namespace,
             record={
@@ -522,8 +522,10 @@ class SafetyAndIsolationTests(ProjectionBase):
                 "diary_summary": "must not disappear silently",
             },
         )
-        with self.assertRaisesRegex(SchemaError, "projection_compaction_v2_required"):
-            self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)
+        projection = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)
+        self.assertEqual(len(projection.messages), 1)
+        self.assertTrue(projection.messages[0].turn_id.startswith("summary."))
+        self.assertIn("must not disappear silently", str(projection.payloads[0]["content"]))
 
     def test_media_secret_and_local_path_are_never_persisted_in_projection_payload(self) -> None:
         handle = self.mem.begin_turn(

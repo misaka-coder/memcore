@@ -6,6 +6,16 @@
 from __future__ import annotations
 
 from .config import MemoryConfig
+from .compaction_v2 import (
+    CompactionResult,
+    CompactionSnapshot,
+    SemanticBatchCommitResult,
+    SemanticCommitInput,
+    SemanticSnapshot,
+    SummaryBatchCommitResult,
+    SummaryRecordInput,
+    TurnBundle,
+)
 from .chat_output import (
     ChatOutputConfig,
     ChatOutputMode,
@@ -32,6 +42,7 @@ from .projection import (
     ProjectionAdapter,
     ProjectionAudit,
     ProjectionAuditInput,
+    ProjectionLedger,
     ProjectionMessage,
     ProjectionMessageInput,
     ProjectionStatus,
@@ -71,6 +82,7 @@ from .schema import (
     SummaryRecord,
     coerce_memory_metadata,
 )
+from .runtime import ConversationLockRegistry, MemCoreRuntime
 from .store.base import MemoryStore
 from .store.sqlite_store import SQLiteMemoryStore
 from .token_counter import TokenCounter
@@ -151,6 +163,17 @@ __all__ = [
     "TurnHandle",
     "TurnRole",
     "TurnStatus",
+    # Compaction V2 / shared runtime
+    "CompactionResult",
+    "CompactionSnapshot",
+    "ConversationLockRegistry",
+    "MemCoreRuntime",
+    "SemanticBatchCommitResult",
+    "SemanticCommitInput",
+    "SemanticSnapshot",
+    "SummaryBatchCommitResult",
+    "SummaryRecordInput",
+    "TurnBundle",
     # Projection Ledger
     "ANTHROPIC_PROFILE",
     "CANONICAL_PROFILE",
@@ -161,6 +184,7 @@ __all__ = [
     "ProjectionAdapter",
     "ProjectionAudit",
     "ProjectionAuditInput",
+    "ProjectionLedger",
     "ProjectionMessage",
     "ProjectionMessageInput",
     "ProjectionStatus",

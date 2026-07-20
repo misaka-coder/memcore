@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 import time
 import uuid
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future
 from dataclasses import replace
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -30,6 +30,7 @@ from .prompts import PromptOverrides
 from .projection import (
     ContextProjection,
     ProjectionAdapter,
+    ProjectionLedger,
     ProjectionMessage,
     ProjectionMessageInput,
     ProjectionStatus,
@@ -44,6 +45,7 @@ from .projection import (
     stable_projection_hash,
 )
 from .retrieval import ReadPipeline
+from .runtime import MemCoreRuntime
 from .schema import TRACE_CATEGORIES, coerce_memory_metadata
 from .store.base import MemoryStore
 from .store.sqlite_store import SQLiteMemoryStore
@@ -82,6 +84,7 @@ class MemorySystem:
         persona_text: str = "",
         prompt_overrides: PromptOverrides | None = None,
         renderer_registry: RendererRegistry | None = None,
+        runtime: MemCoreRuntime | None = None,
     ) -> None:
         if not isinstance(llm, LLMClient):
             raise TypeError("llm must be an LLMClient instance (inject your model adapter)")
@@ -117,12 +120,21 @@ class MemorySystem:
             renderer_registry=self.renderer_registry,
             timezone=self.timezone,
         )
+        if runtime is not None and not isinstance(runtime, MemCoreRuntime):
+            raise TypeError("runtime must be a MemCoreRuntime or None")
+        self.runtime = runtime or MemCoreRuntime()
+        self._owns_runtime = runtime is None
 
         # 依赖装配:缺省自带 SQLite + 内存索引;embedding 必须显式(生产不静默退 hashed,见 §13.1)。
         self.embedding = self._resolve_embedding(embedding)
         self.token_counter = token_counter
         self.store: MemoryStore = store or SQLiteMemoryStore(storage_dir or ":memory:")
         self.index: VectorIndex = index or InMemoryVectorIndex(embedding=self.embedding)
+        self._projection_ledger = ProjectionLedger(
+            store=self.store,
+            adapter=self._projection,
+            enable_flavor=self.config.enable_flavor,
+        )
         self._compaction = Compaction(
             store=self.store,
             index=self.index,
@@ -131,11 +143,12 @@ class MemorySystem:
             timezone=self.timezone,
             overrides=self.prompt_overrides,
             token_counter=self.token_counter,
+            projection_adapter=self._projection,
+            runtime=self.runtime,
         )
         self._read = ReadPipeline(
             store=self.store, index=self.index, llm=self.llm, config=self.config, timezone=self.timezone
         )
-        self._compact_executor: ThreadPoolExecutor | None = None  # 懒建,单 worker 串行后台压缩
 
     @staticmethod
     def _resolve_overrides(prompt_overrides: PromptOverrides | None, persona_text: str) -> PromptOverrides:
@@ -358,21 +371,16 @@ class MemorySystem:
 
         profile = normalize_provider_profile(provider_profile)
         try:
-            legacy_episodic = self.store.get_visible_episodic_summaries(
+            episodic = self.store.get_visible_episodic_summaries(
                 namespace=self.namespace,
-                limit=1,
+                limit=self.config.episodic_visible_max,
                 cross_conversation=False,
             )
-            legacy_semantic = self.store.get_recent_semantic_summaries(
+            semantic = self.store.get_recent_semantic_summaries(
                 namespace=self.namespace,
-                limit=1,
+                limit=self.config.semantic_visible_limit,
                 cross_conversation=False,
             )
-        except NotImplementedError as exc:
-            raise SchemaError("store_timeline_v2_unsupported") from exc
-        if legacy_episodic or legacy_semantic:
-            raise SchemaError("projection_compaction_v2_required")
-        try:
             entries = self.store.list_prompt_visible_entries(namespace=self.namespace)
         except NotImplementedError as exc:
             raise SchemaError("store_timeline_v2_unsupported") from exc
@@ -383,43 +391,30 @@ class MemorySystem:
             grouped.setdefault(group_id, []).append(entry)
 
         messages: list[ProjectionMessage] = []
-        for turn_id, turn_entries in grouped.items():
-            try:
-                saved = self.store.get_turn_projections(
-                    namespace=self.namespace,
-                    turn_id=turn_id,
+        for record, id_key, prefix in (
+            *((item, "semantic_id", "semantic") for item in reversed(semantic)),
+            *(
+                (item, "summary_id", "summary")
+                for item in reversed(episodic)
+                if str(item.get("retrieval_visibility") or "default") == "default"
+            ),
+        ):
+            messages.extend(
+                self._freeze_memory_record_projection(
+                    record=record,
+                    id_key=id_key,
+                    turn_prefix=prefix,
                     provider_profile=profile,
                 )
-            except NotImplementedError as exc:
-                raise SchemaError("store_timeline_v2_unsupported") from exc
-            covered = tuple(source_id for message in saved for source_id in message.source_ids)
-            expected = tuple(entry.source_id for entry in turn_entries)
-            if covered != expected[: len(covered)]:
-                raise SchemaError("projection_history_not_append_only")
-            remaining = turn_entries[len(covered) :]
-            if remaining:
-                start_index = max((message.projection_index for message in saved), default=-1) + 1
-                generated = list(
-                    self._projection.project_entries(
-                        remaining,
-                        provider_profile=profile,
-                        start_index=start_index,
-                    )
+            )
+        for turn_id, turn_entries in grouped.items():
+            messages.extend(
+                self._freeze_turn_projection(
+                    turn_id=turn_id,
+                    entries=turn_entries,
+                    provider_profile=profile,
                 )
-                try:
-                    self.store.save_turn_projections(
-                        namespace=self.namespace,
-                        turn_id=turn_id,
-                        projections=generated,
-                    )
-                    saved = self.store.get_turn_projections(
-                        namespace=self.namespace,
-                        turn_id=turn_id,
-                        provider_profile=profile,
-                    )
-                except NotImplementedError as exc:
-                    raise SchemaError("store_timeline_v2_unsupported") from exc
-            messages.extend(saved)
+            )
 
         try:
             compaction_generation, projection_generation = self.store.get_conversation_generations(
@@ -436,6 +431,42 @@ class MemorySystem:
             compaction_generation=compaction_generation,
             projection_generation=projection_generation,
         )
+
+    def _freeze_turn_projection(
+        self,
+        *,
+        turn_id: str,
+        entries: list[TimelineEntry],
+        provider_profile: str,
+    ) -> list[ProjectionMessage]:
+        try:
+            return self._projection_ledger.freeze_turn_entries(
+                namespace=self.namespace,
+                turn_id=turn_id,
+                entries=entries,
+                provider_profile=provider_profile,
+            )
+        except NotImplementedError as exc:
+            raise SchemaError("store_timeline_v2_unsupported") from exc
+
+    def _freeze_memory_record_projection(
+        self,
+        *,
+        record: dict[str, Any],
+        id_key: str,
+        turn_prefix: str,
+        provider_profile: str,
+    ) -> list[ProjectionMessage]:
+        try:
+            return self._projection_ledger.freeze_memory_record(
+                namespace=self.namespace,
+                record=record,
+                id_key=id_key,
+                turn_prefix=turn_prefix,
+                provider_profile=provider_profile,
+            )
+        except NotImplementedError as exc:
+            raise SchemaError("store_timeline_v2_unsupported") from exc
 
     def record_request_projection(
         self,
@@ -850,7 +881,7 @@ class MemorySystem:
             actor=actor,
         )
 
-    def compact_due_sync(self) -> dict[str, int]:
+    def compact_due_sync(self) -> dict[str, Any]:
         """同步压缩(阻塞直到完成)。
 
         仅建议用于单测、CLI、管理脚本或进程退出前的确定性 flush。聊天请求链路应使用
@@ -864,15 +895,12 @@ class MemorySystem:
         单 worker = 所有压缩串行,不会压垮 LLM/库;同 namespace 还有 Compaction 内部锁兜底。
         Future.result() 可取压缩统计;聊天产品里通常 fire-and-forget。用完调 close() 收线程。
         """
-        if self._compact_executor is None:
-            self._compact_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="memcore-compact")
-        return self._compact_executor.submit(self._compaction.run_due, namespace=self.namespace)
+        return self.runtime.submit_compaction(self._compaction.run_due, namespace=self.namespace)
 
     def close(self, *, wait: bool = True) -> None:
         """收掉后台压缩线程。store/index 生命周期由调用方自理。"""
-        if self._compact_executor is not None:
-            self._compact_executor.shutdown(wait=wait)
-            self._compact_executor = None
+        if self._owns_runtime:
+            self.runtime.close(wait=wait)
 
     def acquaintance_note(self, *, now_ts: int | None = None, cross_conversation: bool = True) -> str:
         """(opt-in,陪伴向)相处时间感:"第一次聊天是哪天、到今天认识第几天"。

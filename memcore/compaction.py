@@ -9,22 +9,37 @@
 
 from __future__ import annotations
 
-import threading
 import uuid
-from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
 
+from .compaction_v2 import (
+    CompactionResult,
+    CompactionSnapshot,
+    SemanticCommitInput,
+    SemanticSnapshot,
+    SummaryRecordInput,
+    TurnBundle,
+)
 from .config import MemoryConfig
-from .errors import ConfigError
+from .errors import ConfigError, SchemaError
 from .index.base import VectorIndex
 from .index.entry_builder import build_semantic_entry, build_summary_entry
 from .llm.base import LLMClient, LLMRequest, ResponseFormat, TaskType
 from .namespace import Namespace
 from .prompts import PromptOverrides, build_reinforcement_prompts, build_semantic_prompts, build_summary_prompts
+from .projection import (
+    ProjectionAdapter,
+    ProjectionLedger,
+    ProjectionMessage,
+    canonical_json_bytes,
+    default_renderer_registry,
+    stable_projection_hash,
+)
 from .rendering import render_raw_snippet
 from .schema import TRACE_CATEGORIES, coerce_memory_metadata
 from .store.base import MemoryStore
+from .runtime import MemCoreRuntime
 from .text_utils import normalize_text
 from .time_anchor import (
     TIME_PERIOD_LABELS,
@@ -32,6 +47,7 @@ from .time_anchor import (
     infer_time_of_day,
     timestamp_to_date_label,
 )
+from .timeline import TimelineEntry, TurnRole, TurnStatus
 from .token_counter import TokenCounter
 
 
@@ -52,6 +68,8 @@ class Compaction:
         timezone: str,
         overrides: PromptOverrides | None = None,
         token_counter: TokenCounter | None = None,
+        projection_adapter: ProjectionAdapter | None = None,
+        runtime: MemCoreRuntime | None = None,
     ) -> None:
         self.store = store
         self.index = index
@@ -64,24 +82,418 @@ class Compaction:
         if self.config.raw_compaction_policy == "token" and token_counter is None:
             raise ConfigError("token_counter is required when raw_compaction_policy='token'")
         self.token_counter = token_counter
-        self._locks: dict[tuple[str, str, str], threading.RLock] = defaultdict(threading.RLock)
+        self.projection_adapter = projection_adapter or ProjectionAdapter(
+            renderer_registry=default_renderer_registry(),
+            timezone=timezone,
+        )
+        self.projection_ledger = ProjectionLedger(
+            store=self.store,
+            adapter=self.projection_adapter,
+            enable_flavor=self.config.enable_flavor,
+        )
+        self.runtime = runtime or MemCoreRuntime()
 
-    def run_due(self, *, namespace: Namespace) -> dict[str, int]:
-        result = {
-            "summaries_created": 0,
-            "semantic_created": 0,
-            "reinforced": 0,
-            "summary_retry_pending": 0,
-            "semantic_retry_pending": 0,
-        }
-        with self._locks[namespace.hard_key()]:  # 同 namespace 串行,压缩中不自重入
-            self._summarize_raw(namespace, result)
+    def run_due(self, *, namespace: Namespace) -> dict[str, Any]:
+        result = CompactionResult().to_dict()
+        lock = self.runtime.lock_registry.lock_for(
+            store_identity=self.store.runtime_identity(),
+            namespace=namespace,
+        )
+        if not lock.acquire(blocking=False):
+            result["status"] = "busy"
+            return result
+        try:
+            try:
+                bundles = self.store.list_compaction_bundles(namespace=namespace)
+            except NotImplementedError:
+                bundles = []
+            if any(not bundle.legacy for bundle in bundles):
+                self._summarize_timeline_v2(namespace, bundles, result)
+            else:
+                self._summarize_raw(namespace, result)
+                if result["summaries_created"]:
+                    result["status"] = "compacted"
+                elif result["summary_retry_pending"]:
+                    result["status"] = "failed"
+                    result["reason"] = "summary_retry_pending"
             self._semanticize_episodic(namespace, result)
-        return result
+            return result
+        except SchemaError as exc:
+            result["status"] = "failed"
+            result["reason"] = str(exc)
+            return result
+        finally:
+            lock.release()
 
     # --- raw → 阶段摘要 ---
 
-    def _summarize_raw(self, namespace: Namespace, result: dict[str, int]) -> None:
+    def _summarize_timeline_v2(
+        self,
+        namespace: Namespace,
+        bundles: list[TurnBundle],
+        result: dict[str, Any],
+    ) -> None:
+        if not bundles:
+            return
+        profile = self.config.projection_profile
+        generation, _ = self.store.get_conversation_generations(namespace=namespace)
+        result["compaction_generation"] = generation
+        projections: dict[str, list[ProjectionMessage]] = {}
+        bundle_tokens: dict[str, int] = {}
+        token_quality = self.token_counter.quality if self.token_counter is not None else "estimated"
+        for bundle in bundles:
+            frozen = self._freeze_bundle_projection(namespace, bundle, profile)
+            projections[bundle.turn_id] = frozen
+            bundle_tokens[bundle.turn_id] = sum(self._count_projection_tokens(item) for item in frozen)
+
+        memory_tokens = self._visible_memory_projection_tokens(namespace, profile)
+        before_tokens = memory_tokens + sum(bundle_tokens.values())
+        result["before_projected_tokens"] = before_tokens
+        result["token_count_quality"] = token_quality
+        components = self._bundle_components(bundles)
+        due, removal_target = self._compaction_due_target(bundles=bundles, before_tokens=before_tokens)
+        if not due:
+            result["status"] = "not_due"
+            result["after_projected_tokens"] = before_tokens
+            return
+
+        selected: list[TurnBundle] = []
+        selected_tokens = 0
+        total_bundle_count = len(bundles)
+        blocked_reason = ""
+        for component in components:
+            if any(bundle.status is not TurnStatus.CLOSED for bundle in component):
+                blocked_reason = "open_or_aborted_turn_in_prefix"
+                break
+            if total_bundle_count - len(selected) - len(component) < self.config.compaction_min_recent_turns:
+                blocked_reason = "recent_turn_window"
+                break
+            selected.extend(component)
+            selected_tokens += sum(bundle_tokens[bundle.turn_id] for bundle in component)
+            if self.config.compaction_policy == "count_compat":
+                if sum(len(bundle.entries) for bundle in selected) >= removal_target:
+                    break
+            elif selected_tokens >= removal_target:
+                break
+
+        if not selected:
+            result["status"] = "blocked_by_open_turn" if blocked_reason.startswith("open") else "not_due"
+            result["reason"] = blocked_reason
+            result["after_projected_tokens"] = before_tokens
+            return
+
+        selected_ids = {bundle.turn_id for bundle in selected}
+        ordered_entries = sorted(
+            (entry for bundle in selected for entry in bundle.entries),
+            key=lambda entry: entry.seq_no,
+        )
+        source_ids = tuple(entry.source_id for entry in ordered_entries)
+        projection_hashes_by_source: dict[str, list[str]] = {}
+        for turn_id in selected_ids:
+            for message in projections[turn_id]:
+                for source_id in message.source_ids:
+                    projection_hashes_by_source.setdefault(source_id, []).append(message.payload_hash)
+        snapshot = CompactionSnapshot(
+            namespace_key=(
+                namespace.tenant_id or "",
+                namespace.user_id,
+                namespace.domain_id or "",
+                namespace.conversation_id or "",
+            ),
+            provider_profile=profile,
+            compaction_generation=generation,
+            bundles=tuple(selected),
+            ordered_source_ids=source_ids,
+            message_row_versions=tuple((entry.source_id, entry.row_version) for entry in ordered_entries),
+            turn_row_versions=tuple(
+                (bundle.turn_id, bundle.turn_row_version) for bundle in selected if not bundle.legacy
+            ),
+            projection_hashes=tuple(
+                (source_id, tuple(projection_hashes_by_source.get(source_id, ()))) for source_id in source_ids
+            ),
+            before_projected_tokens=before_tokens,
+            selected_projected_tokens=selected_tokens,
+            token_count_quality=token_quality,
+        )
+
+        episode_entries = [
+            entry
+            for entry in ordered_entries
+            if entry.turn_role not in {TurnRole.ACTION, TurnRole.OBSERVATION} and not entry.kind.startswith("material.")
+        ]
+        operation_entries = [entry for entry in ordered_entries if entry not in episode_entries]
+        summary_inputs: list[SummaryRecordInput] = []
+        if episode_entries:
+            call = self._call_json(
+                TaskType.SUMMARY,
+                *build_summary_prompts(
+                    transcript=self._render_transcript([entry.to_record() for entry in episode_entries]),
+                    batch_size=len(episode_entries),
+                    overrides=self.overrides,
+                    enable_flavor=self.config.enable_flavor,
+                    reference_summary_text=self._render_reference_summaries(namespace),
+                ),
+                fallback={"diary_summary": "", "importance": 0.3, "key_events": [], "core_facts": []},
+            )
+            if not call.ok or not _has_summary_content(call.data):
+                result["status"] = "failed"
+                result["reason"] = "summary_retry_pending"
+                result["summary_retry_pending"] += 1
+                result["after_projected_tokens"] = before_tokens
+                return
+            summary_inputs.append(
+                self._episode_summary_input(
+                    namespace=namespace,
+                    entries=episode_entries,
+                    payload=call.data,
+                )
+            )
+        if operation_entries:
+            summary_inputs.append(self._operation_summary_input(namespace=namespace, entries=operation_entries))
+
+        committed = self.store.commit_summary_batch(
+            namespace=namespace,
+            snapshot=snapshot,
+            records=summary_inputs,
+        )
+        if not committed.committed:
+            result["status"] = committed.status
+            result["reason"] = committed.reason
+            result["after_projected_tokens"] = before_tokens
+            return
+        for saved in committed.summaries:
+            self._record_index_result(
+                result,
+                self._index(build_summary_entry(saved), str(saved["summary_id"])),
+            )
+        summary_messages: list[ProjectionMessage] = []
+        for saved in committed.summaries:
+            if str(saved.get("retrieval_visibility") or "default") != "default":
+                continue
+            summary_messages.extend(
+                self.projection_ledger.freeze_memory_record(
+                    namespace=namespace,
+                    record=saved,
+                    id_key="summary_id",
+                    turn_prefix="summary",
+                    provider_profile=profile,
+                )
+            )
+        summary_tokens = sum(self._count_projection_tokens(message) for message in summary_messages)
+        result["status"] = "compacted"
+        result["source_turn_count"] = len(selected)
+        result["source_entry_count"] = len(source_ids)
+        result["summary_source_ids"] = list(source_ids)
+        result["compaction_generation"] = committed.compaction_generation
+        result["summaries_created"] += len(committed.summaries)
+        result["after_projected_tokens"] = max(0, before_tokens - selected_tokens) + summary_tokens
+
+    def _freeze_bundle_projection(
+        self,
+        namespace: Namespace,
+        bundle: TurnBundle,
+        provider_profile: str,
+    ) -> list[ProjectionMessage]:
+        return self.projection_ledger.freeze_turn_entries(
+            namespace=namespace,
+            turn_id=bundle.turn_id,
+            entries=bundle.entries,
+            provider_profile=provider_profile,
+        )
+
+    def _visible_memory_projection_tokens(self, namespace: Namespace, provider_profile: str) -> int:
+        episodic = self.store.get_visible_episodic_summaries(
+            namespace=namespace,
+            limit=self.config.episodic_visible_max,
+            cross_conversation=False,
+        )
+        semantic = self.store.get_recent_semantic_summaries(
+            namespace=namespace,
+            limit=self.config.semantic_visible_limit,
+            cross_conversation=False,
+        )
+        messages: list[ProjectionMessage] = []
+        for record, id_key, prefix in (
+            *((item, "semantic_id", "semantic") for item in reversed(semantic)),
+            *(
+                (item, "summary_id", "summary")
+                for item in reversed(episodic)
+                if str(item.get("retrieval_visibility") or "default") == "default"
+            ),
+        ):
+            messages.extend(
+                self.projection_ledger.freeze_memory_record(
+                    namespace=namespace,
+                    record=record,
+                    id_key=id_key,
+                    turn_prefix=prefix,
+                    provider_profile=provider_profile,
+                )
+            )
+        return sum(self._count_projection_tokens(message) for message in messages)
+
+    @staticmethod
+    def _bundle_components(bundles: list[TurnBundle]) -> list[list[TurnBundle]]:
+        components: list[list[TurnBundle]] = []
+        current_last = -1
+        for bundle in sorted(bundles, key=lambda item: (item.first_seq_no, item.last_seq_no)):
+            if not components or bundle.first_seq_no > current_last:
+                components.append([bundle])
+                current_last = bundle.last_seq_no
+                continue
+            components[-1].append(bundle)
+            current_last = max(current_last, bundle.last_seq_no)
+        return components
+
+    def _compaction_due_target(self, *, bundles: list[TurnBundle], before_tokens: int) -> tuple[bool, int]:
+        if self.config.compaction_policy == "count_compat":
+            entry_count = sum(len(bundle.entries) for bundle in bundles)
+            return (entry_count >= self.config.raw_trigger_count, self.config.summary_batch_size)
+        reserved = self.config.reserved_current_turn_tokens + self.config.reserved_retrieval_tokens
+        effective_max = self.config.max_prompt_history_tokens - reserved
+        effective_target = self.config.target_prompt_history_tokens - reserved
+        return (before_tokens > effective_max, max(1, before_tokens - effective_target))
+
+    def _count_projection_tokens(self, message: ProjectionMessage) -> int:
+        text = canonical_json_bytes(message.payload).decode("utf-8")
+        return self._count_text_tokens(text) + 4
+
+    def _count_text_tokens(self, text: str) -> int:
+        if self.token_counter is None:
+            return max(1, (len(text.encode("utf-8")) + 3) // 4)
+        try:
+            count = int(self.token_counter.count_text(text))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("TokenCounter.count_text() must return a non-negative int") from exc
+        if count < 0:
+            raise ValueError("TokenCounter.count_text() must return a non-negative int")
+        return count
+
+    def _episode_summary_input(
+        self,
+        *,
+        namespace: Namespace,
+        entries: list[TimelineEntry],
+        payload: dict[str, Any],
+    ) -> SummaryRecordInput:
+        source_ids = tuple(entry.source_id for entry in entries)
+        summary_id = self._stable_summary_id(namespace, source_ids, profile="episode")
+        timestamps = [int(entry.timestamp) for entry in entries]
+        metadata = coerce_memory_metadata(
+            payload.get("memory_metadata"),
+            categories=self.config.categories,
+            enable_flavor=self.config.enable_flavor,
+        ).to_dict()
+        if not any(metadata.get(key) for key in ("keywords", "categories", "subject_scopes")):
+            for entry in entries:
+                if entry.annotation_status.accepted:
+                    metadata["keywords"] = _merge_unique(
+                        metadata.get("keywords"), entry.memory_metadata.get("keywords")
+                    )
+                    metadata["categories"] = _merge_unique(
+                        metadata.get("categories"),
+                        [
+                            item
+                            for item in entry.memory_metadata.get("categories") or ()
+                            if item not in TRACE_CATEGORIES
+                        ],
+                    )
+                    metadata["subject_scopes"] = _merge_unique(
+                        metadata.get("subject_scopes"), entry.memory_metadata.get("subject_scopes")
+                    )
+        visibility = (
+            "default" if any(entry.retrieval_visibility.value == "default" for entry in entries) else "explicit"
+        )
+        record = {
+            "summary_id": summary_id,
+            "kind": "memory.episode_summary",
+            "timestamp": max(timestamps),
+            "period_start_ts": min(timestamps),
+            "period_end_ts": max(timestamps),
+            "date_label": timestamp_to_date_label(max(timestamps), self.timezone),
+            "time_of_day": infer_time_of_day(max(timestamps), self.timezone),
+            "period_label": str(payload.get("period_label") or ""),
+            "event_type": str(payload.get("event_type") or ""),
+            "importance": _clamp01(payload.get("importance")),
+            "diary_summary": str(payload.get("diary_summary") or ""),
+            "key_events": _str_list(payload.get("key_events")),
+            "core_facts": _str_list(payload.get("core_facts")),
+            "memory_metadata": metadata,
+            "semantic_tags": list(metadata.get("keywords") or []),
+            "retrieval_visibility": visibility,
+            "semanticize": visibility == "default",
+            "compaction_schema_version": self.config.compaction_schema_version,
+        }
+        return SummaryRecordInput(
+            summary_id=summary_id,
+            summary_profile=f"{self.config.summary_profile}:episode",
+            source_ids=source_ids,
+            record=record,
+        )
+
+    def _operation_summary_input(
+        self,
+        *,
+        namespace: Namespace,
+        entries: list[TimelineEntry],
+    ) -> SummaryRecordInput:
+        source_ids = tuple(entry.source_id for entry in entries)
+        summary_id = self._stable_summary_id(namespace, source_ids, profile="operation")
+        timestamps = [int(entry.timestamp) for entry in entries]
+        facts: list[str] = []
+        for entry in entries:
+            tool_name = str(entry.trace_metadata.get("tool_name") or entry.kind)
+            status = str(entry.trace_metadata.get("status") or "")
+            fact = f"{tool_name}" + (f" status={status}" if status else "")
+            if entry.correlation_id:
+                fact += f" correlation={entry.correlation_id}"
+            facts.append(fact)
+        record = {
+            "summary_id": summary_id,
+            "kind": "memory.operation_digest",
+            "timestamp": max(timestamps),
+            "period_start_ts": min(timestamps),
+            "period_end_ts": max(timestamps),
+            "date_label": timestamp_to_date_label(max(timestamps), self.timezone),
+            "time_of_day": infer_time_of_day(max(timestamps), self.timezone),
+            "importance": 0.2,
+            "diary_summary": "；".join(facts),
+            "core_facts": facts,
+            "memory_metadata": {},
+            "trace_metadata": {"source_kinds": sorted({entry.kind for entry in entries})},
+            "retrieval_visibility": "explicit",
+            "semanticize": False,
+            "compaction_schema_version": self.config.compaction_schema_version,
+        }
+        return SummaryRecordInput(
+            summary_id=summary_id,
+            summary_profile=f"{self.config.summary_profile}:operation",
+            source_ids=source_ids,
+            record=record,
+        )
+
+    def _stable_summary_id(
+        self,
+        namespace: Namespace,
+        source_ids: tuple[str, ...],
+        *,
+        profile: str,
+    ) -> str:
+        return stable_projection_hash(
+            {
+                "namespace": [
+                    namespace.tenant_id or "",
+                    namespace.user_id,
+                    namespace.domain_id or "",
+                    namespace.conversation_id or "",
+                ],
+                "source_ids": list(source_ids),
+                "compaction_schema_version": self.config.compaction_schema_version,
+                "summary_profile": f"{self.config.summary_profile}:{profile}",
+            }
+        )
+
+    def _summarize_raw(self, namespace: Namespace, result: dict[str, Any]) -> None:
         msgs = self.store.get_unsummarized_messages(namespace=namespace)
         while True:
             batch = self._select_raw_summary_batch(msgs)
@@ -124,7 +536,10 @@ class Compaction:
             }
             saved = self.store.add_summary(namespace=namespace, record=record)
             self.store.mark_messages_summarized([str(m["source_id"]) for m in batch], saved["summary_id"])
-            self._index(build_summary_entry(saved), saved["summary_id"])
+            self._record_index_result(
+                result,
+                self._index(build_summary_entry(saved), saved["summary_id"]),
+            )
             result["summaries_created"] += 1
             msgs = self.store.get_unsummarized_messages(namespace=namespace)
 
@@ -244,11 +659,12 @@ class Compaction:
 
     # --- 阶段摘要 → 长期语义记忆(含强化合并) ---
 
-    def _semanticize_episodic(self, namespace: Namespace, result: dict[str, int]) -> None:
+    def _semanticize_episodic(self, namespace: Namespace, result: dict[str, Any]) -> None:
         cfg = self.config
         eps = self.store.get_uncompacted_episodic_summaries(namespace=namespace)
         while len(eps) >= cfg.episodic_compact_trigger_count:
             batch = eps[: cfg.episodic_compact_batch_size]
+            generation, _ = self.store.get_conversation_generations(namespace=namespace)
             call = self._call_json(
                 TaskType.SEMANTIC,
                 *build_semantic_prompts(
@@ -286,20 +702,70 @@ class Compaction:
             target = self._find_reinforcement_target(namespace, incoming)
             if target is not None:
                 record = self._merge_reinforcement(target, incoming)
-                result["reinforced"] += 1
+                reinforcement_target_id = str(target["semantic_id"])
+                reinforcement_target_row_version = int(target.get("row_version") or 0)
             else:
                 record = {
-                    "semantic_id": uuid.uuid4().hex,
+                    "semantic_id": self._stable_semantic_id(
+                        namespace,
+                        tuple(str(summary["summary_id"]) for summary in batch),
+                    ),
                     "reinforcement_count": 1,
                     "last_reinforced_ts": end_ts,
                     **incoming,
                 }
-                result["semantic_created"] += 1
+                reinforcement_target_id = ""
+                reinforcement_target_row_version = 0
 
-            saved = self.store.add_semantic_summary(namespace=namespace, record=record)
-            self.store.mark_summaries_semanticized([str(s["summary_id"]) for s in batch], saved["semantic_id"])
-            self._index(build_semantic_entry(saved), saved["semantic_id"])
+            snapshot = SemanticSnapshot(
+                namespace_key=(
+                    namespace.tenant_id or "",
+                    namespace.user_id,
+                    namespace.domain_id or "",
+                    namespace.conversation_id or "",
+                ),
+                compaction_generation=generation,
+                summary_ids=tuple(str(summary["summary_id"]) for summary in batch),
+                summary_row_versions=tuple(
+                    (str(summary["summary_id"]), int(summary.get("row_version") or 0)) for summary in batch
+                ),
+                reinforcement_target_id=reinforcement_target_id,
+                reinforcement_target_row_version=reinforcement_target_row_version,
+            )
+            committed = self.store.commit_semantic_batch(
+                namespace=namespace,
+                commit=SemanticCommitInput(snapshot=snapshot, semantic_record=record),
+            )
+            if not committed.committed or committed.semantic_record is None:
+                result["status"] = committed.status
+                result["reason"] = committed.reason
+                return
+            saved = committed.semantic_record
+            result["compaction_generation"] = committed.compaction_generation
+            if target is not None:
+                result["reinforced"] += 1
+            else:
+                result["semantic_created"] += 1
+            self._record_index_result(
+                result,
+                self._index(build_semantic_entry(saved), saved["semantic_id"]),
+            )
             eps = self.store.get_uncompacted_episodic_summaries(namespace=namespace)
+
+    def _stable_semantic_id(self, namespace: Namespace, summary_ids: tuple[str, ...]) -> str:
+        return stable_projection_hash(
+            {
+                "namespace": [
+                    namespace.tenant_id or "",
+                    namespace.user_id,
+                    namespace.domain_id or "",
+                    namespace.conversation_id or "",
+                ],
+                "summary_ids": list(summary_ids),
+                "semantic_schema_version": self.config.compaction_schema_version,
+                "summary_profile": f"{self.config.summary_profile}:semantic",
+            }
+        )
 
     def _find_reinforcement_target(self, namespace: Namespace, incoming: dict[str, Any]) -> dict[str, Any] | None:
         cfg = self.config
@@ -378,13 +844,21 @@ class Compaction:
             return JsonCallResult(ok=True, data=res.data)
         return JsonCallResult(ok=False, data=fallback)
 
-    def _index(self, entry: dict[str, Any], source_id: str) -> None:
+    def _index(self, entry: dict[str, Any], source_id: str) -> bool:
         # outbox:库已 pending,upsert 成功才置 indexed;失败保持 pending,留给 reindex_pending 自愈。
         try:
             self.index.upsert([entry])
             self.store.set_index_status(source_id, "indexed")
         except Exception:
-            return
+            return False
+        return True
+
+    @staticmethod
+    def _record_index_result(result: dict[str, Any], indexed: bool) -> None:
+        if not indexed:
+            result["index_status"] = "pending"
+        elif result.get("index_status") != "pending":
+            result["index_status"] = "indexed"
 
     def _render_reference_summaries(self, namespace: Namespace) -> str:
         """取本会话最近的既有阶段摘要作参考,帮新摘要与旧摘要保持一致、避免冲突。"""
