@@ -1,6 +1,7 @@
 """SQLiteMemoryStore —— MemoryStore 的默认实现(关系型真相源)。
 
-三张记忆表:messages / summaries / semantic_summaries。
+三张记忆真相表:messages / summaries / semantic_summaries；
+Timeline V2 另有 turn / projection / conversation coordination 表，不建立第二套 raw 真相源。
 
 - 隔离采用 Namespace 五层(tenant/user/domain 硬隔离 + conversation 窗口 + actor 软标签)。
 - index_status outbox 状态机(pending → indexed),向量 upsert 失败保持 pending,由 reindex 补做。
@@ -20,93 +21,21 @@ from typing import Any
 from ..errors import NamespaceError
 from ..namespace import Namespace
 from .base import MemoryStore
-
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS messages (
-    source_id TEXT PRIMARY KEY,
-    tenant_id TEXT NOT NULL DEFAULT '',
-    user_id TEXT NOT NULL,
-    domain_id TEXT NOT NULL DEFAULT '',
-    conversation_id TEXT NOT NULL DEFAULT '',
-    actor_id TEXT NOT NULL DEFAULT '',
-    actor_display_name TEXT NOT NULL DEFAULT '',
-    seq_no INTEGER NOT NULL,
-    role TEXT NOT NULL,
-    content TEXT NOT NULL,
-    timestamp INTEGER NOT NULL,
-    date_label TEXT NOT NULL DEFAULT '',
-    time_of_day TEXT NOT NULL DEFAULT '',
-    memory_metadata_json TEXT NOT NULL DEFAULT '{}',
-    index_status TEXT NOT NULL DEFAULT 'pending',
-    is_summarized INTEGER NOT NULL DEFAULT 0,
-    summary_id TEXT NOT NULL DEFAULT ''
-);
-CREATE INDEX IF NOT EXISTS idx_messages_scope_seq
-ON messages(tenant_id, user_id, domain_id, conversation_id, seq_no);
-
-CREATE TABLE IF NOT EXISTS summaries (
-    summary_id TEXT PRIMARY KEY,
-    tenant_id TEXT NOT NULL DEFAULT '',
-    user_id TEXT NOT NULL,
-    domain_id TEXT NOT NULL DEFAULT '',
-    conversation_id TEXT NOT NULL DEFAULT '',
-    timestamp INTEGER NOT NULL,
-    period_start_ts INTEGER NOT NULL DEFAULT 0,
-    period_end_ts INTEGER NOT NULL DEFAULT 0,
-    date_label TEXT NOT NULL DEFAULT '',
-    time_of_day TEXT NOT NULL DEFAULT '',
-    period_label TEXT NOT NULL DEFAULT '',
-    event_type TEXT NOT NULL DEFAULT '',
-    importance REAL NOT NULL DEFAULT 0,
-    diary_summary TEXT NOT NULL DEFAULT '',
-    key_events_json TEXT NOT NULL DEFAULT '[]',
-    core_facts_json TEXT NOT NULL DEFAULT '[]',
-    semantic_tags_json TEXT NOT NULL DEFAULT '[]',
-    memory_metadata_json TEXT NOT NULL DEFAULT '{}',
-    source_ids_json TEXT NOT NULL DEFAULT '[]',
-    is_semanticized INTEGER NOT NULL DEFAULT 0,
-    semantic_id TEXT NOT NULL DEFAULT '',
-    index_status TEXT NOT NULL DEFAULT 'pending'
-);
-CREATE INDEX IF NOT EXISTS idx_summaries_scope_time
-ON summaries(tenant_id, user_id, domain_id, timestamp DESC);
-
-CREATE TABLE IF NOT EXISTS semantic_summaries (
-    semantic_id TEXT PRIMARY KEY,
-    tenant_id TEXT NOT NULL DEFAULT '',
-    user_id TEXT NOT NULL,
-    domain_id TEXT NOT NULL DEFAULT '',
-    conversation_id TEXT NOT NULL DEFAULT '',
-    timestamp INTEGER NOT NULL,
-    period_start_ts INTEGER NOT NULL DEFAULT 0,
-    period_end_ts INTEGER NOT NULL DEFAULT 0,
-    date_label TEXT NOT NULL DEFAULT '',
-    time_of_day TEXT NOT NULL DEFAULT '',
-    importance REAL NOT NULL DEFAULT 0,
-    semantic_summary TEXT NOT NULL DEFAULT '',
-    stable_facts_json TEXT NOT NULL DEFAULT '[]',
-    recurring_topics_json TEXT NOT NULL DEFAULT '[]',
-    important_people_json TEXT NOT NULL DEFAULT '[]',
-    open_loops_json TEXT NOT NULL DEFAULT '[]',
-    semantic_tags_json TEXT NOT NULL DEFAULT '[]',
-    memory_metadata_json TEXT NOT NULL DEFAULT '{}',
-    source_summary_ids_json TEXT NOT NULL DEFAULT '[]',
-    reinforcement_count INTEGER NOT NULL DEFAULT 1,
-    last_reinforced_ts INTEGER NOT NULL DEFAULT 0,
-    index_status TEXT NOT NULL DEFAULT 'pending'
-);
-CREATE INDEX IF NOT EXISTS idx_semantic_scope_recency
-ON semantic_summaries(tenant_id, user_id, domain_id, last_reinforced_ts DESC, importance DESC, timestamp DESC);
-"""
+from .migrations import migrate_database, project_legacy_role
 
 _JSON_FIELDS = {
-    "messages": {"memory_metadata_json": "memory_metadata"},
+    "messages": {
+        "memory_metadata_json": "memory_metadata",
+        "payload_json": "payload",
+        "trace_metadata_json": "trace_metadata",
+    },
     "summaries": {
         "key_events_json": "key_events",
         "core_facts_json": "core_facts",
         "semantic_tags_json": "semantic_tags",
         "memory_metadata_json": "memory_metadata",
         "source_ids_json": "source_ids",
+        "trace_metadata_json": "trace_metadata",
     },
     "semantic_summaries": {
         "stable_facts_json": "stable_facts",
@@ -117,8 +46,31 @@ _JSON_FIELDS = {
         "memory_metadata_json": "memory_metadata",
         "source_summary_ids_json": "source_summary_ids",
     },
+    "turns": {
+        "stimulus_source_ids_json": "stimulus_source_ids",
+        "annotation_target_ids_json": "annotation_target_ids",
+    },
 }
 _ENTRY_TYPE = {"messages": "raw", "summaries": "summary", "semantic_summaries": "semantic_summary"}
+_JSON_OBJECT_FIELDS = frozenset({"memory_metadata", "payload", "trace_metadata"})
+
+
+def _json_dumps(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _has_semantic_metadata(value: Any) -> bool:
+    metadata = value if isinstance(value, dict) else {}
+    for key in ("keywords", "subject_scopes", "categories", "mood_tags"):
+        if list(metadata.get(key) or []):
+            return True
+    for key in ("importance", "confidence"):
+        try:
+            if float(metadata.get(key) or 0.0) > 0:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
 
 
 class SQLiteMemoryStore(MemoryStore):
@@ -126,8 +78,17 @@ class SQLiteMemoryStore(MemoryStore):
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.RLock()
-        with self._conn:
-            self._conn.executescript(_SCHEMA)
+        try:
+            migrate_database(self._conn)
+        except Exception:
+            self._conn.close()
+            raise
+
+    @property
+    def schema_version(self) -> int:
+        with self._lock:
+            row = self._conn.execute("PRAGMA user_version").fetchone()
+        return int(row[0]) if row is not None else 0
 
     def close(self) -> None:
         with self._lock:
@@ -138,13 +99,14 @@ class SQLiteMemoryStore(MemoryStore):
     @staticmethod
     def _row_to_record(row: sqlite3.Row, table: str) -> dict[str, Any]:
         record = dict(row)
-        for json_col, key in _JSON_FIELDS[table].items():
+        for json_col, key in _JSON_FIELDS.get(table, {}).items():
             raw = record.pop(json_col, None)
             try:
-                record[key] = json.loads(raw) if raw else ([] if key != "memory_metadata" else {})
+                record[key] = json.loads(raw) if raw else ({} if key in _JSON_OBJECT_FIELDS else [])
             except (TypeError, ValueError):
-                record[key] = [] if key != "memory_metadata" else {}
-        record["entry_type"] = _ENTRY_TYPE[table]
+                record[key] = {} if key in _JSON_OBJECT_FIELDS else []
+        if table in _ENTRY_TYPE:
+            record["entry_type"] = _ENTRY_TYPE[table]
         return record
 
     @staticmethod
@@ -179,6 +141,20 @@ class SQLiteMemoryStore(MemoryStore):
                     f"{id_label} already exists under a different actor; refusing to reuse the record id"
                 )
 
+    @staticmethod
+    def _assert_scope_owner(row: sqlite3.Row, namespace: Namespace, *, id_label: str) -> None:
+        """Validate hard namespace + conversation; actor remains a soft readable label."""
+
+        existing_key = (row["tenant_id"], row["user_id"], row["domain_id"], row["conversation_id"])
+        wanted_key = (
+            namespace.tenant_id or "",
+            namespace.user_id,
+            namespace.domain_id or "",
+            namespace.conversation_id or "",
+        )
+        if existing_key != wanted_key:
+            raise NamespaceError(f"{id_label} belongs to a different namespace/conversation")
+
     # --- 写 ---
 
     def add_message(
@@ -196,29 +172,86 @@ class SQLiteMemoryStore(MemoryStore):
                 f"SELECT COALESCE(MAX(seq_no), 0) AS m FROM messages WHERE {scope_clause}", scope_params
             ).fetchone()
             seq_no = int(row["m"]) + 1
-            self._conn.execute(
-                """
-                INSERT INTO messages
-                (source_id, tenant_id, user_id, domain_id, conversation_id, actor_id, actor_display_name,
-                 seq_no, role, content, timestamp, date_label, time_of_day, memory_metadata_json, index_status)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'pending')
-                """,
-                (
-                    source_id,
-                    namespace.tenant_id or "",
-                    namespace.user_id,
-                    namespace.domain_id or "",
-                    namespace.conversation_id or "",
-                    namespace.actor_id(),
-                    namespace.actor.display_name if namespace.actor else "",
-                    seq_no,
-                    str(role),
-                    str(content),
-                    int(timestamp),
-                    str(fields.get("date_label") or ""),
-                    str(fields.get("time_of_day") or ""),
-                    json.dumps(fields.get("memory_metadata") or {}, ensure_ascii=False),
+            role_projection = project_legacy_role(role)
+            memory_metadata = fields.get("memory_metadata") if isinstance(fields.get("memory_metadata"), dict) else {}
+            kind = str(fields.get("kind") or role_projection["kind"])
+            turn_role = str(fields.get("turn_role") or role_projection["turn_role"])
+            turn_id = str(fields.get("turn_id") or "")
+            if turn_id:
+                turn_owner = self._relation_owner_row(turn_id=turn_id)
+                if turn_owner is not None:
+                    self._assert_scope_owner(turn_owner, namespace, id_label=f"turn_id={turn_id!r}")
+            annotation_status = str(fields.get("annotation_status") or "")
+            if not annotation_status:
+                annotation_status = (
+                    "accepted_host"
+                    if turn_role == "stimulus"
+                    and not kind.startswith(("material.", "tool."))
+                    and _has_semantic_metadata(memory_metadata)
+                    else "unannotated"
+                )
+            retrieval_visibility = str(fields.get("retrieval_visibility") or "")
+            if not retrieval_visibility:
+                retrieval_visibility = "default" if annotation_status.startswith("accepted_") else "explicit"
+            trace_metadata = dict(role_projection["trace_metadata"])
+            if isinstance(fields.get("trace_metadata"), dict):
+                trace_metadata.update(fields["trace_metadata"])
+            payload = fields.get("payload")
+            if not isinstance(payload, dict):
+                payload = {"text": str(content)}
+            values = {
+                "source_id": source_id,
+                "tenant_id": namespace.tenant_id or "",
+                "user_id": namespace.user_id,
+                "domain_id": namespace.domain_id or "",
+                "conversation_id": namespace.conversation_id or "",
+                "actor_id": namespace.actor_id(),
+                "actor_display_name": namespace.actor.display_name if namespace.actor else "",
+                "seq_no": seq_no,
+                "role": str(role),
+                "content": str(content),
+                "timestamp": int(timestamp),
+                "date_label": str(fields.get("date_label") or ""),
+                "time_of_day": str(fields.get("time_of_day") or ""),
+                "memory_metadata_json": _json_dumps(memory_metadata),
+                "index_status": "pending",
+                "kind": kind,
+                "origin": str(fields.get("origin") or role_projection["origin"]),
+                "turn_id": turn_id,
+                "turn_role": turn_role,
+                "reply_to_source_id": str(fields.get("reply_to_source_id") or ""),
+                "correlation_id": str(fields.get("correlation_id") or role_projection["correlation_id"]),
+                "relation_status": str(fields.get("relation_status") or ("linked" if turn_id else "legacy_unlinked")),
+                "target_actor_id": str(fields.get("target_actor_id") or ""),
+                "target_actor_display_name": str(fields.get("target_actor_display_name") or ""),
+                "payload_json": _json_dumps(payload),
+                "semantic_text": str(fields.get("semantic_text") or content),
+                "trace_metadata_json": _json_dumps(trace_metadata),
+                "annotation_status": annotation_status,
+                "annotation_source": str(
+                    fields.get("annotation_source") or ("host" if annotation_status == "accepted_host" else "")
                 ),
+                "retrieval_policy": str(fields.get("retrieval_policy") or "auto"),
+                "retrieval_visibility": retrieval_visibility,
+                "semanticize": int(
+                    fields.get(
+                        "semanticize",
+                        turn_role not in {"action", "observation"} and not kind.startswith("material."),
+                    )
+                ),
+                "prompt_visible": int(fields.get("prompt_visible", True)),
+                "trust": str(fields.get("trust") or "untrusted_data"),
+                "renderer_id": str(fields.get("renderer_id") or "canonical"),
+                "renderer_version": int(fields.get("renderer_version") or 1),
+                "row_version": 1,
+                "index_schema_version": int(fields.get("index_schema_version") or 0),
+                "index_key": str(fields.get("index_key") or ""),
+            }
+            columns = tuple(values)
+            placeholders = ",".join("?" for _ in columns)
+            self._conn.execute(
+                f"INSERT INTO messages ({','.join(columns)}) VALUES ({placeholders})",
+                [values[column] for column in columns],
             )
             return self._row_to_record(
                 self._conn.execute("SELECT * FROM messages WHERE source_id = ?", (source_id,)).fetchone(),
@@ -231,35 +264,49 @@ class SQLiteMemoryStore(MemoryStore):
             prior = self._conn.execute("SELECT * FROM summaries WHERE summary_id = ?", (summary_id,)).fetchone()
             if prior is not None:  # 同 namespace 内覆盖允许;跨 namespace 拒绝
                 self._assert_namespace_owner(prior, namespace, id_label=f"summary_id={summary_id!r}")
-            self._conn.execute(
-                """
-                INSERT OR REPLACE INTO summaries
-                (summary_id, tenant_id, user_id, domain_id, conversation_id, timestamp, period_start_ts, period_end_ts,
-                 date_label, time_of_day, period_label, event_type, importance, diary_summary,
-                 key_events_json, core_facts_json, semantic_tags_json, memory_metadata_json, source_ids_json, index_status)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'pending')
-                """,
-                (
-                    summary_id,
-                    namespace.tenant_id or "",
-                    namespace.user_id,
-                    namespace.domain_id or "",
-                    namespace.conversation_id or "",
-                    int(record.get("timestamp") or 0),
-                    int(record.get("period_start_ts") or 0),
-                    int(record.get("period_end_ts") or 0),
-                    str(record.get("date_label") or ""),
-                    str(record.get("time_of_day") or ""),
-                    str(record.get("period_label") or ""),
-                    str(record.get("event_type") or ""),
-                    float(record.get("importance") or 0.0),
-                    str(record.get("diary_summary") or ""),
-                    json.dumps(record.get("key_events") or [], ensure_ascii=False),
-                    json.dumps(record.get("core_facts") or [], ensure_ascii=False),
-                    json.dumps(record.get("semantic_tags") or [], ensure_ascii=False),
-                    json.dumps(record.get("memory_metadata") or {}, ensure_ascii=False),
-                    json.dumps(record.get("source_ids") or [], ensure_ascii=False),
+            kind = str(record.get("kind") or "memory.episode_summary")
+            pure_operation = kind == "memory.operation_digest"
+            values = {
+                "summary_id": summary_id,
+                "tenant_id": namespace.tenant_id or "",
+                "user_id": namespace.user_id,
+                "domain_id": namespace.domain_id or "",
+                "conversation_id": namespace.conversation_id or "",
+                "timestamp": int(record.get("timestamp") or 0),
+                "period_start_ts": int(record.get("period_start_ts") or 0),
+                "period_end_ts": int(record.get("period_end_ts") or 0),
+                "date_label": str(record.get("date_label") or ""),
+                "time_of_day": str(record.get("time_of_day") or ""),
+                "period_label": str(record.get("period_label") or ""),
+                "event_type": str(record.get("event_type") or ""),
+                "importance": float(record.get("importance") or 0.0),
+                "diary_summary": str(record.get("diary_summary") or ""),
+                "key_events_json": _json_dumps(record.get("key_events") or []),
+                "core_facts_json": _json_dumps(record.get("core_facts") or []),
+                "semantic_tags_json": _json_dumps(record.get("semantic_tags") or []),
+                "memory_metadata_json": _json_dumps(record.get("memory_metadata") or {}),
+                "source_ids_json": _json_dumps(record.get("source_ids") or []),
+                "is_semanticized": int(record.get("is_semanticized") or 0),
+                "semantic_id": str(record.get("semantic_id") or ""),
+                "index_status": "pending",
+                "kind": kind,
+                "trace_metadata_json": _json_dumps(record.get("trace_metadata") or {}),
+                "annotation_status": str(record.get("annotation_status") or "derived"),
+                "retrieval_visibility": str(
+                    record.get("retrieval_visibility") or ("explicit" if pure_operation else "default")
                 ),
+                "semanticize": int(record.get("semanticize", not pure_operation)),
+                "lineage_status": str(record.get("lineage_status") or "valid"),
+                "compaction_schema_version": int(record.get("compaction_schema_version") or 1),
+                "row_version": int(prior["row_version"] if prior is not None else 0) + 1,
+                "index_schema_version": int(record.get("index_schema_version") or 0),
+                "index_key": str(record.get("index_key") or ""),
+            }
+            columns = tuple(values)
+            placeholders = ",".join("?" for _ in columns)
+            self._conn.execute(
+                f"INSERT OR REPLACE INTO summaries ({','.join(columns)}) VALUES ({placeholders})",
+                [values[column] for column in columns],
             )
             return self._row_to_record(
                 self._conn.execute("SELECT * FROM summaries WHERE summary_id = ?", (summary_id,)).fetchone(),
@@ -275,38 +322,43 @@ class SQLiteMemoryStore(MemoryStore):
             ).fetchone()
             if prior is not None:  # 同 namespace 内覆盖(强化合并需要);跨 namespace 拒绝
                 self._assert_namespace_owner(prior, namespace, id_label=f"semantic_id={semantic_id!r}")
+            values = {
+                "semantic_id": semantic_id,
+                "tenant_id": namespace.tenant_id or "",
+                "user_id": namespace.user_id,
+                "domain_id": namespace.domain_id or "",
+                "conversation_id": namespace.conversation_id or "",
+                "timestamp": ts,
+                "period_start_ts": int(record.get("period_start_ts") or 0),
+                "period_end_ts": int(record.get("period_end_ts") or 0),
+                "date_label": str(record.get("date_label") or ""),
+                "time_of_day": str(record.get("time_of_day") or ""),
+                "importance": float(record.get("importance") or 0.0),
+                "semantic_summary": str(record.get("semantic_summary") or ""),
+                "stable_facts_json": _json_dumps(record.get("stable_facts") or []),
+                "recurring_topics_json": _json_dumps(record.get("recurring_topics") or []),
+                "important_people_json": _json_dumps(record.get("important_people") or []),
+                "open_loops_json": _json_dumps(record.get("open_loops") or []),
+                "semantic_tags_json": _json_dumps(record.get("semantic_tags") or []),
+                "memory_metadata_json": _json_dumps(record.get("memory_metadata") or {}),
+                "source_summary_ids_json": _json_dumps(record.get("source_summary_ids") or []),
+                "reinforcement_count": int(record.get("reinforcement_count") or 1),
+                "last_reinforced_ts": int(record.get("last_reinforced_ts") or ts),
+                "index_status": "pending",
+                "kind": str(record.get("kind") or "memory.semantic_summary"),
+                "annotation_status": str(record.get("annotation_status") or "derived"),
+                "retrieval_visibility": str(record.get("retrieval_visibility") or "default"),
+                "lineage_status": str(record.get("lineage_status") or "valid"),
+                "semantic_schema_version": int(record.get("semantic_schema_version") or 1),
+                "row_version": int(prior["row_version"] if prior is not None else 0) + 1,
+                "index_schema_version": int(record.get("index_schema_version") or 0),
+                "index_key": str(record.get("index_key") or ""),
+            }
+            columns = tuple(values)
+            placeholders = ",".join("?" for _ in columns)
             self._conn.execute(
-                """
-                INSERT OR REPLACE INTO semantic_summaries
-                (semantic_id, tenant_id, user_id, domain_id, conversation_id, timestamp, period_start_ts, period_end_ts,
-                 date_label, time_of_day, importance, semantic_summary, stable_facts_json, recurring_topics_json,
-                 important_people_json, open_loops_json, semantic_tags_json, memory_metadata_json,
-                 source_summary_ids_json, reinforcement_count, last_reinforced_ts, index_status)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'pending')
-                """,
-                (
-                    semantic_id,
-                    namespace.tenant_id or "",
-                    namespace.user_id,
-                    namespace.domain_id or "",
-                    namespace.conversation_id or "",
-                    ts,
-                    int(record.get("period_start_ts") or 0),
-                    int(record.get("period_end_ts") or 0),
-                    str(record.get("date_label") or ""),
-                    str(record.get("time_of_day") or ""),
-                    float(record.get("importance") or 0.0),
-                    str(record.get("semantic_summary") or ""),
-                    json.dumps(record.get("stable_facts") or [], ensure_ascii=False),
-                    json.dumps(record.get("recurring_topics") or [], ensure_ascii=False),
-                    json.dumps(record.get("important_people") or [], ensure_ascii=False),
-                    json.dumps(record.get("open_loops") or [], ensure_ascii=False),
-                    json.dumps(record.get("semantic_tags") or [], ensure_ascii=False),
-                    json.dumps(record.get("memory_metadata") or {}, ensure_ascii=False),
-                    json.dumps(record.get("source_summary_ids") or [], ensure_ascii=False),
-                    int(record.get("reinforcement_count") or 1),
-                    int(record.get("last_reinforced_ts") or ts),
-                ),
+                f"INSERT OR REPLACE INTO semantic_summaries ({','.join(columns)}) VALUES ({placeholders})",
+                [values[column] for column in columns],
             )
             return self._row_to_record(
                 self._conn.execute("SELECT * FROM semantic_summaries WHERE semantic_id = ?", (semantic_id,)).fetchone(),
@@ -319,7 +371,11 @@ class SQLiteMemoryStore(MemoryStore):
         placeholders = ",".join("?" for _ in source_ids)
         with self._lock, self._conn:
             self._conn.execute(
-                f"UPDATE messages SET is_summarized = 1, summary_id = ? WHERE source_id IN ({placeholders})",
+                f"""
+                UPDATE messages
+                SET is_summarized = 1, summary_id = ?, row_version = row_version + 1
+                WHERE source_id IN ({placeholders})
+                """,
                 [summary_id, *source_ids],
             )
 
@@ -329,7 +385,11 @@ class SQLiteMemoryStore(MemoryStore):
         placeholders = ",".join("?" for _ in summary_ids)
         with self._lock, self._conn:
             self._conn.execute(
-                f"UPDATE summaries SET is_semanticized = 1, semantic_id = ? WHERE summary_id IN ({placeholders})",
+                f"""
+                UPDATE summaries
+                SET is_semanticized = 1, semantic_id = ?, row_version = row_version + 1
+                WHERE summary_id IN ({placeholders})
+                """,
                 [semantic_id, *summary_ids],
             )
 
@@ -355,13 +415,22 @@ class SQLiteMemoryStore(MemoryStore):
             if existing is None:
                 return None
             self._assert_namespace_owner(existing, namespace, id_label=f"message source_id={sid!r}")
+            accepted = _has_semantic_metadata(memory_metadata)
             cur = self._conn.execute(
                 """
                 UPDATE messages
-                SET memory_metadata_json = ?, index_status = 'pending'
+                SET memory_metadata_json = ?, annotation_status = ?, annotation_source = ?,
+                    retrieval_visibility = ?, row_version = row_version + 1,
+                    index_status = 'pending'
                 WHERE source_id = ?
                 """,
-                (json.dumps(memory_metadata or {}, ensure_ascii=False), sid),
+                (
+                    _json_dumps(memory_metadata or {}),
+                    "accepted_model" if accepted else "unannotated",
+                    "model" if accepted else "",
+                    "default" if accepted else "explicit",
+                    sid,
+                ),
             )
             if not cur.rowcount:
                 return None
@@ -381,6 +450,70 @@ class SQLiteMemoryStore(MemoryStore):
                 if row is not None:
                     return self._row_to_record(row, table)
         return None
+
+    def get_entry(self, *, namespace: Namespace, source_id: str) -> dict[str, Any] | None:
+        """Namespace-safe Timeline V2 raw lookup; unlike the legacy global lookup."""
+
+        sid = str(source_id or "").strip()
+        if not sid:
+            return None
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM messages WHERE source_id = ?", (sid,)).fetchone()
+            if row is None:
+                return None
+            self._assert_scope_owner(row, namespace, id_label=f"message source_id={sid!r}")
+            return self._row_to_record(row, "messages")
+
+    def get_turn_entries(self, *, namespace: Namespace, turn_id: str) -> list[dict[str, Any]]:
+        """Return one turn in sequence order without allowing cross-owner fallback."""
+
+        normalized = str(turn_id or "").strip()
+        if not normalized:
+            return []
+        scope_clause, params = self._scope_clause(namespace, with_conversation=True)
+        with self._lock:
+            owner = self._relation_owner_row(turn_id=normalized)
+            if owner is None:
+                return []
+            self._assert_scope_owner(owner, namespace, id_label=f"turn_id={normalized!r}")
+            rows = self._conn.execute(
+                f"SELECT * FROM messages WHERE {scope_clause} AND turn_id = ? ORDER BY seq_no",
+                [*params, normalized],
+            ).fetchall()
+        return [self._row_to_record(row, "messages") for row in rows]
+
+    def get_correlation_entries(
+        self, *, namespace: Namespace, turn_id: str, correlation_id: str
+    ) -> list[dict[str, Any]]:
+        """Return an ordered action/observation branch under a namespace-safe turn."""
+
+        normalized_turn = str(turn_id or "").strip()
+        normalized_correlation = str(correlation_id or "").strip()
+        if not normalized_turn or not normalized_correlation:
+            return []
+        scope_clause, params = self._scope_clause(namespace, with_conversation=True)
+        with self._lock:
+            owner = self._relation_owner_row(turn_id=normalized_turn)
+            if owner is None:
+                return []
+            self._assert_scope_owner(owner, namespace, id_label=f"turn_id={normalized_turn!r}")
+            rows = self._conn.execute(
+                f"""
+                SELECT * FROM messages
+                WHERE {scope_clause} AND turn_id = ? AND correlation_id = ?
+                ORDER BY seq_no
+                """,
+                [*params, normalized_turn, normalized_correlation],
+            ).fetchall()
+        return [self._row_to_record(row, "messages") for row in rows]
+
+    def _relation_owner_row(self, *, turn_id: str) -> sqlite3.Row | None:
+        turn = self._conn.execute("SELECT * FROM turns WHERE turn_id = ?", (turn_id,)).fetchone()
+        if turn is not None:
+            return turn
+        return self._conn.execute(
+            "SELECT * FROM messages WHERE turn_id = ? ORDER BY seq_no LIMIT 1", (turn_id,)
+        ).fetchone()
 
     def get_context_slice(self, *, namespace: Namespace, seq_no: int, window: int) -> list[dict[str, Any]]:
         scope_clause, params = self._scope_clause(namespace, with_conversation=True)
@@ -534,5 +667,7 @@ class SQLiteMemoryStore(MemoryStore):
                     f"SELECT {id_col} AS sid FROM {table} WHERE {scope_clause}", params
                 ).fetchall()
                 deleted_ids.extend(str(r["sid"]) for r in rows)
+                self._conn.execute(f"DELETE FROM {table} WHERE {scope_clause}", params)
+            for table in ("turns", "conversation_states", "prompt_projections", "projection_audits"):
                 self._conn.execute(f"DELETE FROM {table} WHERE {scope_clause}", params)
         return deleted_ids

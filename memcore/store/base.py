@@ -56,6 +56,25 @@ class MemoryStore(ABC):
     # --- 读(可见三层窗口 + 检索回取) ---
     @abstractmethod
     def get_record_by_source_id(self, source_id: str) -> dict[str, Any] | None:
+        """Legacy global lookup. New Timeline V2 runtime paths must use get_entry()."""
+        raise NotImplementedError
+
+    def get_entry(self, *, namespace: Namespace, source_id: str) -> dict[str, Any] | None:
+        """Namespace-safe lookup for one raw TimelineEntry.
+
+        Kept non-abstract during the V2 migration window so existing third-party
+        V1 stores still construct; V2 runtime activation requires an override.
+        """
+        raise NotImplementedError
+
+    def get_turn_entries(self, *, namespace: Namespace, turn_id: str) -> list[dict[str, Any]]:
+        """Read a complete turn only after validating namespace + conversation ownership."""
+        raise NotImplementedError
+
+    def get_correlation_entries(
+        self, *, namespace: Namespace, turn_id: str, correlation_id: str
+    ) -> list[dict[str, Any]]:
+        """Read one action/observation branch under an owned turn."""
         raise NotImplementedError
 
     @abstractmethod
