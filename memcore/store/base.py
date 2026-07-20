@@ -74,6 +74,10 @@ class MemoryStore(ABC):
     def append_entry(self, *, namespace: Namespace, entry: TimelineEntryInput) -> TimelineEntry:
         raise NotImplementedError
 
+    def append_standalone_entry(self, *, namespace: Namespace, entry: TimelineEntryInput) -> TimelineEntry:
+        """Persist a typed fact/event that does not trigger a model-response turn."""
+        raise NotImplementedError
+
     def commit_turn_completion(self, *, namespace: Namespace, completion: TurnCompletion) -> CompletionCommitResult:
         raise NotImplementedError
 
@@ -164,6 +168,12 @@ class MemoryStore(ABC):
         self, *, namespace: Namespace, source_id: str, memory_metadata: dict[str, Any]
     ) -> dict[str, Any] | None:
         """更新 raw message 的 memory_metadata,并置回 pending 等待 raw index 重建。找不到返回 None。"""
+        raise NotImplementedError
+
+    def stage_message_memory_metadata(
+        self, *, namespace: Namespace, source_id: str, memory_metadata: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Stage metadata on an open stimulus without granting retrieval admission."""
         raise NotImplementedError
 
     # --- 读(可见三层窗口 + 检索回取) ---

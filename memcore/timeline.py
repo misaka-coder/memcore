@@ -87,7 +87,7 @@ class AnnotationStatus(_TextEnum):
 class TimelineEntryInput:
     kind: str
     origin: EntryOrigin | str
-    turn_role: TurnRole | str
+    turn_role: TurnRole | str | None
     semantic_text: str
     timestamp: int = 0
     payload: Mapping[str, Any] = field(default_factory=dict)
@@ -118,10 +118,13 @@ class TimelineEntryInput:
             raise SchemaError("timeline_entry_invalid_kind")
         object.__setattr__(self, "kind", kind)
         object.__setattr__(self, "origin", _coerce_enum(EntryOrigin, self.origin, "timeline_entry_invalid_origin"))
+        raw_turn_role = str(
+            self.turn_role.value if isinstance(self.turn_role, TurnRole) else self.turn_role or ""
+        ).strip()
         object.__setattr__(
             self,
             "turn_role",
-            _coerce_enum(TurnRole, self.turn_role, "timeline_entry_invalid_turn_role"),
+            _coerce_enum(TurnRole, raw_turn_role, "timeline_entry_invalid_turn_role") if raw_turn_role else None,
         )
         object.__setattr__(
             self,

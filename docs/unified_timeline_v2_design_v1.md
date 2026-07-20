@@ -7,9 +7,10 @@
 - Slice 1 `Schema foundation` 已提交（`4b82e2d`）：正式 migration runner、V2 物理列/表、namespace-safe relation reads 与 V1 trace compatibility window；
 - Slice 2 `Turn lifecycle` 已提交（`24f1c1b`）：`begin_turn -> append_entry -> complete_turn / abort_turn`、显式 annotation target、并行 action/observation correlation、原子终态提交、visibility 物化与索引 outbox；
 - Slice 3 `Projection ledger` 已提交（`38727e1`）：versioned renderer registry、canonical/OpenAI/Anthropic adapter、不可变 projection rows、请求 hash audit、final projection 原子提交和 strict-prefix 验收；
-- Slice 4 `Compaction V2` 已实现：共享 `MemCoreRuntime`、closed-turn/token planning、summary/semantic 两阶段原子提交、episode/operation lineage 分离，以及压缩后 summary/semantic projection；
-- Slice 5 `Retrieval admission` 已实现：结构化 query/result、visibility/annotation/kind/conversation/index-generation 硬准入、开放 kind prefix flags、评分前过滤与有界 semantic relaxation；
-- Slice 6 `Relation expansion` 已实现：Namespace-safe lineage closure、stimulus/final 原子组、并行 correlation branch、派生层去重、visible lineage 排除与精确 token budget；
+- Slice 4 `Compaction V2` 已提交（`41d55b4`）：共享 `MemCoreRuntime`、closed-turn/token planning、summary/semantic 两阶段原子提交、episode/operation lineage 分离，以及压缩后 summary/semantic projection；
+- Slice 5 `Retrieval admission` 已提交（`df09a50`）：结构化 query/result、visibility/annotation/kind/conversation/index-generation 硬准入、开放 kind prefix flags、评分前过滤与有界 semantic relaxation；
+- Slice 6 `Relation expansion` 已提交（`3523c26`）：Namespace-safe lineage closure、stimulus/final 原子组、并行 correlation branch、派生层去重、visible lineage 排除与精确 token budget；
+- Akane cutover primitives 已实现：无模型回复的 typed standalone entry，以及不提前授予检索准入的 staged annotation；
 - `kind` 仍是开放 namespaced 字符串；关系完整性只约束通用 action/observation，不枚举工具、事件、Skill 或 Bot；
 - accepted empty annotation 与 missing/invalid annotation 已分开，只有 accepted target 自动进入 default retrieval；
 - final 继续保留真实 `provider_output_raw`；宿主提供的真实 final projection 会与 annotation/final/turn close 同事务保存，没有提供时可由标准 adapter 产生显式 `canonical_fallback`；
@@ -858,6 +859,8 @@ missing / invalid / plain / fallback / rejected
 ```python
 begin_turn(namespace, stimulus_entries, annotation_target_ids) -> TurnHandle
 append_entry(namespace, entry) -> TimelineEntry
+append_standalone_entry(namespace, entry) -> TimelineEntry
+stage_message_memory_metadata(namespace, source_id, memory_metadata) -> record
 commit_turn_completion(namespace, completion) -> CompletionCommitResult
 get_entry(namespace, source_id) -> TimelineEntry | None
 get_turn_entries(namespace, turn_id) -> list[TimelineEntry]
@@ -922,9 +925,19 @@ result = mem.complete_turn(
 
 上例是完整目标 API。Slice 2 已实现除 `provider_projection` 外的生命周期参数，并将真实 `provider_output_raw` 与 final 在同一事务中保存；`provider_projection` 参数和 projection ledger 写入将在 Slice 3 一起加入，避免先放一个没有真实 ledger 行为的占位参数。
 
-现有 `record_user_turn/record_external_event/record_tool_exchange/record_assistant_turn` 保留为薄兼容适配。它们继续保存现有行为，但只有显式新 Turn API 承诺完整并行关系和原子终态；Akane 切换后不再依赖旧适配建立新记录。
+Akane 当前仍调用 `record_user_turn/record_external_event/record_tool_exchange/record_assistant_turn`，因此这些公开名字在宿主切换前不能先删；但它们不再被视为可长期扩展的第二套权威。切换完成后只能删除或成为调用本节 V2 API 的薄适配。
 
-### 17.6 Retrieval admission 的物化
+### 17.6 Standalone entry 与 staged annotation
+
+两种宿主行为不应伪造成完整 turn：
+
+- 被动群消息、材料清理、状态同步等不触发模型回复的事实使用 `append_standalone_entry()`；其 `turn_id/turn_role/correlation_id` 为空，`relation_status=standalone`，不会制造永远 open 的假 turn；
+- final JSON 已解析但 assistant final 尚未原子提交时，使用 `stage_turn_metadata()`；它只更新 open stimulus 的规范化 metadata，并保持 `annotation_status=unannotated + retrieval_visibility=explicit`，不会提前让半轮对话进入普通检索；
+- `complete_turn()` 仍是唯一把 annotation、assistant final、visibility 与 turn close 一起提交的权威；staged metadata 不替代 completion annotation。
+
+SQLite standalone 写入对相同 source id + 相同 typed payload 幂等；同 id 不同内容/策略结构化拒绝。staged annotation 只接受当前 Namespace/actor 下仍 open 的 stimulus，standalone、intermediate、final 或 closed turn 不得假成功。
+
+### 17.7 Retrieval admission 的物化
 
 存储 `retrieval_policy` 表达调用方意图，同时存储 `retrieval_visibility` 供索引硬过滤。默认解析:
 
@@ -1677,13 +1690,14 @@ Akane 最终验收必须分别走个人 bot 普通私聊、个人群聊、金融
 2. **Turn lifecycle（已完成）**：begin/append/complete/abort、annotation status、并行 correlation 与原子终态，尚不切 Akane；
 3. **Projection ledger（已完成）**：renderer registry、provider adapters、immutable ledger、request audit、strict-prefix tests；
 4. **Compaction V2（已提交：`41d55b4`）**：shared runtime、closed-turn/token planning、atomic summary/semantic commits；
-5. **Retrieval admission（已实现，待本切片提交）**：visibility、kind flags、新 index generation、hard-filter tests；
-6. **Relation expansion（已实现，待本切片提交）**：turn/correlation/lineage closure、structured results、atomic token budget；
-7. **Native tools V2**：policy、精简 schema、dispatcher 与模型决策验收；
-8. **Akane shadow integration**：记录新 turn/projection，不改变用户输出；
-9. **Akane read cutover**：普通对话 -> tools -> event/finance，逐条删除旧权威；
-10. **真实 provider acceptance**：缓存、失败降级和多 bot 同能力验收；
-11. **Cleanup**：删除 prompt envelope writer/private renderer/旧 dual-write，更新公开文档。
+5. **Retrieval admission（已提交：`df09a50`）**：visibility、kind flags、新 index generation、hard-filter tests；
+6. **Relation expansion（已提交：`3523c26`）**：turn/correlation/lineage closure、structured results、atomic token budget；
+7. **Akane cutover primitives（已实现，待本切片提交）**：typed standalone entry、staged annotation；
+8. **Native tools V2**：policy、精简 schema、dispatcher 与模型决策验收；
+9. **Akane V2 write cutover**：普通输入、event、intermediate、并行工具和 final 切到同一 turn；
+10. **Akane read cutover**：普通对话 -> tools -> event/finance，逐条删除旧权威；
+11. **真实 provider acceptance**：缓存、失败降级和多 bot 同能力验收；
+12. **Cleanup**：删除 prompt envelope writer/private renderer/旧 dual-write，更新公开文档。
 
 每个切片必须执行相关单测、全量测试、lint/format/build 和 `git diff --check`。Akane 回填切片还要说明用户实际会感觉到的变化，并验证 QQ 文本、图片、TTS/表情等表现层没有因主回复或工具错误被连带破坏。
 

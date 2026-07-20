@@ -314,6 +314,8 @@ class SQLiteMemoryStore(MemoryStore):
             raise TypeError("entry must be a TimelineEntryInput")
         if not entry.turn_id:
             raise SchemaError("timeline_entry_turn_id_required")
+        if entry.turn_role is None:
+            raise SchemaError("timeline_entry_turn_role_required")
         if entry.turn_role in {TurnRole.STIMULUS, TurnRole.FINAL}:
             raise SchemaError("timeline_entry_role_not_appendable")
 
@@ -359,6 +361,48 @@ class SQLiteMemoryStore(MemoryStore):
                     raise SchemaError("timeline_entry_source_id_conflict")
             prepared = replace(entry, source_id=entry.source_id or uuid.uuid4().hex)
             record = self._add_timeline_entry_locked(namespace=namespace, entry=prepared)
+            return TimelineEntry.from_record(record)
+
+    def append_standalone_entry(self, *, namespace: Namespace, entry: TimelineEntryInput) -> TimelineEntry:
+        if not isinstance(entry, TimelineEntryInput):
+            raise TypeError("entry must be a TimelineEntryInput")
+        if entry.turn_id or entry.turn_role is not None:
+            raise SchemaError("standalone_entry_must_not_have_turn")
+        if entry.reply_to_source_id or entry.correlation_id:
+            raise SchemaError("standalone_entry_must_not_have_relations")
+
+        with self._lock, self._conn:
+            if entry.source_id:
+                existing = self._conn.execute(
+                    "SELECT * FROM messages WHERE source_id = ?",
+                    (entry.source_id,),
+                ).fetchone()
+                if existing is not None:
+                    self._assert_namespace_owner(
+                        existing,
+                        self._entry_namespace(namespace=namespace, actor=entry.actor),
+                        id_label=f"source_id={entry.source_id!r}",
+                    )
+                    stored = TimelineEntry.from_record(self._row_to_record(existing, "messages"))
+                    if (
+                        stored.kind != entry.kind
+                        or stored.semantic_text != entry.semantic_text
+                        or stored.payload != dict(entry.payload)
+                        or stored.memory_metadata != dict(entry.memory_metadata)
+                        or stored.annotation_status is not entry.annotation_status
+                        or stored.retrieval_policy is not entry.retrieval_policy
+                        or stored.retrieval_visibility is not entry.retrieval_visibility
+                        or stored.prompt_visible != bool(entry.prompt_visible)
+                        or stored.trust is not entry.trust
+                    ):
+                        raise SchemaError("standalone_entry_source_id_conflict")
+                    return stored
+            prepared = replace(entry, source_id=entry.source_id or uuid.uuid4().hex)
+            record = self._add_timeline_entry_locked(
+                namespace=namespace,
+                entry=prepared,
+                relation_status="standalone",
+            )
             return TimelineEntry.from_record(record)
 
     def commit_turn_completion(self, *, namespace: Namespace, completion: TurnCompletion) -> CompletionCommitResult:
@@ -1251,7 +1295,13 @@ class SQLiteMemoryStore(MemoryStore):
         ).fetchone()
         return int(row["projection_generation"] or 0) if row is not None else 0
 
-    def _add_timeline_entry_locked(self, *, namespace: Namespace, entry: TimelineEntryInput) -> dict[str, Any]:
+    def _add_timeline_entry_locked(
+        self,
+        *,
+        namespace: Namespace,
+        entry: TimelineEntryInput,
+        relation_status: str = "linked",
+    ) -> dict[str, Any]:
         entry_namespace = self._entry_namespace(namespace=namespace, actor=entry.actor)
         role = entry.compatibility_role or self._compatibility_role(entry)
         compatibility_metadata = self._compatibility_memory_metadata(entry)
@@ -1268,10 +1318,10 @@ class SQLiteMemoryStore(MemoryStore):
                 "kind": entry.kind,
                 "origin": entry.origin.value,
                 "turn_id": entry.turn_id,
-                "turn_role": entry.turn_role.value,
+                "turn_role": entry.turn_role.value if entry.turn_role else "",
                 "reply_to_source_id": entry.reply_to_source_id,
                 "correlation_id": entry.correlation_id,
-                "relation_status": "linked",
+                "relation_status": relation_status,
                 "target_actor_id": entry.target_actor.stable_id if entry.target_actor else "",
                 "target_actor_display_name": entry.target_actor.display_name if entry.target_actor else "",
                 "payload": dict(entry.payload),
@@ -1499,7 +1549,9 @@ class SQLiteMemoryStore(MemoryStore):
         role_projection = project_legacy_role(role)
         memory_metadata = fields.get("memory_metadata") if isinstance(fields.get("memory_metadata"), dict) else {}
         kind = str(fields.get("kind") or role_projection["kind"])
-        turn_role = str(fields.get("turn_role") or role_projection["turn_role"])
+        turn_role = (
+            str(fields.get("turn_role") or "") if "turn_role" in fields else str(role_projection["turn_role"] or "")
+        )
         turn_id = str(fields.get("turn_id") or "")
         if turn_id:
             turn_owner = self._relation_owner_row(turn_id=turn_id)
@@ -1779,6 +1831,41 @@ class SQLiteMemoryStore(MemoryStore):
             )
             if not cur.rowcount:
                 return None
+            row = self._conn.execute("SELECT * FROM messages WHERE source_id = ?", (sid,)).fetchone()
+            return self._row_to_record(row, "messages") if row is not None else None
+
+    def stage_message_memory_metadata(
+        self, *, namespace: Namespace, source_id: str, memory_metadata: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        sid = str(source_id or "").strip()
+        if not sid:
+            return None
+        with self._lock, self._conn:
+            existing = self._conn.execute("SELECT * FROM messages WHERE source_id = ?", (sid,)).fetchone()
+            if existing is None:
+                return None
+            self._assert_namespace_owner(existing, namespace, id_label=f"message source_id={sid!r}")
+            turn_id = str(existing["turn_id"] or "")
+            if str(existing["turn_role"] or "") != TurnRole.STIMULUS.value or not turn_id:
+                raise SchemaError("staged_annotation_requires_turn_stimulus")
+            turn = self._conn.execute("SELECT status FROM turns WHERE turn_id = ?", (turn_id,)).fetchone()
+            if turn is None or str(turn["status"] or "") != TurnStatus.OPEN.value:
+                raise SchemaError("staged_annotation_requires_open_turn")
+            self._conn.execute(
+                """
+                UPDATE messages
+                SET memory_metadata_json = ?, annotation_status = 'unannotated',
+                    annotation_source = 'model_staged',
+                    retrieval_visibility = CASE
+                        WHEN retrieval_policy = 'never' THEN 'never'
+                        ELSE 'explicit'
+                    END,
+                    row_version = row_version + 1,
+                    index_status = 'pending', index_schema_version = 0, index_key = ''
+                WHERE source_id = ?
+                """,
+                (_json_dumps(memory_metadata or {}), sid),
+            )
             row = self._conn.execute("SELECT * FROM messages WHERE source_id = ?", (sid,)).fetchone()
             return self._row_to_record(row, "messages") if row is not None else None
 

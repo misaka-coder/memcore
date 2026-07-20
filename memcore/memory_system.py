@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 from .compaction import Compaction
 from .config import MemoryConfig
 from .embedding.base import EmbeddingProvider
-from .errors import ConfigError, SchemaError
+from .errors import ConfigError, NamespaceError, SchemaError
 from .index.base import VectorIndex
 from .index.entry_builder import build_raw_entry, build_semantic_entry, build_summary_entry
 from .index.memory_index import InMemoryVectorIndex
@@ -250,6 +250,28 @@ class MemorySystem:
         )
         try:
             stored = self.store.append_entry(namespace=self.namespace, entry=prepared)
+        except NotImplementedError as exc:
+            raise SchemaError("store_timeline_v2_unsupported") from exc
+        return self._index_timeline_entry(stored)
+
+    def append_standalone_entry(self, entry: TimelineEntryInput) -> TimelineEntry:
+        """Persist a typed entry that does not open or complete a model-response turn."""
+
+        if not isinstance(entry, TimelineEntryInput):
+            raise TypeError("entry must be a TimelineEntryInput")
+        entry = self.renderer_registry.bind_input(entry)
+        if entry.turn_id or entry.turn_role is not None:
+            raise SchemaError("standalone_entry_must_not_have_turn")
+        timestamp = int(entry.timestamp or time.time())
+        prepared = replace(
+            entry,
+            source_id=entry.source_id or uuid.uuid4().hex,
+            timestamp=timestamp,
+            date_label=entry.date_label or timestamp_to_date_label(timestamp, self.timezone),
+            time_of_day=entry.time_of_day or infer_time_of_day(timestamp, self.timezone),
+        )
+        try:
+            stored = self.store.append_standalone_entry(namespace=self.namespace, entry=prepared)
         except NotImplementedError as exc:
             raise SchemaError("store_timeline_v2_unsupported") from exc
         return self._index_timeline_entry(stored)
@@ -1040,6 +1062,75 @@ class MemorySystem:
             index_schema_version=INDEX_SCHEMA_VERSION,
             index_key=INDEX_SCHEMA_KEY,
         )
+
+    def stage_turn_metadata(
+        self,
+        source_id: str,
+        memory_metadata: dict[str, Any] | None,
+        *,
+        actor: Actor | None = None,
+    ) -> dict[str, Any]:
+        """Stage final-model metadata on an open stimulus without admitting it to retrieval."""
+
+        sid = str(source_id or "").strip()
+        metadata = coerce_memory_metadata(
+            memory_metadata,
+            categories=self.config.categories,
+            enable_flavor=self.config.enable_flavor,
+        ).to_dict()
+        namespace = self.namespace if actor is None else self._with_actor(actor)
+        try:
+            record = self.store.stage_message_memory_metadata(
+                namespace=namespace,
+                source_id=sid,
+                memory_metadata=metadata,
+            )
+        except NamespaceError as exc:
+            return {
+                "ok": False,
+                "status": "forbidden",
+                "source_id": sid,
+                "memory_metadata": metadata,
+                "index_status": "",
+                "reason": str(exc) or "namespace_mismatch",
+            }
+        except (NotImplementedError, SchemaError) as exc:
+            return {
+                "ok": False,
+                "status": "invalid",
+                "source_id": sid,
+                "memory_metadata": metadata,
+                "index_status": "",
+                "reason": str(exc) or "staged_annotation_invalid",
+            }
+        if record is None:
+            return {
+                "ok": False,
+                "status": "not_found",
+                "source_id": sid,
+                "memory_metadata": metadata,
+                "index_status": "",
+                "reason": "source_id_not_found",
+            }
+        try:
+            self.index.delete([sid])
+        except Exception as exc:
+            return {
+                "ok": False,
+                "status": "pending",
+                "source_id": sid,
+                "memory_metadata": metadata,
+                "index_status": "pending",
+                "reason": str(exc) or "stale_index_delete_failed",
+            }
+        return {
+            "ok": True,
+            "status": "staged",
+            "source_id": sid,
+            "memory_metadata": metadata,
+            "index_status": "pending",
+            "reason": "",
+        }
 
     def update_turn_metadata(
         self,
