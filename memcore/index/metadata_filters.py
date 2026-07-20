@@ -7,6 +7,15 @@ import re
 from typing import Any
 
 _SAFE_KEY = re.compile(r"^[A-Za-z0-9_]+$")
+_KIND_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)+$")
+_KIND_PREFIX_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)*$")
+
+INDEX_SCHEMA_VERSION = 2
+KIND_FLAG_SCHEMA_VERSION = 1
+VISIBILITY_SCHEMA_VERSION = 1
+INDEX_SCHEMA_KEY = (
+    f"index_v{INDEX_SCHEMA_VERSION}:kind_v{KIND_FLAG_SCHEMA_VERSION}:visibility_v{VISIBILITY_SCHEMA_VERSION}"
+)
 
 
 def metadata_filter_key(prefix: str, value: str) -> str:
@@ -27,6 +36,39 @@ def category_filter_key(category: str) -> str:
 
 def subject_scope_filter_key(scope: str) -> str:
     return metadata_filter_key("memory_scope", scope)
+
+
+def kind_prefixes(kind: str) -> tuple[str, ...]:
+    """Return every dot-delimited prefix for one validated open kind."""
+    normalized = str(kind or "").strip().lower()
+    if not _KIND_PATTERN.fullmatch(normalized):
+        raise ValueError("invalid_kind")
+    parts = normalized.split(".")
+    return tuple(".".join(parts[:index]) for index in range(1, len(parts) + 1))
+
+
+def kind_filter_key(kind_prefix: str) -> str:
+    """Use a versioned full digest so arbitrary future kinds remain safe Chroma keys."""
+    normalized = str(kind_prefix or "").strip().lower()
+    if not normalized or not all(_SAFE_KEY.fullmatch(part) for part in normalized.split(".")):
+        raise ValueError("invalid_kind_prefix")
+    digest = hashlib.sha256(f"kind_flag_v{KIND_FLAG_SCHEMA_VERSION}:{normalized}".encode("utf-8")).hexdigest()
+    return f"memory_kind__v{KIND_FLAG_SCHEMA_VERSION}_{digest}"
+
+
+def kind_filter_flags(kind: str) -> dict[str, bool]:
+    return {kind_filter_key(prefix): True for prefix in kind_prefixes(kind)}
+
+
+def normalize_kind_pattern(pattern: str) -> tuple[str, bool]:
+    """Accept exact kinds or one trailing ``.*`` prefix; reject regex/mid-glob forms."""
+    normalized = str(pattern or "").strip().lower()
+    is_prefix = normalized.endswith(".*")
+    kind = normalized[:-2] if is_prefix else normalized
+    validator = _KIND_PREFIX_PATTERN if is_prefix else _KIND_PATTERN
+    if not validator.fullmatch(kind):
+        raise ValueError("invalid_kind_pattern")
+    return kind, is_prefix
 
 
 def metadata_filter_flags(metadata: dict[str, Any]) -> dict[str, bool]:

@@ -358,7 +358,7 @@ class V1MigrationTests(unittest.TestCase):
             self.assertEqual(second.get_record_by_source_id("call-1")["kind"], "tool.web_search.call")
             second.close()
 
-    def test_foundation_migration_preserves_v1_explicit_trace_retrieval(self) -> None:
+    def test_retrieval_v2_does_not_admit_v1_trace_category_compatibility(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "legacy.sqlite3"
             _create_v1_database(path)
@@ -379,15 +379,22 @@ class V1MigrationTests(unittest.TestCase):
                 embedding=embedding,
                 config=MemoryConfig(enable_verifier=False),
             )
-            mem.reindex_all()
+            try:
+                mem.reindex_all()
+                default_hits = mem.retrieve("晴天")
+                category_hits = mem.retrieve("晴天", categories=["tool_trace"])
+                explicit = mem.retrieve_structured(
+                    "晴天",
+                    include_explicit=True,
+                    kind_patterns=["tool.web_search.*"],
+                )
 
-            default_hits = mem.retrieve("晴天")
-            explicit_hits = mem.retrieve("晴天", categories=["tool_trace"])
-
-            self.assertFalse(any("晴天" in item for item in default_hits))
-            self.assertTrue(any("晴天" in item for item in explicit_hits))
-            mem.close()
-            store.close()
+                self.assertFalse(any("晴天" in item for item in default_hits))
+                self.assertFalse(any("晴天" in item for item in category_hits))
+                self.assertEqual(explicit.status, "empty")
+            finally:
+                mem.close()
+                store.close()
 
     def test_failed_migration_rolls_back_all_alterations(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

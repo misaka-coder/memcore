@@ -14,6 +14,7 @@ from ..embedding.base import EmbeddingProvider
 from ..text_utils import tokenize
 from .base import VectorIndex
 from .memory_index import _keyword_doc_text
+from .metadata_filters import INDEX_SCHEMA_VERSION, KIND_FLAG_SCHEMA_VERSION, VISIBILITY_SCHEMA_VERSION
 
 _NEVER_MATCH = {"__memcore_never_match__": True}
 
@@ -69,7 +70,10 @@ class ChromaVectorIndex(VectorIndex):
         base.mkdir(parents=True, exist_ok=True)
         self._client = chromadb.PersistentClient(path=str(base))
         self._collection = self._client.get_or_create_collection(
-            name=f"memcore_{embedding.collection_key()}",
+            name=(
+                f"memcore_{embedding.collection_key()}_i{INDEX_SCHEMA_VERSION}"
+                f"_k{KIND_FLAG_SCHEMA_VERSION}_v{VISIBILITY_SCHEMA_VERSION}"
+            ),
             metadata={"hnsw:space": "cosine"},
         )
 
@@ -142,7 +146,9 @@ class ChromaVectorIndex(VectorIndex):
         metadatas = got.get("metadatas") or []
         if not ids:
             return []
-        query_terms = [t for t in (keywords or []) if str(t).strip()] or tokenize(query_text)
+        query_terms = [
+            term for keyword in (keywords or []) if str(keyword).strip() for term in tokenize(str(keyword))
+        ] or tokenize(query_text)
         if not query_terms:
             return []
 

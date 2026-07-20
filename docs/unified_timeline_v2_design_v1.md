@@ -1,6 +1,6 @@
 # MemCore Unified Timeline V2 设计草案
 
-状态: implementation in progress；Schema foundation、Turn lifecycle、Projection ledger 与 Compaction V2 已实现，Retrieval admission 待实现。
+状态: implementation in progress；Schema foundation、Turn lifecycle、Projection ledger、Compaction V2 与 Retrieval admission 已实现，Relation expansion 待实现。
 
 当前实现检查点（2026-07-20）：
 
@@ -8,11 +8,12 @@
 - Slice 2 `Turn lifecycle` 已提交（`24f1c1b`）：`begin_turn -> append_entry -> complete_turn / abort_turn`、显式 annotation target、并行 action/observation correlation、原子终态提交、visibility 物化与索引 outbox；
 - Slice 3 `Projection ledger` 已提交（`38727e1`）：versioned renderer registry、canonical/OpenAI/Anthropic adapter、不可变 projection rows、请求 hash audit、final projection 原子提交和 strict-prefix 验收；
 - Slice 4 `Compaction V2` 已实现：共享 `MemCoreRuntime`、closed-turn/token planning、summary/semantic 两阶段原子提交、episode/operation lineage 分离，以及压缩后 summary/semantic projection；
+- Slice 5 `Retrieval admission` 已实现：结构化 query/result、visibility/annotation/kind/conversation/index-generation 硬准入、开放 kind prefix flags、评分前过滤与有界 semantic relaxation；
 - `kind` 仍是开放 namespaced 字符串；关系完整性只约束通用 action/observation，不枚举工具、事件、Skill 或 Bot；
 - accepted empty annotation 与 missing/invalid annotation 已分开，只有 accepted target 自动进入 default retrieval；
 - final 继续保留真实 `provider_output_raw`；宿主提供的真实 final projection 会与 annotation/final/turn close 同事务保存，没有提供时可由标准 adapter 产生显式 `canonical_fallback`；
 - episode/semantic summary 已进入同一不可变 projection ledger；`before/after_projected_tokens` 按目标 provider payload 计数，不再只统计正文；
-- 旧 `add_summary() + mark_*()` 分事务压缩只保留为 V1 compatibility window；只要会话存在 V2 turn，主链路就使用 snapshot revalidation 与原子 batch commit；
+- 旧 `add_summary() + mark_*()` 分事务压缩当前只供包内旧写入口过渡，不再承诺第三方兼容；Akane 切换新 Turn API 后直接删除，不保留长期双实现；
 - 本检查点没有切换 Akane，也没有改变 QQ、桌宠、金融或个人 Bot 的用户表现。旧 `record_*` API 暂时保持原行为，后续回填时只能变成薄适配或删除。
 
 本文定义 MemCore 从“通用三层记忆内核”演进为“统一时间线、稳定上下文投影与记忆读取内核”的目标形态。它不改变 MemCore 与宿主的基本边界：宿主仍负责渠道、权限、工具执行、文件本体、模型选择和最终请求；MemCore 负责把模型实际经历的输入、输出、工具与事件可靠地记录、投影、检索和压缩。
@@ -1179,7 +1180,7 @@ reason
 - 压缩后的 summary/semantic 继续走统一 projection ledger，`after_projected_tokens` 与实际可见 provider payload 使用同一计数口径；
 - 索引失败保留 pending outbox 并在结果中返回 `index_status=pending`，不回滚已提交的 SQL 事实；
 - V1 `record_*` 数据在没有 V2 turn 时继续走 legacy compatibility 路径。本切片没有切换 Akane、QQ、桌宠、金融或个人 Bot，用户体验尚无变化；
-- 下一切片是 Retrieval admission：将 visibility/kind/policy 编译为评分前硬过滤，并移除 trace category 兼容副本的读取权威。
+- Retrieval admission 已完成：visibility/kind/policy/index generation 已编译为评分前硬过滤，trace category 兼容副本不再拥有读取权威；下一切片是 Relation expansion。
 
 ## 20. Retrieval V2 的具体实现
 
@@ -1335,6 +1336,19 @@ renderer/semantic_text schema version
 ```
 
 SQLite 保存当前 index generation 和每条 entry 的 indexed generation。kind flags/visibility 语义改变时创建新 Chroma collection generation 或执行明确的全量重建；新 generation warmup 完成并通过 count/hash 检查后再原子切换。不得在旧 collection 中部分覆盖，让相同查询同时看到两种过滤语义。
+
+### 20.9 当前实现检查点（2026-07-21）
+
+- `RetrievalRequest -> RetrievalQueryPlan -> RetrievalResult` 已成为唯一检索算法；旧 `retrieve()/retrieve_for_turn() -> list[str]` 只渲染结构化 matches，不再维护第二套搜索或过滤逻辑；
+- HardFilterPlan 固定 Namespace、conversation scope、time range、visibility、annotation、kind patterns、trust、lineage 状态、visible source ids 与 index schema generation；semantic relaxation 只允许依次移除 importance、categories、subject scopes；
+- `kind_patterns` 仅接受 exact kind 或尾部 `.*` prefix；kind flags 使用 versioned SHA-256 完整 digest，新增业务 kind 不要求修改 MemCore 枚举；
+- 普通 default admission 接受有效 model/host annotation、derived summary/final 和宿主明确 `always` policy；`tool.*`/`material.*` 只能通过 `include_explicit + kind_patterns` 打开；
+- 旧 `tool_trace/event_trace/material_trace` category 不再能扩大候选池，迁移记录的 `accepted_legacy/legacy_categories` 也不进入 V2 检索；
+- index entry 已物化 visibility、annotation、kind、trust、lineage 和 schema-generation 标量；Chroma collection 名包含 index/kind/visibility schema generation，避免新旧过滤语义混在同一 collection；
+- dense/BM25 的零分候选不会为了填满 top-k 被返回；配置阈值与 rejected counts 已进入结构化结果；
+- Store 回取使用 Namespace-safe raw/summary/semantic lookup。若第三方 index 忽略 hard where 并返回越界 source，整次查询返回 `unavailable/index_filter_unsupported`，不会靠后置删除伪装成功；
+- 当前 match 仍是单记录原子，`lineage` 只携带直接来源；stimulus/final、correlation branch、lineage closure 和 result token budget 属于下一切片 Relation expansion；
+- 本切片没有切换 Akane 或云端 Bot，用户表现尚无变化。
 
 ## 21. 给模型的 Native Tools V2
 
@@ -1651,8 +1665,8 @@ Akane 最终验收必须分别走个人 bot 普通私聊、个人群聊、金融
 1. **Schema foundation（已完成）**：migration runner、V2 columns、turn/projection tables、namespace-safe reads；
 2. **Turn lifecycle（已完成）**：begin/append/complete/abort、annotation status、并行 correlation 与原子终态，尚不切 Akane；
 3. **Projection ledger（已完成）**：renderer registry、provider adapters、immutable ledger、request audit、strict-prefix tests；
-4. **Compaction V2（已实现，待本切片提交）**：shared runtime、closed-turn/token planning、atomic summary/semantic commits；
-5. **Retrieval admission**：visibility、kind flags、新 index generation、hard-filter tests；
+4. **Compaction V2（已提交：`41d55b4`）**：shared runtime、closed-turn/token planning、atomic summary/semantic commits；
+5. **Retrieval admission（已实现，待本切片提交）**：visibility、kind flags、新 index generation、hard-filter tests；
 6. **Relation expansion**：turn/correlation/lineage closure、structured results；
 7. **Native tools V2**：policy、精简 schema、dispatcher 与模型决策验收；
 8. **Akane shadow integration**：记录新 turn/projection，不改变用户输出；

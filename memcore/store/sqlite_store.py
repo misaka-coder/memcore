@@ -1722,13 +1722,30 @@ class SQLiteMemoryStore(MemoryStore):
             )
 
     def set_index_status(self, source_id: str, status: str) -> None:
+        self.set_index_state(source_id, status)
+
+    def set_index_state(
+        self,
+        source_id: str,
+        status: str,
+        *,
+        index_schema_version: int = 0,
+        index_key: str = "",
+    ) -> None:
         with self._lock, self._conn:
             for table, id_col in (
                 ("messages", "source_id"),
                 ("summaries", "summary_id"),
                 ("semantic_summaries", "semantic_id"),
             ):
-                cur = self._conn.execute(f"UPDATE {table} SET index_status = ? WHERE {id_col} = ?", (status, source_id))
+                cur = self._conn.execute(
+                    f"""
+                    UPDATE {table}
+                    SET index_status = ?, index_schema_version = ?, index_key = ?
+                    WHERE {id_col} = ?
+                    """,
+                    (status, int(index_schema_version or 0), str(index_key or ""), source_id),
+                )
                 if cur.rowcount:
                     return
 
@@ -1791,6 +1808,34 @@ class SQLiteMemoryStore(MemoryStore):
                 return None
             self._assert_scope_owner(row, namespace, id_label=f"message source_id={sid!r}")
             return TimelineEntry.from_record(self._row_to_record(row, "messages"))
+
+    def get_retrieval_record(
+        self,
+        *,
+        namespace: Namespace,
+        source_id: str,
+        cross_conversation: bool = False,
+    ) -> dict[str, Any] | None:
+        sid = str(source_id or "").strip()
+        if not sid:
+            return None
+        scope_clause, params = self._scope_clause(
+            namespace,
+            with_conversation=not bool(cross_conversation),
+        )
+        with self._lock:
+            for table, id_col in (
+                ("messages", "source_id"),
+                ("summaries", "summary_id"),
+                ("semantic_summaries", "semantic_id"),
+            ):
+                row = self._conn.execute(
+                    f"SELECT * FROM {table} WHERE {scope_clause} AND {id_col} = ?",
+                    [*params, sid],
+                ).fetchone()
+                if row is not None:
+                    return self._row_to_record(row, table)
+        return None
 
     def get_turn(self, *, namespace: Namespace, turn_id: str) -> TurnHandle | None:
         normalized = str(turn_id or "").strip()

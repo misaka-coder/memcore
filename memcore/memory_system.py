@@ -24,6 +24,7 @@ from .errors import ConfigError, SchemaError
 from .index.base import VectorIndex
 from .index.entry_builder import build_raw_entry, build_semantic_entry, build_summary_entry
 from .index.memory_index import InMemoryVectorIndex
+from .index.metadata_filters import INDEX_SCHEMA_KEY, INDEX_SCHEMA_VERSION
 from .llm.base import LLMClient
 from .namespace import Actor, Namespace
 from .prompts import PromptOverrides
@@ -44,7 +45,7 @@ from .projection import (
     sanitize_projection_payload,
     stable_projection_hash,
 )
-from .retrieval import ReadPipeline
+from .retrieval import ReadPipeline, RetrievalRequest, RetrievalResult
 from .runtime import MemCoreRuntime
 from .schema import TRACE_CATEGORIES, coerce_memory_metadata
 from .store.base import MemoryStore
@@ -628,7 +629,12 @@ class MemorySystem:
             "importance": importance,
             "confidence": confidence,
         }
-        record_fields: dict[str, Any] = {"memory_metadata": metadata}
+        record_fields: dict[str, Any] = {
+            "annotation_status": "unannotated",
+            "memory_metadata": metadata,
+            "retrieval_policy": "explicit",
+            "retrieval_visibility": "explicit",
+        }
         if timestamp is not None:
             record_fields["timestamp"] = timestamp
         if str(source_id or "").strip():
@@ -676,8 +682,14 @@ class MemorySystem:
             "confidence": confidence,
         }
         ts = timestamp
-        use_fields: dict[str, Any] = {"memory_metadata": metadata}
-        result_fields: dict[str, Any] = {"memory_metadata": metadata}
+        trace_fields = {
+            "annotation_status": "unannotated",
+            "memory_metadata": metadata,
+            "retrieval_policy": "explicit",
+            "retrieval_visibility": "explicit",
+        }
+        use_fields: dict[str, Any] = dict(trace_fields)
+        result_fields: dict[str, Any] = dict(trace_fields)
         if ts is not None:
             use_fields["timestamp"] = ts
             result_fields["timestamp"] = ts + 1
@@ -733,7 +745,12 @@ class MemorySystem:
             "importance": importance,
             "confidence": confidence,
         }
-        fields: dict[str, Any] = {"memory_metadata": metadata}
+        fields: dict[str, Any] = {
+            "annotation_status": "unannotated",
+            "memory_metadata": metadata,
+            "retrieval_policy": "explicit",
+            "retrieval_visibility": "explicit",
+        }
         if timestamp is not None:
             fields["timestamp"] = timestamp
         if source_id:
@@ -785,7 +802,12 @@ class MemorySystem:
             "importance": importance,
             "confidence": confidence,
         }
-        fields: dict[str, Any] = {"memory_metadata": metadata}
+        fields: dict[str, Any] = {
+            "annotation_status": "unannotated",
+            "memory_metadata": metadata,
+            "retrieval_policy": "explicit",
+            "retrieval_visibility": "explicit",
+        }
         if timestamp is not None:
             fields["timestamp"] = timestamp
         if source_id:
@@ -840,20 +862,28 @@ class MemorySystem:
         # decision.  Even when a caller opts this turn out of vector search,
         # the SQLite raw record remains the truth source and must be kept.
         index_in_vector = bool(fields.pop("index_in_vector", True))
+        source_id = fields.pop("source_id", None) or uuid.uuid4().hex
+        metadata = coerce_memory_metadata(
+            fields.pop("memory_metadata", None),
+            categories=self.config.categories,
+            enable_flavor=self.config.enable_flavor,
+        ).to_dict()
+        if role in {"assistant", "user"}:
+            fields.setdefault("annotation_status", "accepted_host")
+            fields.setdefault("annotation_source", "host_adapter")
+            fields.setdefault("retrieval_policy", "always")
+            fields.setdefault("retrieval_visibility", "default")
         ns = self.namespace if actor is None else self._with_actor(actor)
         rec = self.store.add_message(
             namespace=ns,
             role=role,
             content=content,
             timestamp=ts,
-            source_id=fields.pop("source_id", None) or uuid.uuid4().hex,
+            source_id=source_id,
             date_label=timestamp_to_date_label(ts, self.timezone),
             time_of_day=infer_time_of_day(ts, self.timezone),
-            memory_metadata=coerce_memory_metadata(
-                fields.pop("memory_metadata", None),
-                categories=self.config.categories,
-                enable_flavor=self.config.enable_flavor,
-            ).to_dict(),
+            memory_metadata=metadata,
+            **fields,
         )
         if not index_in_vector:
             # Keep the opt-out durable and out of the repair outbox.  This is
@@ -865,8 +895,15 @@ class MemorySystem:
         # outbox:写库已成功(pending);向量 upsert 失败就留 pending,交给 reindex_pending 自愈,不阻断记录。
         try:
             self.index.upsert([build_raw_entry(rec)])
-            self.store.set_index_status(rec["source_id"], "indexed")
+            self.store.set_index_state(
+                rec["source_id"],
+                "indexed",
+                index_schema_version=INDEX_SCHEMA_VERSION,
+                index_key=INDEX_SCHEMA_KEY,
+            )
             rec["index_status"] = "indexed"  # 返回值与 store 同步,别让调用方误判
+            rec["index_schema_version"] = INDEX_SCHEMA_VERSION
+            rec["index_key"] = INDEX_SCHEMA_KEY
         except Exception:
             rec["index_status"] = "pending"
         return rec
@@ -992,7 +1029,12 @@ class MemorySystem:
             self.store.set_index_status(entry["source_id"], "skipped")
             return
         self.index.upsert([entry])
-        self.store.set_index_status(entry["source_id"], "indexed")
+        self.store.set_index_state(
+            entry["source_id"],
+            "indexed",
+            index_schema_version=INDEX_SCHEMA_VERSION,
+            index_key=INDEX_SCHEMA_KEY,
+        )
 
     def update_turn_metadata(
         self,
@@ -1053,7 +1095,12 @@ class MemorySystem:
             }
         try:
             self.index.upsert([build_raw_entry(rec)])
-            self.store.set_index_status(sid, "indexed")
+            self.store.set_index_state(
+                sid,
+                "indexed",
+                index_schema_version=INDEX_SCHEMA_VERSION,
+                index_key=INDEX_SCHEMA_KEY,
+            )
             rec["index_status"] = "indexed"
             return {
                 "ok": True,
@@ -1106,8 +1153,43 @@ class MemorySystem:
         return render_prompt_context(context, tz=self.timezone, enable_flavor=self.config.enable_flavor)
 
     def retrieve(self, query: str, **filters: Any) -> list[str]:
-        """显式检索(工具式),返回经 verifier 确认的记忆片段文本。"""
+        """Thin text adapter over Retrieval V2 for the current model-tool migration window."""
         return self._read.retrieve(namespace=self.namespace, query=query, **filters)
+
+    def retrieve_structured(
+        self,
+        query: str,
+        *,
+        keywords: list[str] | None = None,
+        source_layers: list[str] | None = None,
+        categories: list[str] | None = None,
+        subject_scopes: list[str] | None = None,
+        importance_min: float | None = None,
+        time_hint: dict[str, Any] | None = None,
+        kind_patterns: list[str] | None = None,
+        include_explicit: bool = False,
+        cross_conversation: bool = False,
+        exclude_source_ids: list[str] | None = None,
+        max_matches: int = 0,
+    ) -> RetrievalResult:
+        """Return typed found/empty/invalid/unavailable/failed retrieval state."""
+        return self._read.retrieve_result(
+            namespace=self.namespace,
+            request=RetrievalRequest(
+                query=query,
+                keywords=tuple(keywords or ()),
+                source_layers=tuple(source_layers or ()),
+                categories=tuple(categories or ()),
+                subject_scopes=tuple(subject_scopes or ()),
+                importance_min=importance_min,
+                time_hint=dict(time_hint or {}),
+                kind_patterns=tuple(kind_patterns or ()),
+                include_explicit=include_explicit,
+                cross_conversation=cross_conversation,
+                exclude_source_ids=tuple(exclude_source_ids or ()),
+                max_matches=max_matches,
+            ),
+        )
 
     def retrieve_for_turn(self, *, current: dict[str, Any], query: str, **filters: Any) -> list[str]:
         """当前聊天轮的安全检索工具:默认排除本轮 prompt 已可见记忆。
@@ -1124,7 +1206,35 @@ class MemorySystem:
         current_id = str((current or {}).get("source_id") or "").strip()
         if current_id:
             exclude_ids.add(current_id)
-        return self.retrieve(query, exclude_source_ids=sorted(exclude_ids), **filters)
+        filters.setdefault("cross_conversation", True)
+        result = self.retrieve_for_turn_structured(
+            current=current,
+            query=query,
+            exclude_source_ids=sorted(exclude_ids),
+            **filters,
+        )
+        return list(result.rendered_texts)
+
+    def retrieve_for_turn_structured(
+        self,
+        *,
+        current: dict[str, Any],
+        query: str,
+        exclude_source_ids: list[str] | None = None,
+        **filters: Any,
+    ) -> RetrievalResult:
+        """Structured retrieval with every prompt-visible source excluded before scoring."""
+        exclude_ids = {str(item).strip() for item in (exclude_source_ids or ()) if str(item or "").strip()}
+        now_ts = int((current or {}).get("timestamp") or 0)
+        exclude_ids |= self._read.visible_source_ids(namespace=self.namespace, now_ts=now_ts)
+        current_id = str((current or {}).get("source_id") or "").strip()
+        if current_id:
+            exclude_ids.add(current_id)
+        return self.retrieve_structured(
+            query,
+            exclude_source_ids=sorted(exclude_ids),
+            **filters,
+        )
 
     def read_timeline(
         self,

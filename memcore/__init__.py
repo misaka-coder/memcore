@@ -83,6 +83,14 @@ from .schema import (
     coerce_memory_metadata,
 )
 from .runtime import ConversationLockRegistry, MemCoreRuntime
+from .retrieval import (
+    HardFilterPlan,
+    RetrievalMatch,
+    RetrievalQueryPlan,
+    RetrievalRequest,
+    RetrievalResult,
+    SemanticFilterPlan,
+)
 from .store.base import MemoryStore
 from .store.sqlite_store import SQLiteMemoryStore
 from .token_counter import TokenCounter
@@ -163,6 +171,13 @@ __all__ = [
     "TurnHandle",
     "TurnRole",
     "TurnStatus",
+    # Retrieval V2
+    "HardFilterPlan",
+    "RetrievalMatch",
+    "RetrievalQueryPlan",
+    "RetrievalRequest",
+    "RetrievalResult",
+    "SemanticFilterPlan",
     # Compaction V2 / shared runtime
     "CompactionResult",
     "CompactionSnapshot",

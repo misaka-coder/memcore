@@ -25,6 +25,7 @@ from .config import MemoryConfig
 from .errors import ConfigError, SchemaError
 from .index.base import VectorIndex
 from .index.entry_builder import build_semantic_entry, build_summary_entry
+from .index.metadata_filters import INDEX_SCHEMA_KEY, INDEX_SCHEMA_VERSION
 from .llm.base import LLMClient, LLMRequest, ResponseFormat, TaskType
 from .namespace import Namespace
 from .prompts import PromptOverrides, build_reinforcement_prompts, build_semantic_prompts, build_summary_prompts
@@ -848,7 +849,12 @@ class Compaction:
         # outbox:库已 pending,upsert 成功才置 indexed;失败保持 pending,留给 reindex_pending 自愈。
         try:
             self.index.upsert([entry])
-            self.store.set_index_status(source_id, "indexed")
+            self.store.set_index_state(
+                source_id,
+                "indexed",
+                index_schema_version=INDEX_SCHEMA_VERSION,
+                index_key=INDEX_SCHEMA_KEY,
+            )
         except Exception:
             return False
         return True

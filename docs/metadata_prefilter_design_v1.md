@@ -1,5 +1,8 @@
 # Metadata Prefilter Design v1
 
+> 状态：V1 metadata flag/recursive where 基础已实现；当前运行权威已升级为 Unified Timeline Retrieval V2，详见 `unified_timeline_v2_design_v1.md` §20。
+> V2 中 Namespace、conversation、time、visibility、annotation、kind、source layer 与 index generation 均是不可放宽的 hard filter；只有 importance/categories/subject scopes 可有界放宽。旧 trace category 不再负责打开工具、事件或材料候选。
+
 ## 背景
 
 当前 memcore 的检索链路已经把 `namespace / time_hint / exclude_source_ids / source_layers / importance_min` 下推到了 `VectorIndex.where`。其中:

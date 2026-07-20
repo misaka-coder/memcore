@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from .errors import ConfigError
@@ -54,6 +55,9 @@ class MemoryConfig:
     # --- 检索 ---
     retrieval_limit: int = 6  # 默认返回片段数
     relaxation_stop_candidate_count: int = 12  # 候选达到多少就停止放宽
+    retrieval_min_dense_score: float = 0.0
+    retrieval_min_bm25_score: float = 0.0
+    retrieval_min_fused_score: float = 0.0
     retrieval_default_excluded_categories: tuple[str, ...] = (
         "event_trace",
         "tool_trace",
@@ -106,6 +110,15 @@ class MemoryConfig:
             raise ConfigError(
                 f"semantic_reinforcement_min_overlap must be >= 1, got {self.semantic_reinforcement_min_overlap!r}"
             )
+
+        for name in (
+            "retrieval_min_dense_score",
+            "retrieval_min_bm25_score",
+            "retrieval_min_fused_score",
+        ):
+            value = getattr(self, name)
+            if not isinstance(value, (int, float)) or float(value) < 0.0 or not math.isfinite(float(value)):
+                raise ConfigError(f"{name} must be a non-negative finite number, got {value!r}")
 
         if self.raw_compaction_policy not in ("count", "token"):
             raise ConfigError(f"raw_compaction_policy must be 'count' or 'token', got {self.raw_compaction_policy!r}")

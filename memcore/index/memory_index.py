@@ -268,7 +268,9 @@ class InMemoryVectorIndex(VectorIndex):
         if not candidates:
             return []
 
-        query_terms = [t for t in (keywords or []) if str(t).strip()] or tokenize(query_text)
+        query_terms = [
+            term for keyword in (keywords or []) if str(keyword).strip() for term in tokenize(str(keyword))
+        ] or tokenize(query_text)
         if not query_terms:
             return []
 

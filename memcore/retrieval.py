@@ -1,75 +1,192 @@
-"""读侧:可见三层 + 显式混合检索工具(语义+关键词+RRF+五级放宽)→ verifier。
-
-聊天模型自己决定是否调用 retrieve/read_timeline。memcore 不再内置前置 router,
-避免每轮额外 LLM 判定带来的成本、延迟和误判。
-精度过滤可逐级放宽(软过滤),硬隔离(namespace)和时间走 index where(不放宽)。
-"""
+"""Retrieval V2: immutable hard admission, bounded semantic relaxation, structured results."""
 
 from __future__ import annotations
 
 import json
-from typing import Any
+import math
+from dataclasses import dataclass, field
+from datetime import date
+from typing import Any, Mapping
 
 from .config import MemoryConfig
 from .index.base import VectorIndex
-from .index.metadata_filters import category_filter_key, subject_scope_filter_key
+from .index.metadata_filters import (
+    INDEX_SCHEMA_KEY,
+    INDEX_SCHEMA_VERSION,
+    category_filter_key,
+    kind_filter_key,
+    normalize_kind_pattern,
+    subject_scope_filter_key,
+)
 from .index.rrf import fuse_with_rrf
 from .llm.base import LLMClient, LLMRequest, ResponseFormat, TaskType
 from .namespace import Namespace
 from .prompts import build_verifier_prompts
 from .rendering import render_raw_snippet, render_semantic_snippet, render_summary_snippet
 from .store.base import MemoryStore
-from .text_utils import normalize_text
 
-_QUESTION_MARKERS = ("?", "?", "吗", "什么", "怎么", "为什么", "谁", "哪", "几", "多少")
+_ACCEPTED_DEFAULT_STATUSES = (
+    "accepted_host",
+    "accepted_model",
+    "derived",
+    "derived_turn_final",
+)
+_SUBJECT_SCOPES = frozenset({"assistant", "other", "user"})
 
 
 def parse_ndjson(text: Any) -> list[dict[str, Any]]:
-    """解析 NDJSON;若已是事件列表(stub 直接给)也接受。"""
+    """Parse verifier NDJSON; deterministic test clients may provide event dicts directly."""
     if isinstance(text, list):
-        return [e for e in text if isinstance(e, dict)]
+        return [event for event in text if isinstance(event, dict)]
     events: list[dict[str, Any]] = []
     for line in str(text or "").splitlines():
         line = line.strip()
         if not line:
             continue
         try:
-            obj = json.loads(line)
+            value = json.loads(line)
         except (TypeError, ValueError):
             continue
-        if isinstance(obj, dict):
-            events.append(obj)
+        if isinstance(value, dict):
+            events.append(value)
     return events
 
 
-def _filter_values(values: Any) -> list[str]:
+@dataclass(frozen=True)
+class RetrievalRequest:
+    query: str
+    keywords: tuple[str, ...] = ()
+    source_layers: tuple[str, ...] = ()
+    categories: tuple[str, ...] = ()
+    subject_scopes: tuple[str, ...] = ()
+    importance_min: float | None = None
+    time_hint: Mapping[str, Any] = field(default_factory=dict)
+    kind_patterns: tuple[str, ...] = ()
+    include_explicit: bool = False
+    cross_conversation: bool = False
+    exclude_source_ids: tuple[str, ...] = ()
+    max_matches: int = 0
+
+
+@dataclass(frozen=True)
+class HardFilterPlan:
+    namespace_key: tuple[str, str, str, str]
+    cross_conversation: bool
+    include_explicit: bool
+    kind_patterns: tuple[str, ...]
+    source_layers: tuple[str, ...]
+    time_hint: Mapping[str, Any]
+    exclude_source_ids: tuple[str, ...]
+    index_where: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class SemanticFilterPlan:
+    categories: tuple[str, ...] = ()
+    subject_scopes: tuple[str, ...] = ()
+    importance_min: float | None = None
+
+
+@dataclass(frozen=True)
+class RetrievalQueryPlan:
+    request: RetrievalRequest
+    hard: HardFilterPlan
+    semantic_stages: tuple[SemanticFilterPlan, ...]
+
+
+@dataclass(frozen=True)
+class RetrievalMatch:
+    source_ids: tuple[str, ...]
+    source_id: str
+    turn_id: str
+    correlation_id: str
+    kind: str
+    layer: str
+    timestamp: int
+    semantic_score: float
+    bm25_score: float
+    fused_score: float
+    semantic_text: str
+    rendered_text: str
+    lineage: tuple[str, ...] = ()
+    truncated: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "source_ids": list(self.source_ids),
+            "source_id": self.source_id,
+            "turn_id": self.turn_id,
+            "correlation_id": self.correlation_id,
+            "kind": self.kind,
+            "layer": self.layer,
+            "timestamp": self.timestamp,
+            "scores": {
+                "semantic": self.semantic_score,
+                "bm25": self.bm25_score,
+                "fused": self.fused_score,
+            },
+            "semantic_text": self.semantic_text,
+            "rendered_text": self.rendered_text,
+            "lineage": list(self.lineage),
+            "truncated": self.truncated,
+        }
+
+
+@dataclass(frozen=True)
+class RetrievalResult:
+    status: str
+    matches: tuple[RetrievalMatch, ...] = ()
+    effective_filters: Mapping[str, Any] = field(default_factory=dict)
+    relaxation_steps: tuple[str, ...] = ()
+    rejected_counts: Mapping[str, int] = field(default_factory=dict)
+    token_usage: int = 0
+    truncated: bool = False
+    omitted_match_count: int = 0
+    reason: str = ""
+
+    @property
+    def found(self) -> bool:
+        return self.status == "found"
+
+    @property
+    def rendered_texts(self) -> tuple[str, ...]:
+        return tuple(match.rendered_text for match in self.matches if match.rendered_text)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "matches": [match.to_dict() for match in self.matches],
+            "effective_filters": dict(self.effective_filters),
+            "relaxation_steps": list(self.relaxation_steps),
+            "rejected_counts": dict(self.rejected_counts),
+            "token_usage": self.token_usage,
+            "truncated": self.truncated,
+            "omitted_match_count": self.omitted_match_count,
+            "reason": self.reason,
+        }
+
+
+def _filter_values(values: Any) -> tuple[str, ...]:
+    if values is None:
+        return ()
     if not isinstance(values, (list, tuple)):
-        return []
-    out: list[str] = []
+        raise ValueError("filter_values_must_be_array")
+    result: list[str] = []
     seen: set[str] = set()
     for value in values:
         text = str(value or "").strip()
-        if not text or text in seen:
-            continue
-        seen.add(text)
-        out.append(text)
-    return out
+        if text and text not in seen:
+            seen.add(text)
+            result.append(text)
+    return tuple(result)
 
 
-def _flag_or_clause(keys: Any) -> dict[str, Any]:
-    unique: list[str] = []
-    seen: set[str] = set()
-    for key in keys:
-        text = str(key or "").strip()
-        if not text or text in seen:
-            continue
-        seen.add(text)
-        unique.append(text)
-    if not unique:
+def _flag_or_clause(keys: tuple[str, ...]) -> dict[str, Any]:
+    if not keys:
         return {}
-    if len(unique) == 1:
-        return {unique[0]: True}
-    return {"$or": [{key: True} for key in unique]}
+    if len(keys) == 1:
+        return {keys[0]: True}
+    return {"$or": [{key: True} for key in keys]}
 
 
 class ReadPipeline:
@@ -88,24 +205,20 @@ class ReadPipeline:
         self.config = config
         self.timezone = timezone
 
-    # --- 对外:拼最终上下文 ---
+    # --- visible prompt context ---
 
     def build_context(self, *, namespace: Namespace, now_ts: int) -> dict[str, Any]:
         cross = self.config.visible_memory_scope == "user"
         raw = self.store.get_unsummarized_messages(namespace=namespace)
         episodic = self.store.get_visible_episodic_summaries(
-            namespace=namespace, limit=self.config.episodic_visible_max, cross_conversation=cross
+            namespace=namespace,
+            limit=self.config.episodic_visible_max,
+            cross_conversation=cross,
         )
         semantic = self._visible_semantic(namespace=namespace, cross=cross, now_ts=now_ts)
-
-        return {
-            "raw": raw,
-            "episodic": episodic,
-            "semantic": semantic,
-        }
+        return {"raw": raw, "episodic": episodic, "semantic": semantic}
 
     def visible_source_ids(self, *, namespace: Namespace, now_ts: int) -> set[str]:
-        """返回当前 prompt 可见三层的索引 ID,供工具检索在候选阶段去重。"""
         context = self.build_context(namespace=namespace, now_ts=now_ts)
         ids: set[str] = set()
         ids.update(str(row.get("source_id")) for row in context["raw"] if row.get("source_id"))
@@ -116,20 +229,45 @@ class ReadPipeline:
     def _visible_semantic(self, *, namespace: Namespace, cross: bool, now_ts: int) -> list[dict[str, Any]]:
         limit = self.config.semantic_visible_limit
         if not self.config.enable_importance_decay:
-            return self.store.get_recent_semantic_summaries(namespace=namespace, limit=limit, cross_conversation=cross)
-        # 衰减模式:对**全部**长期记忆按"随时间衰减的重要度"重排后取前 N。
-        # 不按 recency 预截断候选——否则旧但衰减后仍高价值的记忆会被静默排除。
+            return self.store.get_recent_semantic_summaries(
+                namespace=namespace,
+                limit=limit,
+                cross_conversation=cross,
+            )
         from .decay import decayed_importance
 
-        pool = self.store.get_recent_semantic_summaries(namespace=namespace, limit=None, cross_conversation=cross)
-        hl = self.config.importance_half_life_days
+        pool = self.store.get_recent_semantic_summaries(
+            namespace=namespace,
+            limit=None,
+            cross_conversation=cross,
+        )
+        half_life = self.config.importance_half_life_days
 
         def score(record: dict[str, Any]) -> float:
             anchor = int(record.get("last_reinforced_ts") or record.get("timestamp") or 0)
-            age = max(0, int(now_ts) - anchor)
-            return decayed_importance(record.get("importance", 0.0), age_seconds=age, half_life_days=hl)
+            return decayed_importance(
+                record.get("importance", 0.0),
+                age_seconds=max(0, int(now_ts) - anchor),
+                half_life_days=half_life,
+            )
 
         return sorted(pool, key=score, reverse=True)[:limit]
+
+    # --- public retrieval ---
+
+    def retrieve_result(self, *, namespace: Namespace, request: RetrievalRequest) -> RetrievalResult:
+        try:
+            plan = self._compile_plan(namespace=namespace, request=request)
+        except (TypeError, ValueError) as exc:
+            return RetrievalResult(status="invalid", reason=str(exc) or "invalid_filter")
+        try:
+            return self._execute_plan(plan)
+        except NotImplementedError:
+            return RetrievalResult(status="unavailable", reason="retrieval_store_unsupported")
+        except RuntimeError:
+            return RetrievalResult(status="unavailable", reason="index_unavailable")
+        except Exception:
+            return RetrievalResult(status="failed", reason="internal_error")
 
     def retrieve(
         self,
@@ -143,114 +281,241 @@ class ReadPipeline:
         categories: list[str] | None = None,
         importance_min: float | None = None,
         exclude_source_ids: list[str] | None = None,
+        kind_patterns: list[str] | None = None,
+        include_explicit: bool = False,
+        cross_conversation: bool = True,
     ) -> list[str]:
-        """显式检索(工具式),带精度过滤参数。"""
-        return self._retrieve_and_verify(
+        """Thin text adapter over Retrieval V2; no independent legacy search path remains."""
+        result = self.retrieve_result(
             namespace=namespace,
+            request=RetrievalRequest(
+                query=query,
+                keywords=tuple(keywords or ()),
+                source_layers=tuple(source_layers or ()),
+                categories=tuple(categories or ()),
+                subject_scopes=tuple(subject_scopes or ()),
+                importance_min=importance_min,
+                time_hint=dict(time_hint or {}),
+                kind_patterns=tuple(kind_patterns or ()),
+                include_explicit=bool(include_explicit),
+                cross_conversation=bool(cross_conversation),
+                exclude_source_ids=tuple(exclude_source_ids or ()),
+            ),
+        )
+        return list(result.rendered_texts)
+
+    # --- planning ---
+
+    def _compile_plan(self, *, namespace: Namespace, request: RetrievalRequest) -> RetrievalQueryPlan:
+        if not isinstance(request, RetrievalRequest):
+            raise TypeError("request_must_be_retrieval_request")
+        query = str(request.query or "").strip()
+        if not query:
+            raise ValueError("query_required")
+        keywords = _filter_values(request.keywords)
+        source_layers = _filter_values(request.source_layers)
+        if any(item not in {"raw", "semantic_summary", "summary"} for item in source_layers):
+            raise ValueError("invalid_source_layer")
+        categories = _filter_values(request.categories)
+        unknown_categories = [item for item in categories if item not in set(self.config.categories)]
+        if unknown_categories:
+            raise ValueError("invalid_category")
+        subject_scopes = _filter_values(request.subject_scopes)
+        if any(item not in _SUBJECT_SCOPES for item in subject_scopes):
+            raise ValueError("invalid_subject_scope")
+        kind_patterns = _filter_values(request.kind_patterns)
+        normalized_patterns: list[str] = []
+        for pattern in kind_patterns:
+            kind, is_prefix = normalize_kind_pattern(pattern)
+            normalized_patterns.append(f"{kind}.*" if is_prefix else kind)
+        if request.include_explicit and not normalized_patterns:
+            raise ValueError("explicit_kind_patterns_required")
+        importance = request.importance_min
+        if importance is not None:
+            try:
+                importance = float(importance)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("invalid_importance_min") from exc
+            if not 0.0 <= importance <= 1.0:
+                raise ValueError("invalid_importance_min")
+        time_hint = self._normalize_time_hint(request.time_hint)
+        excluded = _filter_values(request.exclude_source_ids)
+        max_matches = int(request.max_matches or self.config.retrieval_limit)
+        if max_matches < 1:
+            raise ValueError("invalid_max_matches")
+        max_matches = min(max_matches, self.config.retrieval_limit)
+        normalized_request = RetrievalRequest(
             query=query,
-            keywords=keywords or [],
-            time_hint=time_hint,
+            keywords=keywords,
             source_layers=source_layers,
-            subject_scopes=subject_scopes,
             categories=categories,
-            importance_min=importance_min,
-            exclude_source_ids=set(exclude_source_ids or []),
+            subject_scopes=subject_scopes,
+            importance_min=importance,
+            time_hint=time_hint,
+            kind_patterns=tuple(normalized_patterns),
+            include_explicit=bool(request.include_explicit),
+            cross_conversation=bool(request.cross_conversation),
+            exclude_source_ids=excluded,
+            max_matches=max_matches,
+        )
+        hard_where = self._build_hard_where(namespace=namespace, request=normalized_request)
+        hard = HardFilterPlan(
+            namespace_key=(
+                namespace.tenant_id or "",
+                namespace.user_id,
+                namespace.domain_id or "",
+                namespace.conversation_id or "",
+            ),
+            cross_conversation=normalized_request.cross_conversation,
+            include_explicit=normalized_request.include_explicit,
+            kind_patterns=normalized_request.kind_patterns,
+            source_layers=source_layers,
+            time_hint=time_hint,
+            exclude_source_ids=excluded,
+            index_where=hard_where,
+        )
+        semantic = SemanticFilterPlan(
+            categories=categories,
+            subject_scopes=subject_scopes,
+            importance_min=importance,
+        )
+        return RetrievalQueryPlan(
+            request=normalized_request,
+            hard=hard,
+            semantic_stages=self._semantic_stages(semantic),
         )
 
-    # --- 检索 + 校验 ---
-
-    def _retrieve_and_verify(
-        self,
-        *,
-        namespace: Namespace,
-        query: str,
-        keywords: list[str],
-        time_hint: dict[str, Any] | None = None,
-        source_layers: list[str] | None = None,
-        subject_scopes: list[str] | None = None,
-        categories: list[str] | None = None,
-        importance_min: float | None = None,
-        exclude_source_ids: set[str],
-    ) -> list[str]:
-        pool = max(10, self.config.retrieval_limit * 10)
-        excluded = sorted(exclude_source_ids)
-        requested = {
-            "source_layers": source_layers or [],
-            "subject_scopes": subject_scopes or [],
-            "categories": categories or [],
-            "importance_min": importance_min,
-        }
-        default_excluded_categories = self._default_excluded_categories(requested["categories"])
-        selected: list[dict[str, Any]] = []
-        search_cache: dict[str, list[dict[str, Any]]] = {}
-        for stage in self._build_stages(requested):
-            where = self._build_where(namespace, time_hint)
-            where.update(self._default_exclusion_where(default_excluded_categories))
-            where.update(self._stage_index_where(stage))
-            cache_key = repr((where, excluded))
-            if cache_key not in search_cache:
-                semantic_hits = self.index.semantic_search(
-                    query_text=query, where=where, n_results=pool, exclude_source_ids=excluded
-                )
-                keyword_hits = self.index.keyword_search(
-                    query_text=query, keywords=keywords, where=where, n_results=pool, exclude_source_ids=excluded
-                )
-                search_cache[cache_key] = fuse_with_rrf(semantic_hits, keyword_hits)
-            selected = search_cache[cache_key]
-            if len(selected) >= self.config.relaxation_stop_candidate_count:
-                break
-        selected = selected[: self.config.retrieval_limit]
-        snippets = self._build_snippets(selected, exclude_context_source_ids=exclude_source_ids)
-        return self._verify(query=query, snippets=snippets)
-
-    def _default_excluded_categories(self, requested_categories: list[str]) -> list[str]:
-        excluded = [str(c) for c in self.config.retrieval_default_excluded_categories if str(c).strip()]
-        requested = {str(c) for c in (requested_categories or [])}
-        return [] if requested & set(excluded) else excluded
-
     @staticmethod
-    def _default_exclusion_where(categories: list[str]) -> dict[str, Any]:
-        if not categories:
+    def _normalize_time_hint(value: Mapping[str, Any]) -> dict[str, Any]:
+        if value is None:
             return {}
-        return {category_filter_key(category): {"$ne": True} for category in categories}
+        if not isinstance(value, Mapping):
+            raise ValueError("invalid_time_hint")
+        allowed = {"date_label", "end_ts", "start_ts", "time_of_day"}
+        if set(value) - allowed:
+            raise ValueError("invalid_time_hint")
+        result: dict[str, Any] = {}
+        if value.get("date_label"):
+            label = str(value["date_label"])
+            try:
+                date.fromisoformat(label)
+            except ValueError as exc:
+                raise ValueError("invalid_time_hint") from exc
+            result["date_label"] = label
+        if value.get("time_of_day"):
+            result["time_of_day"] = str(value["time_of_day"])
+        for key in ("start_ts", "end_ts"):
+            if value.get(key) is not None:
+                try:
+                    result[key] = int(value[key])
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("invalid_time_hint") from exc
+        if result.get("start_ts") is not None and result.get("end_ts") is not None:
+            if result["start_ts"] > result["end_ts"]:
+                raise ValueError("invalid_time_hint")
+        return result
 
-    def _build_where(self, namespace: Namespace, time_hint: dict[str, Any] | None) -> dict[str, Any]:
+    def _build_hard_where(self, *, namespace: Namespace, request: RetrievalRequest) -> dict[str, Any]:
         tenant, user, domain = namespace.hard_key()
-        where: dict[str, Any] = {"tenant_id": tenant, "user_id": user, "domain_id": domain}
-        hint = time_hint if isinstance(time_hint, dict) else {}
+        where: dict[str, Any] = {
+            "tenant_id": tenant,
+            "user_id": user,
+            "domain_id": domain,
+            "index_schema_version": INDEX_SCHEMA_VERSION,
+            "index_schema_key": INDEX_SCHEMA_KEY,
+            "is_legacy_migration": False,
+            "trust": "untrusted_data",
+            "lineage_status": {"$in": ["raw", "valid"]},
+        }
+        if not request.cross_conversation:
+            where["conversation_id"] = namespace.conversation_id or ""
+        if request.source_layers:
+            where["entry_type"] = {"$in": list(request.source_layers)}
+        hint = request.time_hint
         if hint.get("date_label"):
-            where["date_label"] = str(hint["date_label"])
+            where["date_label"] = hint["date_label"]
         if hint.get("time_of_day"):
-            where["time_of_day"] = str(hint["time_of_day"])
-        ts_range: dict[str, Any] = {}
+            where["time_of_day"] = hint["time_of_day"]
+        timestamp: dict[str, int] = {}
         if hint.get("start_ts") is not None:
-            ts_range["$gte"] = int(hint["start_ts"])
+            timestamp["$gte"] = int(hint["start_ts"])
         if hint.get("end_ts") is not None:
-            ts_range["$lte"] = int(hint["end_ts"])
-        if ts_range:
-            where["timestamp"] = ts_range
+            timestamp["$lte"] = int(hint["end_ts"])
+        if timestamp:
+            where["timestamp"] = timestamp
+
+        kind_clause = self._kind_clause(request.kind_patterns)
+        default_admission: dict[str, Any] = {
+            "$and": [
+                {"retrieval_visibility": "default"},
+                {
+                    "$or": [
+                        {"annotation_status": {"$in": list(_ACCEPTED_DEFAULT_STATUSES)}},
+                        {"retrieval_policy": "always"},
+                    ]
+                },
+                {"is_trace_kind": False},
+            ]
+        }
+        admission: dict[str, Any] = default_admission
+        if request.include_explicit:
+            explicit_admission = {
+                "$and": [
+                    kind_clause,
+                    {"annotation_status": {"$ne": "accepted_legacy"}},
+                    {
+                        "$or": [
+                            {"retrieval_visibility": "explicit"},
+                            {"is_trace_kind": True},
+                        ]
+                    },
+                ]
+            }
+            admission = {"$or": [default_admission, explicit_admission]}
+        clauses = [admission]
+        if kind_clause:
+            clauses.append(kind_clause)
+        where["$and"] = clauses
         return where
 
-    # --- 五级精度放宽(软过滤) ---
+    @staticmethod
+    def _kind_clause(patterns: tuple[str, ...]) -> dict[str, Any]:
+        clauses: list[dict[str, Any]] = []
+        for pattern in patterns:
+            kind, is_prefix = normalize_kind_pattern(pattern)
+            clauses.append({kind_filter_key(kind): True} if is_prefix else {"kind_exact": kind})
+        if not clauses:
+            return {}
+        return clauses[0] if len(clauses) == 1 else {"$or": clauses}
 
     @staticmethod
-    def _stage_index_where(stage: dict[str, Any]) -> dict[str, Any]:
-        """把可安全前置的 metadata 过滤下推到 VectorIndex。
+    def _semantic_stages(full: SemanticFilterPlan) -> tuple[SemanticFilterPlan, ...]:
+        stages = [full]
+        current = full
+        if current.importance_min is not None:
+            current = SemanticFilterPlan(
+                categories=current.categories,
+                subject_scopes=current.subject_scopes,
+            )
+            stages.append(current)
+        if current.categories:
+            current = SemanticFilterPlan(subject_scopes=current.subject_scopes)
+            stages.append(current)
+        if current.subject_scopes:
+            current = SemanticFilterPlan()
+            stages.append(current)
+        return tuple(stages)
 
-        不同维度之间是 AND;同一维度多值是 OR。VectorIndex 必须在相似度/BM25 计算前执行 where,
-        读侧不再做后置精筛,避免把后端契约做成灰色地带。
-        """
+    @staticmethod
+    def _semantic_where(stage: SemanticFilterPlan) -> dict[str, Any]:
         where: dict[str, Any] = {}
         clauses: list[dict[str, Any]] = []
-        source_layers = [str(x) for x in (stage.get("source_layers") or []) if str(x).strip()]
-        if source_layers:
-            where["entry_type"] = {"$in": source_layers}
-        if stage.get("importance_min") is not None:
-            where["memory_importance"] = {"$gte": float(stage["importance_min"])}
-        category_clause = _flag_or_clause(category_filter_key(x) for x in _filter_values(stage.get("categories")))
+        if stage.importance_min is not None:
+            where["memory_importance"] = {"$gte": float(stage.importance_min)}
+        category_clause = _flag_or_clause(tuple(category_filter_key(item) for item in stage.categories))
         if category_clause:
             clauses.append(category_clause)
-        scope_clause = _flag_or_clause(subject_scope_filter_key(x) for x in _filter_values(stage.get("subject_scopes")))
+        scope_clause = _flag_or_clause(tuple(subject_scope_filter_key(item) for item in stage.subject_scopes))
         if scope_clause:
             clauses.append(scope_clause)
         if clauses:
@@ -258,102 +523,331 @@ class ReadPipeline:
         return where
 
     @staticmethod
-    def _build_stages(requested: dict[str, Any]) -> list[dict[str, Any]]:
-        full = {
-            "source_layers": list(requested.get("source_layers") or []),
-            "subject_scopes": list(requested.get("subject_scopes") or []),
-            "categories": list(requested.get("categories") or []),
-            "importance_min": requested.get("importance_min"),
-        }
-        stages = [dict(full)]  # strict
-        if full["importance_min"] is not None:
-            full = {**full, "importance_min": None}
-            stages.append(dict(full))
-        if full["categories"]:
-            full = {**full, "categories": []}
-            stages.append(dict(full))
-        if full["subject_scopes"]:
-            full = {**full, "subject_scopes": []}
-            stages.append(dict(full))
-        if full["source_layers"]:
-            full = {**full, "source_layers": []}
-            stages.append(dict(full))
-        return stages
-
-    # --- 片段构建(回关系库取原文 + raw 上下文扩窗) ---
-
-    def _build_snippets(self, hits: list[dict[str, Any]], *, exclude_context_source_ids: set[str]) -> list[str]:
-        snippets: list[str] = []
-        seen: set[str] = set()
-        flavor = self.config.enable_flavor
-        for hit in hits:
-            source_id = str(hit.get("source_id"))
-            record = self.store.get_record_by_source_id(source_id)
-            if not record:
-                continue
-            entry_type = record.get("entry_type")
-            if entry_type == "summary":
-                snippet, key = (
-                    render_summary_snippet(record, tz=self.timezone, enable_flavor=flavor),
-                    f"summary::{source_id}",
-                )
-            elif entry_type == "semantic_summary":
-                snippet, key = (
-                    render_semantic_snippet(record, tz=self.timezone, enable_flavor=flavor),
-                    f"semantic::{source_id}",
-                )
+    def _merge_where(hard: Mapping[str, Any], semantic: Mapping[str, Any]) -> dict[str, Any]:
+        merged = dict(hard)
+        clauses = list(merged.pop("$and", []))
+        semantic_copy = dict(semantic)
+        clauses.extend(semantic_copy.pop("$and", []))
+        for key, value in semantic_copy.items():
+            if key in merged:
+                clauses.append({key: value})
             else:
-                window = 2 if self._is_question_like(record.get("content", "")) else 1
-                ns = Namespace(
-                    user_id=str(record.get("user_id") or ""),
-                    tenant_id=str(record.get("tenant_id") or ""),
-                    domain_id=str(record.get("domain_id") or ""),
-                    conversation_id=str(record.get("conversation_id") or ""),
-                )
-                rows = self.store.get_context_slice(namespace=ns, seq_no=int(record.get("seq_no") or 0), window=window)
-                rows = [row for row in rows if str(row.get("source_id")) not in exclude_context_source_ids]
-                if not rows:
-                    continue
-                snippet = render_raw_snippet(rows, tz=self.timezone)
-                key = f"raw::{record.get('conversation_id')}::{record.get('seq_no')}"
-            if snippet and key not in seen:
-                seen.add(key)
-                snippets.append(snippet)
-        return snippets
+                merged[key] = value
+        if clauses:
+            merged["$and"] = clauses
+        return merged
+
+    # --- execution ---
+
+    def _execute_plan(self, plan: RetrievalQueryPlan) -> RetrievalResult:
+        pool = max(10, plan.request.max_matches * 10)
+        rejected = {
+            "below_bm25_score": 0,
+            "below_dense_score": 0,
+            "below_fused_score": 0,
+            "verifier_rejected": 0,
+        }
+        selected: list[dict[str, Any]] = []
+        effective = plan.semantic_stages[0]
+        relaxation: list[str] = []
+        for index, stage in enumerate(plan.semantic_stages):
+            where = self._merge_where(plan.hard.index_where, self._semantic_where(stage))
+            semantic_hits = self.index.semantic_search(
+                query_text=plan.request.query,
+                where=where,
+                n_results=pool,
+                exclude_source_ids=list(plan.hard.exclude_source_ids),
+            )
+            keyword_hits = self.index.keyword_search(
+                query_text=plan.request.query,
+                keywords=list(plan.request.keywords),
+                where=where,
+                n_results=pool,
+                exclude_source_ids=list(plan.hard.exclude_source_ids),
+            )
+            semantic_hits = self._score_filter(
+                semantic_hits,
+                key="semantic_score",
+                minimum=float(self.config.retrieval_min_dense_score),
+                rejected=rejected,
+                rejected_key="below_dense_score",
+            )
+            keyword_hits = self._score_filter(
+                keyword_hits,
+                key="tag_score",
+                minimum=float(self.config.retrieval_min_bm25_score),
+                rejected=rejected,
+                rejected_key="below_bm25_score",
+            )
+            fused = fuse_with_rrf(semantic_hits, keyword_hits)
+            selected = self._score_filter(
+                fused,
+                key="rrf_score",
+                minimum=float(self.config.retrieval_min_fused_score),
+                rejected=rejected,
+                rejected_key="below_fused_score",
+            )
+            effective = stage
+            if len(selected) >= self.config.relaxation_stop_candidate_count:
+                break
+            if index + 1 < len(plan.semantic_stages):
+                relaxation.append(self._relaxation_label(stage, plan.semantic_stages[index + 1]))
+
+        matches, unsafe = self._build_matches(plan=plan, hits=selected[: plan.request.max_matches])
+        filters = self._effective_filters(plan=plan, semantic=effective)
+        if unsafe:
+            return RetrievalResult(
+                status="unavailable",
+                effective_filters=filters,
+                relaxation_steps=tuple(relaxation),
+                rejected_counts=rejected,
+                reason="index_filter_unsupported",
+            )
+        verified = self._verify_matches(query=plan.request.query, matches=matches, rejected=rejected)
+        return RetrievalResult(
+            status="found" if verified else "empty",
+            matches=tuple(verified),
+            effective_filters=filters,
+            relaxation_steps=tuple(relaxation),
+            rejected_counts=rejected,
+            reason="" if verified else "no_match",
+        )
 
     @staticmethod
-    def _is_question_like(text: Any) -> bool:
-        normalized = normalize_text(text)
-        return any(marker in normalized for marker in _QUESTION_MARKERS)
+    def _score_filter(
+        hits: list[dict[str, Any]],
+        *,
+        key: str,
+        minimum: float,
+        rejected: dict[str, int],
+        rejected_key: str,
+    ) -> list[dict[str, Any]]:
+        accepted: list[dict[str, Any]] = []
+        threshold = max(0.0, float(minimum))
+        for hit in hits:
+            try:
+                score = float(hit.get(key) or 0.0)
+            except (TypeError, ValueError):
+                score = 0.0
+            if not math.isfinite(score) or score <= 0.0 or score < threshold:
+                rejected[rejected_key] += 1
+                continue
+            accepted.append(hit)
+        return accepted
 
-    # --- verifier ---
-
-    def _verify(self, *, query: str, snippets: list[str]) -> list[str]:
-        if not snippets:
-            return []
-        if not self.config.enable_verifier:
-            return snippets
-        numbered = "\n".join(f"[{i + 1}] {s}" for i, s in enumerate(snippets))
-        res = self.llm.call(
-            LLMRequest(
-                task_type=TaskType.VERIFIER,
-                **dict(
-                    zip(("system_prompt", "user_prompt"), build_verifier_prompts(query=query, snippets_text=numbered))
+    def _build_matches(
+        self,
+        *,
+        plan: RetrievalQueryPlan,
+        hits: list[dict[str, Any]],
+    ) -> tuple[list[RetrievalMatch], bool]:
+        matches: list[RetrievalMatch] = []
+        for hit in hits:
+            source_id = str(hit.get("source_id") or "")
+            record = self.store.get_retrieval_record(
+                namespace=Namespace(
+                    tenant_id=plan.hard.namespace_key[0],
+                    user_id=plan.hard.namespace_key[1],
+                    domain_id=plan.hard.namespace_key[2],
+                    conversation_id=plan.hard.namespace_key[3],
                 ),
-                response_format=ResponseFormat.NDJSON,
-                max_retries=self.config.llm_max_retries,
-                fallback={},
+                source_id=source_id,
+                cross_conversation=plan.hard.cross_conversation,
             )
+            if record is None:
+                return [], True
+            if not self._record_satisfies_hard_plan(record=record, hard=plan.hard):
+                return [], True
+            match = self._record_match(record=record, hit=hit)
+            if match.rendered_text:
+                matches.append(match)
+        return matches, False
+
+    def _record_satisfies_hard_plan(self, *, record: dict[str, Any], hard: HardFilterPlan) -> bool:
+        source_id = str(record.get("source_id") or record.get("summary_id") or record.get("semantic_id") or "")
+        if not source_id or source_id in hard.exclude_source_ids:
+            return False
+        namespace_key = (
+            str(record.get("tenant_id") or ""),
+            str(record.get("user_id") or ""),
+            str(record.get("domain_id") or ""),
+            str(record.get("conversation_id") or ""),
         )
-        if not res.ok:
-            return snippets  # verifier 不可用时不清零,保留召回(降级)
-        events = parse_ndjson(res.data)
-        decision = next((e for e in events if e.get("type") == "decision"), None)
+        if namespace_key[:3] != hard.namespace_key[:3]:
+            return False
+        if not hard.cross_conversation and namespace_key[3] != hard.namespace_key[3]:
+            return False
+        if str(record.get("index_status") or "") != "indexed":
+            return False
+        if int(record.get("index_schema_version") or 0) != INDEX_SCHEMA_VERSION:
+            return False
+        if str(record.get("index_key") or "") != INDEX_SCHEMA_KEY:
+            return False
+        if str(record.get("trust") or "untrusted_data") != "untrusted_data":
+            return False
+        trace_metadata = record.get("trace_metadata") if isinstance(record.get("trace_metadata"), dict) else {}
+        if str(record.get("annotation_status") or "") == "accepted_legacy" or trace_metadata.get("legacy_categories"):
+            return False
+        kind = str(record.get("kind") or "legacy.unknown").lower()
+        if hard.kind_patterns and not any(self._kind_matches(kind, pattern) for pattern in hard.kind_patterns):
+            return False
+        visibility = str(record.get("retrieval_visibility") or "explicit")
+        annotation = str(record.get("annotation_status") or "unannotated")
+        retrieval_policy = str(record.get("retrieval_policy") or "auto")
+        if retrieval_policy == "never":
+            return False
+        is_trace = kind.split(".", 1)[0] in {"material", "tool"}
+        default_allowed = (
+            visibility == "default"
+            and (annotation in _ACCEPTED_DEFAULT_STATUSES or retrieval_policy == "always")
+            and not is_trace
+        )
+        explicit_allowed = (
+            hard.include_explicit and annotation != "accepted_legacy" and (visibility == "explicit" or is_trace)
+        )
+        if not (default_allowed or explicit_allowed):
+            return False
+        if visibility == "never":
+            return False
+        layer = str(record.get("entry_type") or "raw")
+        if hard.source_layers and layer not in hard.source_layers:
+            return False
+        if layer != "raw" and str(record.get("lineage_status") or "") != "valid":
+            return False
+        hint = hard.time_hint
+        if hint.get("date_label") and str(record.get("date_label") or "") != hint["date_label"]:
+            return False
+        if hint.get("time_of_day") and str(record.get("time_of_day") or "") != hint["time_of_day"]:
+            return False
+        timestamp = int(record.get("timestamp") or 0)
+        if hint.get("start_ts") is not None and timestamp < int(hint["start_ts"]):
+            return False
+        return not (hint.get("end_ts") is not None and timestamp > int(hint["end_ts"]))
+
+    @staticmethod
+    def _kind_matches(kind: str, pattern: str) -> bool:
+        normalized, is_prefix = normalize_kind_pattern(pattern)
+        return kind == normalized or (is_prefix and kind.startswith(normalized + "."))
+
+    def _record_match(self, *, record: dict[str, Any], hit: dict[str, Any]) -> RetrievalMatch:
+        source_id = str(record.get("source_id") or record.get("summary_id") or record.get("semantic_id") or "")
+        layer = str(record.get("entry_type") or "raw")
+        if layer == "summary":
+            rendered = render_summary_snippet(record, tz=self.timezone, enable_flavor=self.config.enable_flavor)
+            semantic_text = str(record.get("diary_summary") or "")
+            lineage = tuple(str(item) for item in (record.get("source_ids") or ()))
+        elif layer == "semantic_summary":
+            rendered = render_semantic_snippet(record, tz=self.timezone, enable_flavor=self.config.enable_flavor)
+            semantic_text = str(record.get("semantic_summary") or "")
+            lineage = tuple(str(item) for item in (record.get("source_summary_ids") or ()))
+        else:
+            rendered = render_raw_snippet([record], tz=self.timezone)
+            semantic_text = str(record.get("semantic_text") or record.get("content") or "")
+            lineage = ()
+        return RetrievalMatch(
+            source_ids=(source_id,),
+            source_id=source_id,
+            turn_id=str(record.get("turn_id") or ""),
+            correlation_id=str(record.get("correlation_id") or ""),
+            kind=str(record.get("kind") or "legacy.unknown"),
+            layer=layer,
+            timestamp=int(record.get("timestamp") or 0),
+            semantic_score=float(hit.get("semantic_score") or 0.0),
+            bm25_score=float(hit.get("tag_score") or 0.0),
+            fused_score=float(hit.get("rrf_score") or 0.0),
+            semantic_text=semantic_text,
+            rendered_text=rendered,
+            lineage=lineage,
+        )
+
+    def _verify_matches(
+        self,
+        *,
+        query: str,
+        matches: list[RetrievalMatch],
+        rejected: dict[str, int],
+    ) -> list[RetrievalMatch]:
+        if not matches or not self.config.enable_verifier:
+            return matches
+        numbered = "\n".join(f"[{index + 1}] {item.rendered_text}" for index, item in enumerate(matches))
+        try:
+            response = self.llm.call(
+                LLMRequest(
+                    task_type=TaskType.VERIFIER,
+                    **dict(
+                        zip(
+                            ("system_prompt", "user_prompt"),
+                            build_verifier_prompts(query=query, snippets_text=numbered),
+                        )
+                    ),
+                    response_format=ResponseFormat.NDJSON,
+                    max_retries=self.config.llm_max_retries,
+                    fallback={},
+                )
+            )
+        except Exception:
+            return matches
+        if not response.ok:
+            return matches
+        events = parse_ndjson(response.data)
+        decision = next((event for event in events if event.get("type") == "decision"), None)
         if decision is None:
-            return snippets
+            return matches
         if str(decision.get("match_result")) != "match":
+            rejected["verifier_rejected"] += len(matches)
             return []
-        selection = next((e for e in events if e.get("type") == "selection"), {})
-        indexes = [int(i) for i in (selection.get("selected_indexes") or []) if isinstance(i, int) or str(i).isdigit()]
-        chosen = [snippets[i - 1] for i in indexes if 1 <= i <= len(snippets)]
-        return chosen or snippets  # match 但没给编号 → 保守保留全部
+        selection = next((event for event in events if event.get("type") == "selection"), {})
+        indexes = [
+            int(value)
+            for value in (selection.get("selected_indexes") or [])
+            if isinstance(value, int) or str(value).isdigit()
+        ]
+        selected = [matches[index - 1] for index in indexes if 1 <= index <= len(matches)]
+        if selected:
+            rejected["verifier_rejected"] += len(matches) - len(selected)
+            return selected
+        return matches
+
+    @staticmethod
+    def _relaxation_label(before: SemanticFilterPlan, after: SemanticFilterPlan) -> str:
+        if before.importance_min is not None and after.importance_min is None:
+            return "drop_importance"
+        if before.categories and not after.categories:
+            return "drop_categories"
+        if before.subject_scopes and not after.subject_scopes:
+            return "drop_subject_scopes"
+        return "semantic_relaxation"
+
+    @staticmethod
+    def _effective_filters(
+        *,
+        plan: RetrievalQueryPlan,
+        semantic: SemanticFilterPlan,
+    ) -> dict[str, Any]:
+        return {
+            "namespace": list(plan.hard.namespace_key),
+            "cross_conversation": plan.hard.cross_conversation,
+            "retrieval_visibility": [
+                "default",
+                *(("explicit",) if plan.hard.include_explicit else ()),
+            ],
+            "kind_patterns": list(plan.hard.kind_patterns),
+            "source_layers": list(plan.hard.source_layers),
+            "time_hint": dict(plan.hard.time_hint),
+            "categories": list(semantic.categories),
+            "subject_scopes": list(semantic.subject_scopes),
+            "importance_min": semantic.importance_min,
+            "index_schema_version": INDEX_SCHEMA_VERSION,
+        }
+
+
+__all__ = [
+    "HardFilterPlan",
+    "ReadPipeline",
+    "RetrievalMatch",
+    "RetrievalQueryPlan",
+    "RetrievalRequest",
+    "RetrievalResult",
+    "SemanticFilterPlan",
+    "parse_ndjson",
+]

@@ -9,7 +9,14 @@ from __future__ import annotations
 from typing import Any
 
 from ..text_utils import join_tags
-from .metadata_filters import metadata_filter_flags
+from .metadata_filters import (
+    INDEX_SCHEMA_KEY,
+    INDEX_SCHEMA_VERSION,
+    KIND_FLAG_SCHEMA_VERSION,
+    VISIBILITY_SCHEMA_VERSION,
+    kind_filter_flags,
+    metadata_filter_flags,
+)
 
 
 def _safe_importance(value: Any) -> float:
@@ -49,14 +56,43 @@ def _metadata_tags(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _retrieval_metadata(record: dict[str, Any], *, default_kind: str) -> dict[str, Any]:
+    kind = str(record.get("kind") or default_kind).strip().lower()
+    visibility = str(record.get("retrieval_visibility") or "explicit").strip().lower()
+    annotation_status = str(record.get("annotation_status") or "unannotated").strip().lower()
+    trust = str(record.get("trust") or "untrusted_data").strip().lower()
+    lineage_status = str(record.get("lineage_status") or "raw").strip().lower()
+    trace_metadata = record.get("trace_metadata") if isinstance(record.get("trace_metadata"), dict) else {}
+    root = kind.split(".", 1)[0]
+    return {
+        "kind_exact": kind,
+        **kind_filter_flags(kind),
+        "is_trace_kind": root in {"material", "tool"},
+        "retrieval_visibility": visibility,
+        "retrieval_policy": str(record.get("retrieval_policy") or "auto").strip().lower(),
+        "annotation_status": annotation_status,
+        "trust": trust,
+        "lineage_status": lineage_status,
+        "is_legacy_migration": annotation_status == "accepted_legacy" or bool(trace_metadata.get("legacy_categories")),
+        "turn_id": str(record.get("turn_id") or ""),
+        "turn_role": str(record.get("turn_role") or ""),
+        "correlation_id": str(record.get("correlation_id") or ""),
+        "index_schema_version": INDEX_SCHEMA_VERSION,
+        "index_schema_key": INDEX_SCHEMA_KEY,
+        "kind_flag_schema_version": KIND_FLAG_SCHEMA_VERSION,
+        "visibility_schema_version": VISIBILITY_SCHEMA_VERSION,
+    }
+
+
 def build_raw_entry(record: dict[str, Any]) -> dict[str, Any]:
     return {
         "source_id": record["source_id"],
-        "text": str(record.get("content") or ""),
+        "text": str(record.get("semantic_text") or record.get("content") or ""),
         "metadata": {
             **_scope_meta(record),
             "entry_type": "raw",
             "speaker": str(record.get("role") or ""),
+            **_retrieval_metadata(record, default_kind="legacy.unknown"),
             **_metadata_tags(record),
         },
     }
@@ -71,7 +107,12 @@ def build_summary_entry(record: dict[str, Any]) -> dict[str, Any]:
     return {
         "source_id": record["summary_id"],
         "text": text,
-        "metadata": {**_scope_meta(record), "entry_type": "summary", **_metadata_tags(record)},
+        "metadata": {
+            **_scope_meta(record),
+            "entry_type": "summary",
+            **_retrieval_metadata(record, default_kind="memory.episode_summary"),
+            **_metadata_tags(record),
+        },
     }
 
 
@@ -86,5 +127,10 @@ def build_semantic_entry(record: dict[str, Any]) -> dict[str, Any]:
     return {
         "source_id": record["semantic_id"],
         "text": text,
-        "metadata": {**_scope_meta(record), "entry_type": "semantic_summary", **_metadata_tags(record)},
+        "metadata": {
+            **_scope_meta(record),
+            "entry_type": "semantic_summary",
+            **_retrieval_metadata(record, default_kind="memory.semantic_summary"),
+            **_metadata_tags(record),
+        },
     }

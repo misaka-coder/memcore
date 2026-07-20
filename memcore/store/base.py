@@ -132,6 +132,17 @@ class MemoryStore(ABC):
         """设置索引状态:pending / indexed / skipped(明确不进入向量索引)。"""
         raise NotImplementedError
 
+    def set_index_state(
+        self,
+        source_id: str,
+        status: str,
+        *,
+        index_schema_version: int = 0,
+        index_key: str = "",
+    ) -> None:
+        """Persist index status plus the schema generation that produced the entry."""
+        self.set_index_status(source_id, status)
+
     @abstractmethod
     def update_message_memory_metadata(
         self, *, namespace: Namespace, source_id: str, memory_metadata: dict[str, Any]
@@ -151,6 +162,16 @@ class MemoryStore(ABC):
         Kept non-abstract during the V2 migration window so existing third-party
         V1 stores still construct; V2 runtime activation requires an override.
         """
+        raise NotImplementedError
+
+    def get_retrieval_record(
+        self,
+        *,
+        namespace: Namespace,
+        source_id: str,
+        cross_conversation: bool = False,
+    ) -> dict[str, Any] | None:
+        """Namespace-safe lookup for a raw/summary/semantic retrieval candidate."""
         raise NotImplementedError
 
     def get_turn(self, *, namespace: Namespace, turn_id: str) -> TurnHandle | None:

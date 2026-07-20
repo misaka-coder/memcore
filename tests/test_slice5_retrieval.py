@@ -21,7 +21,12 @@ from memcore import (
     VectorIndex,
 )
 from memcore.index.entry_builder import build_raw_entry, build_semantic_entry, build_summary_entry
-from memcore.index.metadata_filters import category_filter_key, subject_scope_filter_key
+from memcore.index.metadata_filters import (
+    INDEX_SCHEMA_KEY,
+    INDEX_SCHEMA_VERSION,
+    category_filter_key,
+    subject_scope_filter_key,
+)
 from memcore.llm.base import LLMClient, LLMRequest, LLMResult, TaskType
 
 
@@ -116,7 +121,12 @@ class ExplicitRetrieve(unittest.TestCase):
         )
 
         self.assertEqual(mem.retrieve("北京天气", keywords=["北京天气"]), [])
-        hits = mem.retrieve("北京天气", keywords=["北京天气"], categories=["tool_trace"])
+        hits = mem.retrieve(
+            "北京天气",
+            keywords=["北京天气"],
+            include_explicit=True,
+            kind_patterns=["tool.web_search.*"],
+        )
         self.assertTrue(any("25 度晴天" in s for s in hits))
         store.close()
 
@@ -138,7 +148,12 @@ class ExplicitRetrieve(unittest.TestCase):
         )
 
         self.assertEqual(mem.retrieve("科创债", keywords=["科创债"]), [])
-        hits = mem.retrieve("科创债", keywords=["科创债"], categories=["event_trace"])
+        hits = mem.retrieve(
+            "科创债",
+            keywords=["科创债"],
+            include_explicit=True,
+            kind_patterns=["event.finance.*"],
+        )
         self.assertTrue(any("虚构科创债事件" in item for item in hits))
         store.close()
 
@@ -158,7 +173,12 @@ class ExplicitRetrieve(unittest.TestCase):
         )
 
         self.assertEqual(mem.retrieve("photo.jpg", keywords=["photo.jpg"]), [])
-        hits = mem.retrieve("photo.jpg", keywords=["photo.jpg"], categories=["material_trace"])
+        hits = mem.retrieve(
+            "photo.jpg",
+            keywords=["photo.jpg"],
+            include_explicit=True,
+            kind_patterns=["material.*"],
+        )
         self.assertTrue(any("file_img_001" in s and "photo.jpg" in s for s in hits))
         store.close()
 
@@ -206,12 +226,13 @@ class ExplicitRetrieve(unittest.TestCase):
         self.assertIn(scope_or, first["$and"])
         self.assertNotIn("memory_categories_text", first)
         self.assertEqual(index.keyword_wheres[0], first)
-        self.assertEqual(len(index.semantic_wheres), 5)
+        self.assertEqual(len(index.semantic_wheres), 4)
         self.assertNotIn("memory_importance", index.semantic_wheres[1])
         self.assertIn(category_or, index.semantic_wheres[1]["$and"])
-        self.assertEqual(index.semantic_wheres[2]["$and"], [scope_or])
-        self.assertNotIn("$and", index.semantic_wheres[3])
-        self.assertNotIn("entry_type", index.semantic_wheres[4])
+        self.assertIn(scope_or, index.semantic_wheres[2]["$and"])
+        self.assertNotIn(category_or, index.semantic_wheres[2]["$and"])
+        self.assertNotIn(scope_or, index.semantic_wheres[3]["$and"])
+        self.assertTrue(all("entry_type" in where for where in index.semantic_wheres))
         store.close()
 
     def test_entry_builder_writes_prefilter_flags_for_all_layers(self) -> None:
@@ -308,6 +329,13 @@ class ExplicitRetrieve(unittest.TestCase):
                 build_semantic_entry(hidden_semantic),
             ]
         )
+        for source_id in ("visible-summary", "hidden-summary", "visible-semantic", "hidden-semantic"):
+            store.set_index_state(
+                source_id,
+                "indexed",
+                index_schema_version=INDEX_SCHEMA_VERSION,
+                index_key=INDEX_SCHEMA_KEY,
+            )
 
         hits = mem.retrieve_for_turn(current=cur, query="滑雪", keywords=["滑雪"])
         blob = "\n".join(hits)
