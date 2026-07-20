@@ -453,7 +453,8 @@ class NamespaceSafeRelationReadTests(unittest.TestCase):
             turn_id="turn-1",
         )
         self.assertEqual(
-            self.store.get_entry(namespace=self.other_actor, source_id=entry["source_id"])["actor_id"], "qq:1"
+            self.store.get_entry(namespace=self.other_actor, source_id=entry["source_id"]).namespace.actor.stable_id,
+            "qq:1",
         )
 
         wrong_user = Namespace(user_id="other", tenant_id="tenant", domain_id="domain", conversation_id="group")
@@ -498,8 +499,8 @@ class NamespaceSafeRelationReadTests(unittest.TestCase):
 
         turn = self.store.get_turn_entries(namespace=self.other_actor, turn_id="turn-tools")
         branch = self.store.get_correlation_entries(namespace=self.ns, turn_id="turn-tools", correlation_id="call-a")
-        self.assertEqual([item["source_id"] for item in turn], ["call", "result", "final"])
-        self.assertEqual([item["source_id"] for item in branch], ["call", "result"])
+        self.assertEqual([item.source_id for item in turn], ["call", "result", "final"])
+        self.assertEqual([item.source_id for item in branch], ["call", "result"])
 
         wrong = Namespace(user_id="other", tenant_id="tenant", domain_id="domain", conversation_id="group")
         with self.assertRaises(NamespaceError):

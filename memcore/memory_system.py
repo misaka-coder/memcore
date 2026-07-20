@@ -13,13 +13,14 @@ import re
 import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import replace
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from .compaction import Compaction
 from .config import MemoryConfig
 from .embedding.base import EmbeddingProvider
-from .errors import ConfigError
+from .errors import ConfigError, SchemaError
 from .index.base import VectorIndex
 from .index.entry_builder import build_raw_entry, build_semantic_entry, build_summary_entry
 from .index.memory_index import InMemoryVectorIndex
@@ -27,10 +28,22 @@ from .llm.base import LLMClient
 from .namespace import Actor, Namespace
 from .prompts import PromptOverrides
 from .retrieval import ReadPipeline
-from .schema import coerce_memory_metadata
+from .schema import TRACE_CATEGORIES, coerce_memory_metadata
 from .store.base import MemoryStore
 from .store.sqlite_store import SQLiteMemoryStore
 from .time_anchor import infer_time_of_day, timestamp_to_date_label
+from .timeline import (
+    AnnotationStatus,
+    CompletionCommitResult,
+    MemoryAnnotation,
+    RetrievalVisibility,
+    TimelineEntry,
+    TimelineEntryInput,
+    TurnAbortResult,
+    TurnCompletion,
+    TurnHandle,
+    TurnStatus,
+)
 from .token_counter import TokenCounter
 
 _TOOL_EVENT_PART = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -128,6 +141,224 @@ class MemorySystem:
         )
 
     # --- 写侧生命周期 ---
+
+    def begin_turn(
+        self,
+        *,
+        stimuli: list[TimelineEntryInput],
+        annotation_target_ids: list[str] | None = None,
+        turn_id: str = "",
+        opened_at: int | None = None,
+    ) -> TurnHandle:
+        """Atomically open a V2 turn and persist all stimulus entries."""
+
+        if not stimuli:
+            raise SchemaError("turn_stimulus_required")
+        prepared: list[TimelineEntryInput] = []
+        now = int(opened_at or time.time())
+        for entry in stimuli:
+            if not isinstance(entry, TimelineEntryInput):
+                raise TypeError("stimuli must contain TimelineEntryInput values")
+            timestamp = int(entry.timestamp or now)
+            prepared.append(
+                replace(
+                    entry,
+                    source_id=entry.source_id or uuid.uuid4().hex,
+                    timestamp=timestamp,
+                    date_label=entry.date_label or timestamp_to_date_label(timestamp, self.timezone),
+                    time_of_day=entry.time_of_day or infer_time_of_day(timestamp, self.timezone),
+                )
+            )
+        if annotation_target_ids is None:
+            if len(prepared) != 1:
+                raise SchemaError("multiple_stimuli_require_explicit_annotation_targets")
+            targets = [prepared[0].source_id]
+        else:
+            targets = [str(item or "").strip() for item in annotation_target_ids]
+        try:
+            handle = self.store.begin_turn(
+                namespace=self.namespace,
+                stimulus_entries=prepared,
+                annotation_target_ids=targets,
+                turn_id=turn_id,
+                opened_at=now,
+            )
+        except NotImplementedError as exc:
+            raise SchemaError("store_timeline_v2_unsupported") from exc
+        return self._refresh_turn_handle_after_index(handle)
+
+    def append_entry(self, entry: TimelineEntryInput, *, turn_id: str = "") -> TimelineEntry:
+        """Append an intermediate/action/observation to an open V2 turn."""
+
+        if not isinstance(entry, TimelineEntryInput):
+            raise TypeError("entry must be a TimelineEntryInput")
+        resolved_turn_id = str(turn_id or entry.turn_id or "").strip()
+        if not resolved_turn_id:
+            raise SchemaError("timeline_entry_turn_id_required")
+        timestamp = int(entry.timestamp or time.time())
+        prepared = replace(
+            entry,
+            turn_id=resolved_turn_id,
+            timestamp=timestamp,
+            date_label=entry.date_label or timestamp_to_date_label(timestamp, self.timezone),
+            time_of_day=entry.time_of_day or infer_time_of_day(timestamp, self.timezone),
+        )
+        try:
+            stored = self.store.append_entry(namespace=self.namespace, entry=prepared)
+        except NotImplementedError as exc:
+            raise SchemaError("store_timeline_v2_unsupported") from exc
+        return self._index_timeline_entry(stored)
+
+    def complete_turn(
+        self,
+        *,
+        turn_id: str,
+        semantic_text: str,
+        provider_output_raw: str,
+        memory_annotation: dict[str, Any] | None = None,
+        annotation_status: AnnotationStatus | str = AnnotationStatus.MISSING,
+        annotations: list[MemoryAnnotation] | None = None,
+        timestamp: int | None = None,
+        source_id: str = "",
+        close_reason: str = "completed",
+        payload: dict[str, Any] | None = None,
+        trace_metadata: dict[str, Any] | None = None,
+    ) -> CompletionCommitResult:
+        """Atomically commit final speech, target annotations, visibility, and turn close."""
+
+        normalized_turn_id = str(turn_id or "").strip()
+        if not normalized_turn_id:
+            raise SchemaError("turn_completion_invalid_turn_id")
+        try:
+            handle = self.store.get_turn(namespace=self.namespace, turn_id=normalized_turn_id)
+        except NotImplementedError as exc:
+            raise SchemaError("store_timeline_v2_unsupported") from exc
+        if handle is None:
+            return CompletionCommitResult(status="not_found", turn_id=normalized_turn_id, reason="turn_not_found")
+
+        if handle.status is not TurnStatus.OPEN:
+            resolved_annotations = ()
+        elif annotations is None:
+            if len(handle.annotation_target_ids) > 1:
+                raise SchemaError("multiple_annotation_targets_require_explicit_annotations")
+            resolved_annotations: tuple[MemoryAnnotation, ...]
+            if handle.annotation_target_ids:
+                status = self._coerce_completion_annotation_status(annotation_status)
+                metadata = coerce_memory_metadata(
+                    memory_annotation,
+                    categories=self.config.categories,
+                    enable_flavor=self.config.enable_flavor,
+                ).to_dict()
+                metadata["categories"] = [item for item in metadata["categories"] if item not in TRACE_CATEGORIES]
+                resolved_annotations = (
+                    MemoryAnnotation(
+                        target_source_id=handle.annotation_target_ids[0],
+                        status=status,
+                        memory_metadata=metadata,
+                        source="host" if status is AnnotationStatus.ACCEPTED_HOST else "model",
+                    ),
+                )
+            else:
+                resolved_annotations = ()
+        else:
+            resolved_annotations = tuple(self._coerce_memory_annotation(annotation) for annotation in annotations)
+
+        completed_at = int(timestamp or time.time())
+        completion = TurnCompletion(
+            turn_id=normalized_turn_id,
+            semantic_text=semantic_text,
+            provider_output_raw=provider_output_raw,
+            annotations=resolved_annotations,
+            timestamp=completed_at,
+            source_id=source_id,
+            close_reason=close_reason,
+            payload=dict(payload or {}),
+            trace_metadata=dict(trace_metadata or {}),
+            date_label=timestamp_to_date_label(completed_at, self.timezone),
+            time_of_day=infer_time_of_day(completed_at, self.timezone),
+        )
+        try:
+            result = self.store.commit_turn_completion(namespace=self.namespace, completion=completion)
+        except NotImplementedError as exc:
+            raise SchemaError("store_timeline_v2_unsupported") from exc
+        if not result.completed:
+            return result
+        return self._refresh_completion_after_index(result)
+
+    def abort_turn(self, turn_id: str, *, reason: str, closed_at: int | None = None) -> TurnAbortResult:
+        try:
+            return self.store.abort_turn(
+                namespace=self.namespace,
+                turn_id=turn_id,
+                reason=reason,
+                closed_at=int(closed_at or time.time()),
+            )
+        except NotImplementedError as exc:
+            raise SchemaError("store_timeline_v2_unsupported") from exc
+
+    def _refresh_turn_handle_after_index(self, handle: TurnHandle) -> TurnHandle:
+        for entry in handle.stimuli:
+            self._index_timeline_entry(entry)
+        try:
+            refreshed = self.store.get_turn(namespace=self.namespace, turn_id=handle.turn_id)
+        except NotImplementedError as exc:
+            raise SchemaError("store_timeline_v2_unsupported") from exc
+        return refreshed or handle
+
+    def _refresh_completion_after_index(self, result: CompletionCommitResult) -> CompletionCommitResult:
+        for entry in (*result.updated_targets, *((result.final_entry,) if result.final_entry else ())):
+            self._index_timeline_entry(entry)
+        try:
+            final_entry = (
+                self.store.get_entry(namespace=self.namespace, source_id=result.final_entry.source_id)
+                if result.final_entry
+                else None
+            )
+            targets = tuple(
+                entry
+                for entry in (
+                    self.store.get_entry(namespace=self.namespace, source_id=item.source_id)
+                    for item in result.updated_targets
+                )
+                if entry is not None
+            )
+        except NotImplementedError as exc:
+            raise SchemaError("store_timeline_v2_unsupported") from exc
+        return replace(result, final_entry=final_entry, updated_targets=targets)
+
+    def _index_timeline_entry(self, entry: TimelineEntry) -> TimelineEntry:
+        try:
+            self._reindex_record(entry.to_record())
+        except Exception:
+            self.store.set_index_status(entry.source_id, "pending")
+        try:
+            refreshed = self.store.get_entry(namespace=self.namespace, source_id=entry.source_id)
+        except NotImplementedError as exc:
+            raise SchemaError("store_timeline_v2_unsupported") from exc
+        return refreshed or entry
+
+    def _coerce_memory_annotation(self, annotation: MemoryAnnotation) -> MemoryAnnotation:
+        if not isinstance(annotation, MemoryAnnotation):
+            raise TypeError("annotations must contain MemoryAnnotation values")
+        metadata = coerce_memory_metadata(
+            annotation.memory_metadata,
+            categories=self.config.categories,
+            enable_flavor=self.config.enable_flavor,
+        ).to_dict()
+        metadata["categories"] = [item for item in metadata["categories"] if item not in TRACE_CATEGORIES]
+        return replace(annotation, memory_metadata=metadata)
+
+    @staticmethod
+    def _coerce_completion_annotation_status(value: AnnotationStatus | str) -> AnnotationStatus:
+        if isinstance(value, AnnotationStatus):
+            return value
+        normalized = str(value or "").strip().lower()
+        if normalized == "accepted":
+            return AnnotationStatus.ACCEPTED_MODEL
+        try:
+            return AnnotationStatus(normalized)
+        except ValueError as exc:
+            raise SchemaError("memory_annotation_invalid_status") from exc
 
     def record_user_turn(self, content: str, *, actor: Actor | None = None, **fields: Any) -> dict[str, Any]:
         return self._record(role="user", content=content, actor=actor, **fields)
@@ -524,6 +755,10 @@ class MemorySystem:
 
     def _reindex_record(self, record: dict[str, Any]) -> None:
         entry = self._build_index_entry(record)
+        if str(record.get("retrieval_visibility") or "") == RetrievalVisibility.NEVER.value:
+            self.index.delete([entry["source_id"]])
+            self.store.set_index_status(entry["source_id"], "skipped")
+            return
         self.index.upsert([entry])
         self.store.set_index_status(entry["source_id"], "indexed")
 

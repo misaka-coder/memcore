@@ -1,6 +1,15 @@
 # MemCore Unified Timeline V2 设计草案
 
-状态: implementation in progress；Schema foundation 已实现，Turn lifecycle 尚未开始。
+状态: implementation in progress；Schema foundation 与 Turn lifecycle 已实现，Projection ledger 待实现。
+
+当前实现检查点（2026-07-20）：
+
+- Slice 1 `Schema foundation` 已提交：正式 migration runner、V2 物理列/表、namespace-safe relation reads 与 V1 trace compatibility window；
+- Slice 2 `Turn lifecycle` 已实现：`begin_turn -> append_entry -> complete_turn / abort_turn`、显式 annotation target、并行 action/observation correlation、原子终态提交、visibility 物化与索引 outbox；
+- `kind` 仍是开放 namespaced 字符串；关系完整性只约束通用 action/observation，不枚举工具、事件、Skill 或 Bot；
+- accepted empty annotation 与 missing/invalid annotation 已分开，只有 accepted target 自动进入 default retrieval；
+- 当前 final 暂存真实 `provider_output_raw`，尚未生成或持久化 provider-specific projection；Projection Ledger、renderer registry、strict-prefix hash 属于下一切片；
+- 本检查点没有切换 Akane，也没有改变 QQ、桌宠、金融或个人 Bot 的用户表现。旧 `record_*` API 暂时保持原行为，后续回填时只能变成薄适配或删除。
 
 本文定义 MemCore 从“通用三层记忆内核”演进为“统一时间线、稳定上下文投影与记忆读取内核”的目标形态。它不改变 MemCore 与宿主的基本边界：宿主仍负责渠道、权限、工具执行、文件本体、模型选择和最终请求；MemCore 负责把模型实际经历的输入、输出、工具与事件可靠地记录、投影、检索和压缩。
 
@@ -905,6 +914,8 @@ result = mem.complete_turn(
 )
 ```
 
+上例是完整目标 API。Slice 2 已实现除 `provider_projection` 外的生命周期参数，并将真实 `provider_output_raw` 与 final 在同一事务中保存；`provider_projection` 参数和 projection ledger 写入将在 Slice 3 一起加入，避免先放一个没有真实 ledger 行为的占位参数。
+
 现有 `record_user_turn/record_external_event/record_tool_exchange/record_assistant_turn` 保留为薄兼容适配。它们继续保存现有行为，但只有显式新 Turn API 承诺完整并行关系和原子终态；Akane 切换后不再依赖旧适配建立新记录。
 
 ### 17.6 Retrieval admission 的物化
@@ -1589,9 +1600,9 @@ Akane 最终验收必须分别走个人 bot 普通私聊、个人群聊、金融
 
 每个切片只做一个可验证边界，并在通过后做聚焦 commit：
 
-1. **Schema foundation**：migration runner、V2 columns、turn/projection tables、namespace-safe reads；
-2. **Turn lifecycle**：begin/append/complete 与 annotation status，尚不切 Akane；
-3. **Projection ledger**：renderer registry、provider adapters、strict-prefix tests；
+1. **Schema foundation（已完成）**：migration runner、V2 columns、turn/projection tables、namespace-safe reads；
+2. **Turn lifecycle（已实现，待本切片提交）**：begin/append/complete/abort、annotation status、并行 correlation 与原子终态，尚不切 Akane；
+3. **Projection ledger（待实现）**：renderer registry、provider adapters、strict-prefix tests；
 4. **Compaction V2**：shared runtime、closed-turn/token planning、atomic summary commits；
 5. **Retrieval admission**：visibility、kind flags、新 index generation、hard-filter tests；
 6. **Relation expansion**：turn/correlation/lineage closure、structured results；

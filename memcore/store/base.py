@@ -13,10 +13,38 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 from ..namespace import Namespace
+from ..timeline import (
+    CompletionCommitResult,
+    TimelineEntry,
+    TimelineEntryInput,
+    TurnAbortResult,
+    TurnCompletion,
+    TurnHandle,
+)
 
 
 class MemoryStore(ABC):
     # --- 写 ---
+    def begin_turn(
+        self,
+        *,
+        namespace: Namespace,
+        stimulus_entries: list[TimelineEntryInput],
+        annotation_target_ids: list[str],
+        turn_id: str = "",
+        opened_at: int = 0,
+    ) -> TurnHandle:
+        raise NotImplementedError
+
+    def append_entry(self, *, namespace: Namespace, entry: TimelineEntryInput) -> TimelineEntry:
+        raise NotImplementedError
+
+    def commit_turn_completion(self, *, namespace: Namespace, completion: TurnCompletion) -> CompletionCommitResult:
+        raise NotImplementedError
+
+    def abort_turn(self, *, namespace: Namespace, turn_id: str, reason: str, closed_at: int) -> TurnAbortResult:
+        raise NotImplementedError
+
     @abstractmethod
     def add_message(
         self, *, namespace: Namespace, role: str, content: str, timestamp: int, **fields: Any
@@ -59,7 +87,7 @@ class MemoryStore(ABC):
         """Legacy global lookup. New Timeline V2 runtime paths must use get_entry()."""
         raise NotImplementedError
 
-    def get_entry(self, *, namespace: Namespace, source_id: str) -> dict[str, Any] | None:
+    def get_entry(self, *, namespace: Namespace, source_id: str) -> TimelineEntry | None:
         """Namespace-safe lookup for one raw TimelineEntry.
 
         Kept non-abstract during the V2 migration window so existing third-party
@@ -67,13 +95,17 @@ class MemoryStore(ABC):
         """
         raise NotImplementedError
 
-    def get_turn_entries(self, *, namespace: Namespace, turn_id: str) -> list[dict[str, Any]]:
+    def get_turn(self, *, namespace: Namespace, turn_id: str) -> TurnHandle | None:
+        """Namespace-safe turn lookup for lifecycle resume/idempotency."""
+        raise NotImplementedError
+
+    def get_turn_entries(self, *, namespace: Namespace, turn_id: str) -> list[TimelineEntry]:
         """Read a complete turn only after validating namespace + conversation ownership."""
         raise NotImplementedError
 
     def get_correlation_entries(
         self, *, namespace: Namespace, turn_id: str, correlation_id: str
-    ) -> list[dict[str, Any]]:
+    ) -> list[TimelineEntry]:
         """Read one action/observation branch under an owned turn."""
         raise NotImplementedError
 

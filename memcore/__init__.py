@@ -53,6 +53,22 @@ from .schema import (
 from .store.base import MemoryStore
 from .store.sqlite_store import SQLiteMemoryStore
 from .token_counter import TokenCounter
+from .timeline import (
+    AnnotationStatus,
+    CompletionCommitResult,
+    EntryOrigin,
+    EntryTrust,
+    MemoryAnnotation,
+    RetrievalPolicy,
+    RetrievalVisibility,
+    TimelineEntry,
+    TimelineEntryInput,
+    TurnAbortResult,
+    TurnCompletion,
+    TurnHandle,
+    TurnRole,
+    TurnStatus,
+)
 
 __version__ = "0.1.0"
 
@@ -99,6 +115,21 @@ __all__ = [
     "HTTPEmbeddingProvider",
     "verify_embedding",
     "TokenCounter",
+    # Unified Timeline V2
+    "AnnotationStatus",
+    "CompletionCommitResult",
+    "EntryOrigin",
+    "EntryTrust",
+    "MemoryAnnotation",
+    "RetrievalPolicy",
+    "RetrievalVisibility",
+    "TimelineEntry",
+    "TimelineEntryInput",
+    "TurnAbortResult",
+    "TurnCompletion",
+    "TurnHandle",
+    "TurnRole",
+    "TurnStatus",
     # 异常
     "MemcoreError",
     "ConfigError",
