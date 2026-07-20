@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Any
 
 from ..compaction_v2 import (
@@ -36,6 +37,21 @@ from ..timeline import (
     TurnCompletion,
     TurnHandle,
 )
+
+
+@dataclass(frozen=True)
+class LineageClosure:
+    """Namespace-scoped lineage graph around one or more raw/derived sources."""
+
+    status: str
+    requested_ids: tuple[str, ...]
+    descendant_ids: tuple[str, ...] = ()
+    ancestor_ids: tuple[str, ...] = ()
+    reason: str = ""
+
+    @property
+    def all_ids(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys((*self.requested_ids, *self.descendant_ids, *self.ancestor_ids)))
 
 
 class MemoryStore(ABC):
@@ -172,6 +188,17 @@ class MemoryStore(ABC):
         cross_conversation: bool = False,
     ) -> dict[str, Any] | None:
         """Namespace-safe lookup for a raw/summary/semantic retrieval candidate."""
+        raise NotImplementedError
+
+    def resolve_lineage_source_ids(
+        self,
+        *,
+        namespace: Namespace,
+        source_ids: tuple[str, ...],
+        cross_conversation: bool = False,
+        include_ancestors: bool = True,
+    ) -> LineageClosure:
+        """Resolve descendants and ancestors without leaving the authorized Namespace."""
         raise NotImplementedError
 
     def get_turn(self, *, namespace: Namespace, turn_id: str) -> TurnHandle | None:

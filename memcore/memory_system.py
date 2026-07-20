@@ -148,7 +148,12 @@ class MemorySystem:
             runtime=self.runtime,
         )
         self._read = ReadPipeline(
-            store=self.store, index=self.index, llm=self.llm, config=self.config, timezone=self.timezone
+            store=self.store,
+            index=self.index,
+            llm=self.llm,
+            config=self.config,
+            timezone=self.timezone,
+            token_counter=self.token_counter,
         )
 
     @staticmethod
@@ -1171,6 +1176,7 @@ class MemorySystem:
         cross_conversation: bool = False,
         exclude_source_ids: list[str] | None = None,
         max_matches: int = 0,
+        result_token_budget: int = 0,
     ) -> RetrievalResult:
         """Return typed found/empty/invalid/unavailable/failed retrieval state."""
         return self._read.retrieve_result(
@@ -1188,6 +1194,7 @@ class MemorySystem:
                 cross_conversation=cross_conversation,
                 exclude_source_ids=tuple(exclude_source_ids or ()),
                 max_matches=max_matches,
+                result_token_budget=result_token_budget,
             ),
         )
 
@@ -1198,19 +1205,10 @@ class MemorySystem:
         且 build_prompt_context 会把当前未摘要 raw/可见摘要/可见语义放进 prompt。宿主工具包装层应优先调用
         这个方法,避免工具检索把已可见内容重复搜回来。
         """
-        exclude_ids = {
-            str(item).strip() for item in (filters.pop("exclude_source_ids", None) or []) if str(item or "").strip()
-        }
-        now_ts = int((current or {}).get("timestamp") or 0)
-        exclude_ids |= self._read.visible_source_ids(namespace=self.namespace, now_ts=now_ts)
-        current_id = str((current or {}).get("source_id") or "").strip()
-        if current_id:
-            exclude_ids.add(current_id)
         filters.setdefault("cross_conversation", True)
         result = self.retrieve_for_turn_structured(
             current=current,
             query=query,
-            exclude_source_ids=sorted(exclude_ids),
             **filters,
         )
         return list(result.rendered_texts)
@@ -1226,7 +1224,12 @@ class MemorySystem:
         """Structured retrieval with every prompt-visible source excluded before scoring."""
         exclude_ids = {str(item).strip() for item in (exclude_source_ids or ()) if str(item or "").strip()}
         now_ts = int((current or {}).get("timestamp") or 0)
-        exclude_ids |= self._read.visible_source_ids(namespace=self.namespace, now_ts=now_ts)
+        try:
+            exclude_ids |= self._read.visible_lineage_source_ids(namespace=self.namespace, now_ts=now_ts)
+        except NotImplementedError:
+            return RetrievalResult(status="unavailable", reason="lineage_store_unsupported")
+        except Exception:
+            return RetrievalResult(status="failed", reason="lineage_resolution_failed")
         current_id = str((current or {}).get("source_id") or "").strip()
         if current_id:
             exclude_ids.add(current_id)

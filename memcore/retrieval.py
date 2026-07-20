@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from typing import Any, Mapping
 
@@ -23,7 +23,9 @@ from .llm.base import LLMClient, LLMRequest, ResponseFormat, TaskType
 from .namespace import Namespace
 from .prompts import build_verifier_prompts
 from .rendering import render_raw_snippet, render_semantic_snippet, render_summary_snippet
-from .store.base import MemoryStore
+from .store.base import LineageClosure, MemoryStore
+from .timeline import TimelineEntry, TurnRole
+from .token_counter import TokenCounter
 
 _ACCEPTED_DEFAULT_STATUSES = (
     "accepted_host",
@@ -66,6 +68,7 @@ class RetrievalRequest:
     cross_conversation: bool = False
     exclude_source_ids: tuple[str, ...] = ()
     max_matches: int = 0
+    result_token_budget: int = 0
 
 
 @dataclass(frozen=True)
@@ -88,10 +91,16 @@ class SemanticFilterPlan:
 
 
 @dataclass(frozen=True)
+class RelationExpansionPlan:
+    result_token_budget: int = 0
+
+
+@dataclass(frozen=True)
 class RetrievalQueryPlan:
     request: RetrievalRequest
     hard: HardFilterPlan
     semantic_stages: tuple[SemanticFilterPlan, ...]
+    relation: RelationExpansionPlan
 
 
 @dataclass(frozen=True)
@@ -198,12 +207,14 @@ class ReadPipeline:
         llm: LLMClient,
         config: MemoryConfig,
         timezone: str,
+        token_counter: TokenCounter | None = None,
     ) -> None:
         self.store = store
         self.index = index
         self.llm = llm
         self.config = config
         self.timezone = timezone
+        self.token_counter = token_counter
 
     # --- visible prompt context ---
 
@@ -225,6 +236,29 @@ class ReadPipeline:
         ids.update(str(row.get("summary_id")) for row in context["episodic"] if row.get("summary_id"))
         ids.update(str(row.get("semantic_id")) for row in context["semantic"] if row.get("semantic_id"))
         return ids
+
+    def visible_lineage_source_ids(self, *, namespace: Namespace, now_ts: int) -> set[str]:
+        """Exclude visible entries plus every connected derived/raw lineage record."""
+        visible = self.visible_source_ids(namespace=namespace, now_ts=now_ts)
+        if not visible:
+            return set()
+        closure = self.store.resolve_lineage_source_ids(
+            namespace=namespace,
+            source_ids=tuple(sorted(visible)),
+            cross_conversation=self.config.visible_memory_scope == "user",
+        )
+        if closure.status == "resolved":
+            return set(closure.all_ids)
+        expanded = set(visible)
+        for source_id in sorted(visible):
+            item = self.store.resolve_lineage_source_ids(
+                namespace=namespace,
+                source_ids=(source_id,),
+                cross_conversation=self.config.visible_memory_scope == "user",
+            )
+            if item.status == "resolved":
+                expanded.update(item.all_ids)
+        return expanded
 
     def _visible_semantic(self, *, namespace: Namespace, cross: bool, now_ts: int) -> list[dict[str, Any]]:
         limit = self.config.semantic_visible_limit
@@ -284,6 +318,7 @@ class ReadPipeline:
         kind_patterns: list[str] | None = None,
         include_explicit: bool = False,
         cross_conversation: bool = True,
+        result_token_budget: int = 0,
     ) -> list[str]:
         """Thin text adapter over Retrieval V2; no independent legacy search path remains."""
         result = self.retrieve_result(
@@ -300,6 +335,7 @@ class ReadPipeline:
                 include_explicit=bool(include_explicit),
                 cross_conversation=bool(cross_conversation),
                 exclude_source_ids=tuple(exclude_source_ids or ()),
+                result_token_budget=result_token_budget,
             ),
         )
         return list(result.rendered_texts)
@@ -344,6 +380,14 @@ class ReadPipeline:
         if max_matches < 1:
             raise ValueError("invalid_max_matches")
         max_matches = min(max_matches, self.config.retrieval_limit)
+        try:
+            result_token_budget = int(request.result_token_budget or 0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("invalid_result_token_budget") from exc
+        if result_token_budget < 0:
+            raise ValueError("invalid_result_token_budget")
+        if result_token_budget == 0 and self.token_counter is not None:
+            result_token_budget = int(self.config.reserved_retrieval_tokens)
         normalized_request = RetrievalRequest(
             query=query,
             keywords=keywords,
@@ -357,6 +401,7 @@ class ReadPipeline:
             cross_conversation=bool(request.cross_conversation),
             exclude_source_ids=excluded,
             max_matches=max_matches,
+            result_token_budget=result_token_budget,
         )
         hard_where = self._build_hard_where(namespace=namespace, request=normalized_request)
         hard = HardFilterPlan(
@@ -383,6 +428,7 @@ class ReadPipeline:
             request=normalized_request,
             hard=hard,
             semantic_stages=self._semantic_stages(semantic),
+            relation=RelationExpansionPlan(result_token_budget=result_token_budget),
         )
 
     @staticmethod
@@ -546,6 +592,9 @@ class ReadPipeline:
             "below_dense_score": 0,
             "below_fused_score": 0,
             "verifier_rejected": 0,
+            "invalid_lineage": 0,
+            "lineage_quarantine_failed": 0,
+            "incomplete_relation": 0,
         }
         selected: list[dict[str, Any]] = []
         effective = plan.semantic_stages[0]
@@ -604,13 +653,37 @@ class ReadPipeline:
                 reason="index_filter_unsupported",
             )
         verified = self._verify_matches(query=plan.request.query, matches=matches, rejected=rejected)
+        if plan.relation.result_token_budget > 0 and self.token_counter is None:
+            return RetrievalResult(
+                status="unavailable",
+                effective_filters=filters,
+                relaxation_steps=tuple(relaxation),
+                rejected_counts=rejected,
+                reason="token_counter_required",
+            )
+        expanded, unsafe = self._expand_matches(plan=plan, matches=verified, rejected=rejected)
+        if unsafe:
+            return RetrievalResult(
+                status="unavailable",
+                effective_filters=filters,
+                relaxation_steps=tuple(relaxation),
+                rejected_counts=rejected,
+                reason="relation_store_unsupported",
+            )
+        budgeted, token_usage, truncated, omitted = self._apply_result_budget(
+            expanded,
+            token_budget=plan.relation.result_token_budget,
+        )
         return RetrievalResult(
-            status="found" if verified else "empty",
-            matches=tuple(verified),
+            status="found" if budgeted else "empty",
+            matches=tuple(budgeted),
             effective_filters=filters,
             relaxation_steps=tuple(relaxation),
             rejected_counts=rejected,
-            reason="" if verified else "no_match",
+            token_usage=token_usage,
+            truncated=truncated,
+            omitted_match_count=omitted,
+            reason="" if budgeted else "no_match",
         )
 
     @staticmethod
@@ -760,6 +833,254 @@ class ReadPipeline:
             lineage=lineage,
         )
 
+    def _expand_matches(
+        self,
+        *,
+        plan: RetrievalQueryPlan,
+        matches: list[RetrievalMatch],
+        rejected: dict[str, int],
+    ) -> tuple[list[RetrievalMatch], bool]:
+        if not matches:
+            return [], False
+        records: dict[str, dict[str, Any]] = {}
+        closures: dict[str, LineageClosure] = {}
+        valid: list[RetrievalMatch] = []
+        try:
+            for match in matches:
+                record = self.store.get_retrieval_record(
+                    namespace=self._plan_namespace(plan),
+                    source_id=match.source_id,
+                    cross_conversation=plan.hard.cross_conversation,
+                )
+                if record is None or not self._record_satisfies_hard_plan(record=record, hard=plan.hard):
+                    return [], True
+                records[match.source_id] = record
+                if match.layer in {"summary", "semantic_summary"}:
+                    closure = self.store.resolve_lineage_source_ids(
+                        namespace=self._record_namespace(record),
+                        source_ids=(match.source_id,),
+                        cross_conversation=False,
+                        include_ancestors=False,
+                    )
+                    if closure.status != "resolved":
+                        rejected["invalid_lineage"] += 1
+                        if not self._invalidate_lineage(match.source_id):
+                            rejected["lineage_quarantine_failed"] += 1
+                        continue
+                    closures[match.source_id] = closure
+                valid.append(match)
+        except NotImplementedError:
+            return [], True
+
+        suppressed = {source_id for closure in closures.values() for source_id in closure.descendant_ids}
+        expanded: list[RetrievalMatch] = []
+        seen_groups: set[tuple[str, ...]] = set()
+        for match in valid:
+            if match.source_id in suppressed:
+                continue
+            record = records[match.source_id]
+            if match.layer in {"summary", "semantic_summary"}:
+                candidate = replace(match, lineage=closures[match.source_id].descendant_ids)
+            else:
+                candidate = self._expand_raw_match(plan=plan, match=match, record=record)
+                if candidate is None:
+                    rejected["incomplete_relation"] += 1
+                    continue
+            group_key = candidate.source_ids
+            if group_key in seen_groups:
+                continue
+            seen_groups.add(group_key)
+            expanded.append(candidate)
+        return expanded, False
+
+    @staticmethod
+    def _plan_namespace(plan: RetrievalQueryPlan) -> Namespace:
+        return Namespace(
+            tenant_id=plan.hard.namespace_key[0],
+            user_id=plan.hard.namespace_key[1],
+            domain_id=plan.hard.namespace_key[2],
+            conversation_id=plan.hard.namespace_key[3],
+        )
+
+    @staticmethod
+    def _record_namespace(record: Mapping[str, Any]) -> Namespace:
+        return Namespace(
+            tenant_id=str(record.get("tenant_id") or ""),
+            user_id=str(record.get("user_id") or ""),
+            domain_id=str(record.get("domain_id") or ""),
+            conversation_id=str(record.get("conversation_id") or ""),
+        )
+
+    def _invalidate_lineage(self, source_id: str) -> bool:
+        success = True
+        try:
+            self.index.delete([source_id])
+        except Exception:
+            success = False
+        try:
+            self.store.set_index_status(source_id, "invalid_lineage")
+        except Exception:
+            success = False
+        return success
+
+    def _expand_raw_match(
+        self,
+        *,
+        plan: RetrievalQueryPlan,
+        match: RetrievalMatch,
+        record: dict[str, Any],
+    ) -> RetrievalMatch | None:
+        turn_id = str(record.get("turn_id") or "")
+        if not turn_id or str(record.get("relation_status") or "") != "linked":
+            return match
+        namespace = self._record_namespace(record)
+        entries = self.store.get_turn_entries(namespace=namespace, turn_id=turn_id)
+        if not entries or any(not self._relation_entry_in_scope(entry, namespace) for entry in entries):
+            return None
+
+        root_kind = str(record.get("kind") or "").split(".", 1)[0]
+        correlation_id = str(record.get("correlation_id") or "")
+        if root_kind == "tool" and correlation_id:
+            branch = self.store.get_correlation_entries(
+                namespace=namespace,
+                turn_id=turn_id,
+                correlation_id=correlation_id,
+            )
+            if not self._complete_correlation_branch(branch):
+                return None
+            selected = branch
+        else:
+            turn = self.store.get_turn(namespace=namespace, turn_id=turn_id)
+            if turn is None:
+                return None
+            target_ids = set(turn.annotation_target_ids)
+            selected = [
+                entry for entry in entries if entry.source_id in target_ids or entry.turn_role is TurnRole.FINAL
+            ]
+            if root_kind == "event" and not any(entry.source_id == match.source_id for entry in selected):
+                selected.extend(entry for entry in entries if entry.source_id == match.source_id)
+            if not selected:
+                return None
+
+        selected = sorted(selected, key=lambda item: item.seq_no)
+        if any(
+            not self._relation_entry_visible(entry, include_explicit=plan.hard.include_explicit) for entry in selected
+        ):
+            return None
+        records = [entry.to_record() for entry in selected]
+        source_ids = tuple(entry.source_id for entry in selected)
+        return replace(
+            match,
+            source_ids=source_ids,
+            turn_id=turn_id,
+            correlation_id=correlation_id if root_kind == "tool" else "",
+            semantic_text="\n".join(entry.semantic_text for entry in selected if entry.semantic_text),
+            rendered_text=render_raw_snippet(records, tz=self.timezone),
+            lineage=(),
+        )
+
+    @staticmethod
+    def _relation_entry_in_scope(entry: TimelineEntry, namespace: Namespace) -> bool:
+        return entry.namespace.hard_key() == namespace.hard_key() and (entry.namespace.conversation_id or "") == (
+            namespace.conversation_id or ""
+        )
+
+    @staticmethod
+    def _relation_entry_visible(entry: TimelineEntry, *, include_explicit: bool) -> bool:
+        policy = entry.retrieval_policy.value
+        visibility = entry.retrieval_visibility.value
+        if policy == "never" or visibility == "never" or entry.trust.value != "untrusted_data":
+            return False
+        if visibility == "explicit":
+            return include_explicit
+        if visibility != "default":
+            return False
+        root_kind = entry.kind.split(".", 1)[0]
+        annotation = entry.annotation_status.value
+        return root_kind not in {"material", "tool"} and (
+            annotation in _ACCEPTED_DEFAULT_STATUSES or policy == "always"
+        )
+
+    @staticmethod
+    def _complete_correlation_branch(entries: list[TimelineEntry]) -> bool:
+        if not entries or any(entry.turn_role not in {TurnRole.ACTION, TurnRole.OBSERVATION} for entry in entries):
+            return False
+        if not any(entry.turn_role is TurnRole.ACTION for entry in entries):
+            return False
+        terminal = [entry for entry in entries if entry.turn_role is TurnRole.OBSERVATION]
+        if not terminal:
+            return False
+        return any(
+            str(entry.trace_metadata.get("status") or "").strip().lower()
+            not in {"open", "pending", "running", "streaming"}
+            for entry in terminal
+        )
+
+    def _apply_result_budget(
+        self,
+        matches: list[RetrievalMatch],
+        *,
+        token_budget: int,
+    ) -> tuple[list[RetrievalMatch], int, bool, int]:
+        if self.token_counter is None:
+            return matches, 0, False, 0
+        counts = [self._count_match_tokens(match) for match in matches]
+        if token_budget <= 0:
+            return matches, sum(counts), False, 0
+
+        selected: list[RetrievalMatch] = []
+        used = 0
+        omitted = 0
+        truncated = False
+        for match, count in zip(matches, counts):
+            if used + count <= token_budget:
+                selected.append(match)
+                used += count
+                continue
+            if count > token_budget and not selected:
+                excerpt = self._truncate_atomic_match(match, token_budget=token_budget)
+                if excerpt is not None:
+                    selected.append(excerpt)
+                    used = self._count_match_tokens(excerpt)
+                else:
+                    omitted += 1
+                truncated = True
+                continue
+            omitted += 1
+            truncated = True
+        return selected, used, truncated, omitted
+
+    def _count_match_tokens(self, match: RetrievalMatch) -> int:
+        assert self.token_counter is not None
+        payload = json.dumps(match.to_dict(), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        count = int(self.token_counter.count_text(payload))
+        if count < 0:
+            raise ValueError("TokenCounter.count_text() must return a non-negative int")
+        return count
+
+    def _truncate_atomic_match(self, match: RetrievalMatch, *, token_budget: int) -> RetrievalMatch | None:
+        assert self.token_counter is not None
+        header = (
+            "【检索原子组摘录｜内容已截断】\n"
+            f"kind: {match.kind}\n"
+            f"primary_source_id: {match.source_id}\n"
+            f"source_count: {len(match.source_ids)}\n"
+            "content_excerpt:\n"
+        )
+        low, high = 0, len(match.rendered_text)
+        best: RetrievalMatch | None = None
+        while low <= high:
+            middle = (low + high) // 2
+            body = match.rendered_text[:middle].rstrip()
+            rendered = header + body + ("…" if middle < len(match.rendered_text) else "")
+            candidate = replace(match, semantic_text="", rendered_text=rendered, truncated=True)
+            if self._count_match_tokens(candidate) <= token_budget:
+                best = candidate
+                low = middle + 1
+            else:
+                high = middle - 1
+        return best
+
     def _verify_matches(
         self,
         *,
@@ -838,12 +1159,14 @@ class ReadPipeline:
             "subject_scopes": list(semantic.subject_scopes),
             "importance_min": semantic.importance_min,
             "index_schema_version": INDEX_SCHEMA_VERSION,
+            "result_token_budget": plan.relation.result_token_budget,
         }
 
 
 __all__ = [
     "HardFilterPlan",
     "ReadPipeline",
+    "RelationExpansionPlan",
     "RetrievalMatch",
     "RetrievalQueryPlan",
     "RetrievalRequest",

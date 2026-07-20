@@ -89,9 +89,10 @@ from .retrieval import (
     RetrievalQueryPlan,
     RetrievalRequest,
     RetrievalResult,
+    RelationExpansionPlan,
     SemanticFilterPlan,
 )
-from .store.base import MemoryStore
+from .store.base import LineageClosure, MemoryStore
 from .store.sqlite_store import SQLiteMemoryStore
 from .token_counter import TokenCounter
 from .timeline import (
@@ -177,7 +178,9 @@ __all__ = [
     "RetrievalQueryPlan",
     "RetrievalRequest",
     "RetrievalResult",
+    "RelationExpansionPlan",
     "SemanticFilterPlan",
+    "LineageClosure",
     # Compaction V2 / shared runtime
     "CompactionResult",
     "CompactionSnapshot",

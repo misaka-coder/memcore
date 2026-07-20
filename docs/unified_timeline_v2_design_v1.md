@@ -1,14 +1,15 @@
 # MemCore Unified Timeline V2 设计草案
 
-状态: implementation in progress；Schema foundation、Turn lifecycle、Projection ledger、Compaction V2 与 Retrieval admission 已实现，Relation expansion 待实现。
+状态: implementation in progress；Schema foundation、Turn lifecycle、Projection ledger、Compaction V2、Retrieval admission 与 Relation expansion 已实现，Native Tools V2 待实现。
 
-当前实现检查点（2026-07-20）：
+当前实现检查点（2026-07-21）：
 
 - Slice 1 `Schema foundation` 已提交（`4b82e2d`）：正式 migration runner、V2 物理列/表、namespace-safe relation reads 与 V1 trace compatibility window；
 - Slice 2 `Turn lifecycle` 已提交（`24f1c1b`）：`begin_turn -> append_entry -> complete_turn / abort_turn`、显式 annotation target、并行 action/observation correlation、原子终态提交、visibility 物化与索引 outbox；
 - Slice 3 `Projection ledger` 已提交（`38727e1`）：versioned renderer registry、canonical/OpenAI/Anthropic adapter、不可变 projection rows、请求 hash audit、final projection 原子提交和 strict-prefix 验收；
 - Slice 4 `Compaction V2` 已实现：共享 `MemCoreRuntime`、closed-turn/token planning、summary/semantic 两阶段原子提交、episode/operation lineage 分离，以及压缩后 summary/semantic projection；
 - Slice 5 `Retrieval admission` 已实现：结构化 query/result、visibility/annotation/kind/conversation/index-generation 硬准入、开放 kind prefix flags、评分前过滤与有界 semantic relaxation；
+- Slice 6 `Relation expansion` 已实现：Namespace-safe lineage closure、stimulus/final 原子组、并行 correlation branch、派生层去重、visible lineage 排除与精确 token budget；
 - `kind` 仍是开放 namespaced 字符串；关系完整性只约束通用 action/observation，不枚举工具、事件、Skill 或 Bot；
 - accepted empty annotation 与 missing/invalid annotation 已分开，只有 accepted target 自动进入 default retrieval；
 - final 继续保留真实 `provider_output_raw`；宿主提供的真实 final projection 会与 annotation/final/turn close 同事务保存，没有提供时可由标准 adapter 产生显式 `canonical_fallback`；
@@ -286,7 +287,7 @@ kind_exact__tool_web_search_result = true
 
 ### 8.4 关系扩窗
 
-现有 `seq_no ± 1/2` 只用于旧记录迁移期降级。V2 规则:
+V2 不再使用 `seq_no ± 1/2` 猜邻居。规则:
 
 - 普通命中 stimulus 或 final：返回同 turn 的 stimulus + final，跳过默认不可检索的中间 trace；
 - 显式命中 tool call/result：返回对应 correlation branch，必要时补充 stimulus 和 final；
@@ -294,7 +295,7 @@ kind_exact__tool_web_search_result = true
 - 并行工具不要求彼此物理相邻；
 - 扩窗预算按 token，原子单位为 turn 或完整 call/result pair；
 - 扩窗中的邻居继续遵守 retrieval visibility，不能绕过默认前置过滤把 trace 偷带回来；
-- 旧记录无 relations 时可使用物理邻居 fallback，但必须重新执行 visibility/category/namespace 过滤，并避免拆开可识别的 tool pair。
+- 无可靠 relations 的记录只保留自身，不做物理邻居 fallback；需要完整关系的宿主直接写 V2 turn/correlation。
 
 ## 9. 给模型的工具面
 
@@ -862,7 +863,7 @@ get_entry(namespace, source_id) -> TimelineEntry | None
 get_turn_entries(namespace, turn_id) -> list[TimelineEntry]
 get_correlation_entries(namespace, turn_id, correlation_id) -> list[TimelineEntry]
 get_compactable_turns(namespace, ...) -> list[TurnBundle]
-resolve_lineage_source_ids(namespace, visible_records) -> set[str]
+resolve_lineage_source_ids(namespace, source_ids, cross_conversation, include_ancestors) -> LineageClosure
 commit_summary_batch(namespace, records, source_assignments) -> CommitResult
 commit_semantic_batch(namespace, records, summary_assignments) -> CommitResult
 ```
@@ -1180,7 +1181,7 @@ reason
 - 压缩后的 summary/semantic 继续走统一 projection ledger，`after_projected_tokens` 与实际可见 provider payload 使用同一计数口径；
 - 索引失败保留 pending outbox 并在结果中返回 `index_status=pending`，不回滚已提交的 SQL 事实；
 - V1 `record_*` 数据在没有 V2 turn 时继续走 legacy compatibility 路径。本切片没有切换 Akane、QQ、桌宠、金融或个人 Bot，用户体验尚无变化；
-- Retrieval admission 已完成：visibility/kind/policy/index generation 已编译为评分前硬过滤，trace category 兼容副本不再拥有读取权威；下一切片是 Relation expansion。
+- Retrieval admission 与 Relation expansion 已完成：visibility/kind/policy/index generation 在评分前硬过滤，随后按 turn/correlation/lineage 扩成受 token budget 约束的原子结果；下一切片是 Native Tools V2。
 
 ## 20. Retrieval V2 的具体实现
 
@@ -1241,7 +1242,7 @@ kind_exact = "event.finance.flash"
 
 普通候选的准入规则：
 
-- raw stimulus 必须是 `retrieval_visibility=default` 且 annotation status 为 `accepted_model/accepted_host/accepted_legacy`；
+- raw stimulus 必须是 `retrieval_visibility=default` 且 annotation status 为 `accepted_model/accepted_host`，或由宿主明确设置 `retrieval_policy=always`；`accepted_legacy` 不进入 V2；
 - assistant final 在 accepted turn 中物化为 `retrieval_visibility=default + annotation_status=derived_turn_final`，可以独立评分，也可通过 turn relation expansion 随 stimulus 返回；
 - derived summary 必须是 `annotation_status=derived`，并拥有已验证 lineage 和独立的 derived visibility；
 - `never` 永远不可检索；
@@ -1269,7 +1270,7 @@ BM25/dense 均应有最低有效分数或空查询诊断。当前“零相似度
 
 ### 20.5 Lineage closure
 
-`resolve_lineage_source_ids()` 从所有可见 raw/episodic/semantic 记录计算传递闭包：
+`MemoryStore.resolve_lineage_source_ids()` 已从当前授权 Namespace 的 raw/episodic/semantic 记录计算向下与向上的传递闭包：
 
 ```text
 semantic -> source episodic summaries
@@ -1277,7 +1278,7 @@ episodic summary -> source raw entries/turns
 replacement -> replaced generation
 ```
 
-当一个高层记录已经代表某组 source 时，同一次结果默认排除其全部下层 lineage，避免 summary 和原文重复占用 token。反过来，当调用方明确请求 raw timeline 时，可以排除 derived 层并保留 raw。
+当一个高层记录已经代表某组 source 时，同一次结果默认排除其全部下层 lineage，避免 summary 和原文重复占用 token。visible-source exclusion 同时包含上下游 closure，避免当前已可见 raw 从 summary/semantic 旁路重复返回。反过来，当调用方明确请求 raw timeline 时，可以排除 derived 层并保留 raw。
 
 visible-source 过滤对 raw、summary、semantic 使用同一 closure；不能只过滤 raw source id，却让包含该 source 的 summary 从另一层绕回来。发现断裂/跨 Namespace lineage 时，该 derived record 标记 `index_status=invalid_lineage` 并排除，不猜测修复。
 
@@ -1300,7 +1301,7 @@ assistant action(call_id=X)
 
 并行工具按 turn 中的真实 `seq_no` 展示，但关联按 `correlation_id`，不按结果返回先后猜测。请求完整 turn 时可返回 stimulus + 所有完整 branch + final。
 
-扩窗受独立 `result_token_budget` 限制，并按原子组裁剪：一个 stimulus/final pair 或 call/result branch 要么完整保留，要么整体舍弃；绝不截掉 tool result 只留下 call。若单个原子组本身超预算，返回 stable excerpt/material anchor 和 `truncated=true`，不伪造完整结果。
+扩窗受独立 `result_token_budget` 限制，并按原子组裁剪：一个 stimulus/final pair 或 call/result branch 要么完整保留，要么整体舍弃；绝不截掉 tool result 只留下 call。若单个原子组本身超预算，返回保留完整 `source_ids` 的 stable excerpt/material anchor 和 `truncated=true`，不伪造完整结果。只有注入真实 `TokenCounter` 才执行预算；显式设置预算却缺少 counter 时返回 `unavailable/token_counter_required`，不按字符比例猜 token。
 
 ### 20.7 结构化检索结果
 
@@ -1347,8 +1348,18 @@ SQLite 保存当前 index generation 和每条 entry 的 indexed generation。ki
 - index entry 已物化 visibility、annotation、kind、trust、lineage 和 schema-generation 标量；Chroma collection 名包含 index/kind/visibility schema generation，避免新旧过滤语义混在同一 collection；
 - dense/BM25 的零分候选不会为了填满 top-k 被返回；配置阈值与 rejected counts 已进入结构化结果；
 - Store 回取使用 Namespace-safe raw/summary/semantic lookup。若第三方 index 忽略 hard where 并返回越界 source，整次查询返回 `unavailable/index_filter_unsupported`，不会靠后置删除伪装成功；
-- 当前 match 仍是单记录原子，`lineage` 只携带直接来源；stimulus/final、correlation branch、lineage closure 和 result token budget 属于下一切片 Relation expansion；
+- Retrieval admission 提交点仍以单记录 seed 为输入；实际返回原子组、lineage closure 和 result token budget 已由下节 Relation expansion 接管；
 - 本切片没有切换 Akane 或云端 Bot，用户表现尚无变化。
+
+### 20.10 Relation expansion 实现检查点（2026-07-21）
+
+- verifier 只判断合法 seed；随后 raw seed 按真实 turn/correlation 关系扩成原子组，默认对话只返回 annotation target stimulus + assistant final，不夹带 intermediate/action/observation；
+- 显式 `tool.*` seed 只返回同一 `correlation_id` 下的完整 action/terminal observation branch；未闭合 branch 计入 `incomplete_relation` 并整体拒绝；
+- `event.*` seed 返回事件及其关联 final；关系邻居仍重新检查 Namespace、conversation、trust、visibility、annotation 与 never policy；
+- summary/semantic 使用 Store lineage closure；semantic 命中会压掉其 source summary/raw，断裂、循环或跨 Namespace lineage 会从 index 隔离并计入结构化 diagnostics；
+- `retrieve_for_turn` 的 visible exclusion 已扩为上下游 lineage closure，当前 prompt 已见 raw 不能通过 derived 层绕回；
+- token budget 对序列化后的完整 match 计数。可容纳时保留完整组，剩余预算不足时整体省略；单组自身超预算时只返回显式 truncated anchor，`semantic_text` 不保留未计费副本；
+- 没有 relations 的旧记录不会再做 `seq_no ± N` 推测，只返回自身；本切片仍未切换 Akane 或云端 Bot。
 
 ## 21. 给模型的 Native Tools V2
 
@@ -1667,7 +1678,7 @@ Akane 最终验收必须分别走个人 bot 普通私聊、个人群聊、金融
 3. **Projection ledger（已完成）**：renderer registry、provider adapters、immutable ledger、request audit、strict-prefix tests；
 4. **Compaction V2（已提交：`41d55b4`）**：shared runtime、closed-turn/token planning、atomic summary/semantic commits；
 5. **Retrieval admission（已实现，待本切片提交）**：visibility、kind flags、新 index generation、hard-filter tests；
-6. **Relation expansion**：turn/correlation/lineage closure、structured results；
+6. **Relation expansion（已实现，待本切片提交）**：turn/correlation/lineage closure、structured results、atomic token budget；
 7. **Native tools V2**：policy、精简 schema、dispatcher 与模型决策验收；
 8. **Akane shadow integration**：记录新 turn/projection，不改变用户输出；
 9. **Akane read cutover**：普通对话 -> tools -> event/finance，逐条删除旧权威；

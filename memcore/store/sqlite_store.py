@@ -59,7 +59,7 @@ from ..timeline import (
     TurnStatus,
     resolve_retrieval_visibility,
 )
-from .base import MemoryStore
+from .base import LineageClosure, MemoryStore
 from .migrations import migrate_database, project_legacy_role
 
 _JSON_FIELDS = {
@@ -1836,6 +1836,114 @@ class SQLiteMemoryStore(MemoryStore):
                 if row is not None:
                     return self._row_to_record(row, table)
         return None
+
+    def resolve_lineage_source_ids(
+        self,
+        *,
+        namespace: Namespace,
+        source_ids: tuple[str, ...],
+        cross_conversation: bool = False,
+        include_ancestors: bool = True,
+    ) -> LineageClosure:
+        requested = tuple(dict.fromkeys(str(item or "").strip() for item in source_ids if str(item or "").strip()))
+        if not requested:
+            return LineageClosure(status="resolved", requested_ids=())
+        scope_clause, params = self._scope_clause(
+            namespace,
+            with_conversation=not bool(cross_conversation),
+        )
+        descendants: list[str] = []
+        descendant_seen = set(requested)
+        active: set[str] = set()
+        resolved_children: dict[str, tuple[str, ...]] = {}
+        failure_reason = "lineage_broken_or_cyclic"
+
+        def read_children(source_id: str) -> tuple[str, ...] | None:
+            cached = resolved_children.get(source_id)
+            if cached is not None:
+                return cached
+            for table, id_column, lineage_column in (
+                ("messages", "source_id", ""),
+                ("summaries", "summary_id", "source_ids_json"),
+                ("semantic_summaries", "semantic_id", "source_summary_ids_json"),
+            ):
+                select = lineage_column or id_column
+                row = self._conn.execute(
+                    f"SELECT {select} FROM {table} WHERE {scope_clause} AND {id_column} = ?",
+                    [*params, source_id],
+                ).fetchone()
+                if row is None:
+                    continue
+                children = tuple(self._json_list(row[lineage_column])) if lineage_column else ()
+                resolved_children[source_id] = children
+                return children
+            return None
+
+        def walk_descendants(source_id: str) -> bool:
+            nonlocal failure_reason
+            if source_id in active:
+                return False
+            children = read_children(source_id)
+            if children is None:
+                failure_reason = "lineage_source_missing_or_out_of_scope"
+                return False
+            active.add(source_id)
+            for child in children:
+                if child in active:
+                    return False
+                if child not in descendant_seen:
+                    descendant_seen.add(child)
+                    descendants.append(child)
+                    if not walk_descendants(child):
+                        return False
+            active.remove(source_id)
+            return True
+
+        with self._lock:
+            if any(not walk_descendants(source_id) for source_id in requested):
+                return LineageClosure(
+                    status="invalid",
+                    requested_ids=requested,
+                    reason=failure_reason,
+                )
+
+            parents: dict[str, list[str]] = {}
+            if include_ancestors:
+                summary_rows = self._conn.execute(
+                    f"SELECT summary_id, source_ids_json FROM summaries WHERE {scope_clause}",
+                    params,
+                ).fetchall()
+                semantic_rows = self._conn.execute(
+                    f"SELECT semantic_id, source_summary_ids_json FROM semantic_summaries WHERE {scope_clause}",
+                    params,
+                ).fetchall()
+                for row in summary_rows:
+                    parent = str(row["summary_id"])
+                    for child in self._json_list(row["source_ids_json"]):
+                        parents.setdefault(child, []).append(parent)
+                for row in semantic_rows:
+                    parent = str(row["semantic_id"])
+                    for child in self._json_list(row["source_summary_ids_json"]):
+                        parents.setdefault(child, []).append(parent)
+
+        ancestors: list[str] = []
+        if include_ancestors:
+            ancestor_seen = set(requested)
+            queue = list(requested)
+            while queue:
+                child = queue.pop(0)
+                for parent in parents.get(child, ()):
+                    if parent in ancestor_seen:
+                        continue
+                    ancestor_seen.add(parent)
+                    ancestors.append(parent)
+                    queue.append(parent)
+        return LineageClosure(
+            status="resolved",
+            requested_ids=requested,
+            descendant_ids=tuple(descendants),
+            ancestor_ids=tuple(ancestors),
+        )
 
     def get_turn(self, *, namespace: Namespace, turn_id: str) -> TurnHandle | None:
         normalized = str(turn_id or "").strip()
