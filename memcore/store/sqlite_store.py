@@ -22,6 +22,15 @@ from typing import Any
 
 from ..errors import NamespaceError, SchemaError
 from ..namespace import Namespace
+from ..projection import (
+    ProjectionAudit,
+    ProjectionAuditInput,
+    ProjectionMessage,
+    ProjectionMessageInput,
+    ProjectionStatus,
+    RequestProjectionResult,
+    stable_projection_hash,
+)
 from ..timeline import (
     AnnotationStatus,
     CompletionCommitResult,
@@ -67,6 +76,10 @@ _JSON_FIELDS = {
     "turns": {
         "stimulus_source_ids_json": "stimulus_source_ids",
         "annotation_target_ids_json": "annotation_target_ids",
+    },
+    "prompt_projections": {
+        "payload_json": "payload",
+        "source_ids_json": "source_ids",
     },
 }
 _ENTRY_TYPE = {"messages": "raw", "summaries": "summary", "semantic_summaries": "semantic_summary"}
@@ -460,6 +473,21 @@ class SQLiteMemoryStore(MemoryStore):
                 compatibility_role="assistant",
             )
             final_record = self._add_timeline_entry_locked(namespace=namespace, entry=final_input)
+            final_projection: ProjectionMessage | None = None
+            if completion.final_projection is not None:
+                declared_source_ids = tuple(completion.final_projection.source_ids)
+                if declared_source_ids and declared_source_ids != (final_source_id,):
+                    raise SchemaError("turn_completion_final_projection_source_mismatch")
+                prepared_projection = replace(
+                    completion.final_projection,
+                    source_ids=(final_source_id,),
+                )
+                saved_projections = self._save_turn_projections_locked(
+                    namespace=namespace,
+                    turn_id=completion.turn_id,
+                    projections=[prepared_projection],
+                )
+                final_projection = saved_projections[0]
             self._conn.execute(
                 """
                 UPDATE turns
@@ -478,6 +506,7 @@ class SQLiteMemoryStore(MemoryStore):
                 turn_id=completion.turn_id,
                 final_entry=TimelineEntry.from_record(final_record),
                 updated_targets=tuple(updated_targets),
+                final_projection=final_projection,
             )
 
     def abort_turn(self, *, namespace: Namespace, turn_id: str, reason: str, closed_at: int) -> TurnAbortResult:
@@ -504,6 +533,337 @@ class SQLiteMemoryStore(MemoryStore):
                 (int(closed_at or time.time()), close_reason, normalized),
             )
             return TurnAbortResult(status="aborted", turn_id=normalized, reason=close_reason)
+
+    def save_turn_projections(
+        self,
+        *,
+        namespace: Namespace,
+        turn_id: str,
+        projections: list[ProjectionMessageInput],
+    ) -> tuple[ProjectionMessage, ...]:
+        if any(not isinstance(item, ProjectionMessageInput) for item in projections):
+            raise TypeError("projections must contain ProjectionMessageInput values")
+        with self._lock, self._conn:
+            return self._save_turn_projections_locked(
+                namespace=namespace,
+                turn_id=turn_id,
+                projections=projections,
+            )
+
+    def commit_request_projection(
+        self,
+        *,
+        namespace: Namespace,
+        turn_id: str,
+        projections: list[ProjectionMessageInput],
+        audit: ProjectionAuditInput,
+    ) -> RequestProjectionResult:
+        if not isinstance(audit, ProjectionAuditInput):
+            raise TypeError("audit must be a ProjectionAuditInput")
+        if audit.turn_id != str(turn_id or "").strip():
+            raise SchemaError("projection_audit_turn_mismatch")
+        if any(item.provider_profile != audit.provider_profile for item in projections):
+            raise SchemaError("projection_audit_profile_mismatch")
+
+        with self._lock, self._conn:
+            turn = self._conn.execute("SELECT * FROM turns WHERE turn_id = ?", (audit.turn_id,)).fetchone()
+            if turn is None:
+                raise SchemaError("turn_not_found")
+            self._assert_scope_owner(turn, namespace, id_label=f"turn_id={audit.turn_id!r}")
+            stored = self._save_turn_projections_locked(
+                namespace=namespace,
+                turn_id=audit.turn_id,
+                projections=projections,
+            )
+            media_omitted = audit.media_omitted or any(
+                item.projection_status is ProjectionStatus.MEDIA_OMITTED for item in stored
+            )
+            prepared_audit = replace(
+                audit,
+                media_omitted=media_omitted,
+                created_at=int(audit.created_at or time.time()),
+            )
+            stored_audit = self._save_projection_audit_locked(namespace=namespace, audit=prepared_audit)
+            return RequestProjectionResult(projections=stored, audit=stored_audit)
+
+    def _save_turn_projections_locked(
+        self,
+        *,
+        namespace: Namespace,
+        turn_id: str,
+        projections: list[ProjectionMessageInput],
+    ) -> tuple[ProjectionMessage, ...]:
+        normalized_turn_id = self._normalize_relation_id(turn_id, field="turn_id")
+        if not projections:
+            return ()
+        if any(not isinstance(item, ProjectionMessageInput) for item in projections):
+            raise TypeError("projections must contain ProjectionMessageInput values")
+        if any(not item.source_ids for item in projections):
+            raise SchemaError("projection_source_ids_required")
+        profiles = {item.provider_profile for item in projections}
+        if len(profiles) != 1:
+            raise SchemaError("projection_mixed_provider_profiles")
+
+        turn = self._conn.execute("SELECT * FROM turns WHERE turn_id = ?", (normalized_turn_id,)).fetchone()
+        if turn is not None:
+            self._assert_scope_owner(turn, namespace, id_label=f"turn_id={normalized_turn_id!r}")
+        elif not normalized_turn_id.startswith("legacy."):
+            raise SchemaError("turn_not_found")
+
+        source_rows = self._projection_source_rows_locked(
+            namespace=namespace,
+            turn_id=normalized_turn_id,
+            projections=projections,
+            legacy_turn=turn is None,
+        )
+        if not source_rows:
+            raise SchemaError("projection_source_ids_required")
+
+        provider_profile = next(iter(profiles))
+        existing_rows = self._conn.execute(
+            """
+            SELECT * FROM prompt_projections
+            WHERE tenant_id = ? AND user_id = ? AND domain_id = ? AND conversation_id = ?
+              AND turn_id = ? AND provider_profile = ?
+            ORDER BY projection_index
+            """,
+            (
+                namespace.tenant_id or "",
+                namespace.user_id,
+                namespace.domain_id or "",
+                namespace.conversation_id or "",
+                normalized_turn_id,
+                provider_profile,
+            ),
+        ).fetchall()
+        existing_by_index = {int(row["projection_index"]): row for row in existing_rows}
+        if sorted(existing_by_index) != list(range(len(existing_by_index))):
+            raise SchemaError("projection_index_sequence_corrupt")
+        source_projection_index: dict[str, int] = {}
+        covered_source_ids: list[str] = []
+        for row in existing_rows:
+            record = self._row_to_record(row, "prompt_projections")
+            for source_id in record.get("source_ids") or ():
+                normalized_source_id = str(source_id)
+                prior = source_projection_index.get(normalized_source_id)
+                if prior is not None and prior != int(row["projection_index"]):
+                    raise SchemaError("projection_source_already_mapped")
+                source_projection_index[normalized_source_id] = int(row["projection_index"])
+                covered_source_ids.append(normalized_source_id)
+        if turn is None:
+            expected_source_ids = tuple(
+                dict.fromkeys(source_id for item in projections for source_id in item.source_ids)
+            )
+        else:
+            expected_source_ids = tuple(
+                str(row["source_id"])
+                for row in self._conn.execute(
+                    """
+                    SELECT source_id FROM messages
+                    WHERE turn_id = ? AND prompt_visible = 1
+                    ORDER BY seq_no
+                    """,
+                    (normalized_turn_id,),
+                ).fetchall()
+            )
+        if tuple(covered_source_ids) != expected_source_ids[: len(covered_source_ids)]:
+            raise SchemaError("projection_history_not_append_only")
+        append_offset = len(covered_source_ids)
+        next_index = max(existing_by_index, default=-1) + 1
+        resolved_indices: set[int] = set()
+        stored: list[ProjectionMessage] = []
+        now = int(time.time())
+
+        for item in projections:
+            projection_index = item.projection_index if item.projection_index >= 0 else next_index
+            if projection_index in resolved_indices:
+                raise SchemaError("projection_duplicate_index")
+            resolved_indices.add(projection_index)
+            source_ids = tuple(item.source_ids)
+            if any(
+                source_id in source_projection_index and source_projection_index[source_id] != projection_index
+                for source_id in source_ids
+            ):
+                raise SchemaError("projection_source_already_mapped")
+            payload = dict(item.payload)
+            payload_hash = stable_projection_hash(payload)
+            existing = existing_by_index.get(projection_index)
+            if existing is not None:
+                existing_record = self._row_to_record(existing, "prompt_projections")
+                if (
+                    str(existing["payload_hash"] or "") != payload_hash
+                    or tuple(existing_record.get("source_ids") or ()) != source_ids
+                    or str(existing["projection_status"] or "") != item.projection_status.value
+                    or int(existing["projection_version"] or 0) != item.projection_version
+                ):
+                    raise SchemaError("projection_immutable_conflict")
+                stored.append(ProjectionMessage.from_record(existing_record))
+                continue
+
+            if projection_index != next_index:
+                raise SchemaError("projection_index_not_append_only")
+            expected_segment = expected_source_ids[append_offset : append_offset + len(source_ids)]
+            if source_ids != expected_segment:
+                raise SchemaError("projection_source_not_next_append")
+            append_offset += len(source_ids)
+            next_index += 1
+
+            for source_id in source_ids:
+                source_projection_index[source_id] = projection_index
+
+            projection_id = stable_projection_hash(
+                {
+                    "namespace": [
+                        namespace.tenant_id or "",
+                        namespace.user_id,
+                        namespace.domain_id or "",
+                        namespace.conversation_id or "",
+                    ],
+                    "turn_id": normalized_turn_id,
+                    "provider_profile": provider_profile,
+                    "projection_index": projection_index,
+                }
+            )
+            self._conn.execute(
+                """
+                INSERT INTO prompt_projections(
+                    projection_id, tenant_id, user_id, domain_id, conversation_id,
+                    turn_id, projection_index, provider_profile, payload_json,
+                    source_ids_json, payload_hash, projection_status,
+                    projection_version, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    projection_id,
+                    namespace.tenant_id or "",
+                    namespace.user_id,
+                    namespace.domain_id or "",
+                    namespace.conversation_id or "",
+                    normalized_turn_id,
+                    projection_index,
+                    provider_profile,
+                    _json_dumps(payload),
+                    _json_dumps(list(source_ids)),
+                    payload_hash,
+                    item.projection_status.value,
+                    item.projection_version,
+                    now,
+                ),
+            )
+            row = self._conn.execute(
+                "SELECT * FROM prompt_projections WHERE projection_id = ?", (projection_id,)
+            ).fetchone()
+            if row is None:
+                raise SchemaError("projection_insert_failed")
+            stored.append(ProjectionMessage.from_record(self._row_to_record(row, "prompt_projections")))
+        return tuple(stored)
+
+    def _projection_source_rows_locked(
+        self,
+        *,
+        namespace: Namespace,
+        turn_id: str,
+        projections: list[ProjectionMessageInput],
+        legacy_turn: bool,
+    ) -> dict[str, sqlite3.Row]:
+        source_ids = tuple(dict.fromkeys(source_id for item in projections for source_id in item.source_ids))
+        if not source_ids:
+            return {}
+        placeholders = ",".join("?" for _ in source_ids)
+        rows = self._conn.execute(
+            f"SELECT * FROM messages WHERE source_id IN ({placeholders})", list(source_ids)
+        ).fetchall()
+        by_source_id = {str(row["source_id"]): row for row in rows}
+        if set(by_source_id) != set(source_ids):
+            raise SchemaError("projection_source_not_found")
+        for source_id, row in by_source_id.items():
+            self._assert_scope_owner(row, namespace, id_label=f"source_id={source_id!r}")
+            source_turn_id = str(row["turn_id"] or "")
+            if legacy_turn:
+                if source_turn_id:
+                    raise SchemaError("projection_source_turn_mismatch")
+            elif source_turn_id != turn_id:
+                raise SchemaError("projection_source_turn_mismatch")
+        return by_source_id
+
+    def _save_projection_audit_locked(
+        self,
+        *,
+        namespace: Namespace,
+        audit: ProjectionAuditInput,
+    ) -> ProjectionAudit:
+        key = (
+            namespace.tenant_id or "",
+            namespace.user_id,
+            namespace.domain_id or "",
+            namespace.conversation_id or "",
+            audit.turn_id,
+            audit.attempt,
+            audit.provider_profile,
+        )
+        existing = self._conn.execute(
+            """
+            SELECT * FROM projection_audits
+            WHERE tenant_id = ? AND user_id = ? AND domain_id = ? AND conversation_id = ?
+              AND turn_id = ? AND attempt = ? AND provider_profile = ?
+            """,
+            key,
+        ).fetchone()
+        comparable = (
+            audit.model_route_hash,
+            audit.system_prefix_hash,
+            audit.tool_schema_hash,
+            audit.history_hash,
+            audit.full_prefix_hash,
+            audit.projection_version,
+            int(audit.media_omitted),
+        )
+        if existing is not None:
+            existing_comparable = (
+                str(existing["model_route_hash"] or ""),
+                str(existing["system_prefix_hash"] or ""),
+                str(existing["tool_schema_hash"] or ""),
+                str(existing["history_hash"] or ""),
+                str(existing["full_prefix_hash"] or ""),
+                int(existing["projection_version"] or 0),
+                int(existing["media_omitted"] or 0),
+            )
+            if existing_comparable != comparable:
+                raise SchemaError("projection_audit_immutable_conflict")
+            return ProjectionAudit.from_record(dict(existing))
+
+        self._conn.execute(
+            """
+            INSERT INTO projection_audits(
+                tenant_id, user_id, domain_id, conversation_id, turn_id, attempt,
+                provider_profile, model_route_hash, system_prefix_hash,
+                tool_schema_hash, history_hash, full_prefix_hash,
+                projection_version, media_omitted, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                *key,
+                audit.model_route_hash,
+                audit.system_prefix_hash,
+                audit.tool_schema_hash,
+                audit.history_hash,
+                audit.full_prefix_hash,
+                audit.projection_version,
+                int(audit.media_omitted),
+                int(audit.created_at or time.time()),
+            ),
+        )
+        row = self._conn.execute(
+            """
+            SELECT * FROM projection_audits
+            WHERE tenant_id = ? AND user_id = ? AND domain_id = ? AND conversation_id = ?
+              AND turn_id = ? AND attempt = ? AND provider_profile = ?
+            """,
+            key,
+        ).fetchone()
+        if row is None:
+            raise SchemaError("projection_audit_insert_failed")
+        return ProjectionAudit.from_record(dict(row))
 
     def _add_timeline_entry_locked(self, *, namespace: Namespace, entry: TimelineEntryInput) -> dict[str, Any]:
         entry_namespace = self._entry_namespace(namespace=namespace, actor=entry.actor)
@@ -1095,6 +1455,84 @@ class SQLiteMemoryStore(MemoryStore):
                 [*params, normalized_turn, normalized_correlation],
             ).fetchall()
         return [TimelineEntry.from_record(self._row_to_record(row, "messages")) for row in rows]
+
+    def list_prompt_visible_entries(self, *, namespace: Namespace) -> list[TimelineEntry]:
+        scope_clause, params = self._scope_clause(namespace, with_conversation=True)
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT * FROM messages
+                WHERE {scope_clause} AND is_summarized = 0 AND prompt_visible = 1
+                ORDER BY seq_no
+                """,
+                params,
+            ).fetchall()
+        return [TimelineEntry.from_record(self._row_to_record(row, "messages")) for row in rows]
+
+    def get_turn_projections(
+        self,
+        *,
+        namespace: Namespace,
+        turn_id: str,
+        provider_profile: str,
+    ) -> list[ProjectionMessage]:
+        normalized_turn = str(turn_id or "").strip()
+        normalized_profile = str(provider_profile or "").strip().lower()
+        if not normalized_turn or not normalized_profile:
+            return []
+        scope_clause, params = self._scope_clause(namespace, with_conversation=True)
+        with self._lock:
+            owner = self._relation_owner_row(turn_id=normalized_turn)
+            if owner is not None:
+                self._assert_scope_owner(owner, namespace, id_label=f"turn_id={normalized_turn!r}")
+            rows = self._conn.execute(
+                f"""
+                SELECT * FROM prompt_projections
+                WHERE {scope_clause} AND turn_id = ? AND provider_profile = ?
+                ORDER BY projection_index
+                """,
+                [*params, normalized_turn, normalized_profile],
+            ).fetchall()
+        return [ProjectionMessage.from_record(self._row_to_record(row, "prompt_projections")) for row in rows]
+
+    def list_projection_audits(
+        self,
+        *,
+        namespace: Namespace,
+        turn_id: str = "",
+        provider_profile: str = "",
+    ) -> list[ProjectionAudit]:
+        normalized_turn = str(turn_id or "").strip()
+        normalized_profile = str(provider_profile or "").strip().lower()
+        scope_clause, params = self._scope_clause(namespace, with_conversation=True)
+        clause = scope_clause
+        query_params = list(params)
+        with self._lock:
+            if normalized_turn:
+                owner = self._relation_owner_row(turn_id=normalized_turn)
+                if owner is not None:
+                    self._assert_scope_owner(owner, namespace, id_label=f"turn_id={normalized_turn!r}")
+                clause += " AND turn_id = ?"
+                query_params.append(normalized_turn)
+            if normalized_profile:
+                clause += " AND provider_profile = ?"
+                query_params.append(normalized_profile)
+            rows = self._conn.execute(
+                f"SELECT * FROM projection_audits WHERE {clause} ORDER BY created_at, attempt",
+                query_params,
+            ).fetchall()
+        return [ProjectionAudit.from_record(dict(row)) for row in rows]
+
+    def get_conversation_generations(self, *, namespace: Namespace) -> tuple[int, int]:
+        scope_clause, params = self._scope_clause(namespace, with_conversation=True)
+        with self._lock:
+            row = self._conn.execute(
+                f"SELECT compaction_generation, projection_generation FROM conversation_states WHERE {scope_clause}",
+                params,
+            ).fetchone()
+        if row is None:
+            return (0, 0)
+        return (int(row["compaction_generation"] or 0), int(row["projection_generation"] or 0))
 
     def _relation_owner_row(self, *, turn_id: str) -> sqlite3.Row | None:
         turn = self._conn.execute("SELECT * FROM turns WHERE turn_id = ?", (turn_id,)).fetchone()

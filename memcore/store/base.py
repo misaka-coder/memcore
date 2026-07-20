@@ -13,6 +13,13 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 from ..namespace import Namespace
+from ..projection import (
+    ProjectionAudit,
+    ProjectionAuditInput,
+    ProjectionMessage,
+    ProjectionMessageInput,
+    RequestProjectionResult,
+)
 from ..timeline import (
     CompletionCommitResult,
     TimelineEntry,
@@ -43,6 +50,25 @@ class MemoryStore(ABC):
         raise NotImplementedError
 
     def abort_turn(self, *, namespace: Namespace, turn_id: str, reason: str, closed_at: int) -> TurnAbortResult:
+        raise NotImplementedError
+
+    def save_turn_projections(
+        self,
+        *,
+        namespace: Namespace,
+        turn_id: str,
+        projections: list[ProjectionMessageInput],
+    ) -> tuple[ProjectionMessage, ...]:
+        raise NotImplementedError
+
+    def commit_request_projection(
+        self,
+        *,
+        namespace: Namespace,
+        turn_id: str,
+        projections: list[ProjectionMessageInput],
+        audit: ProjectionAuditInput,
+    ) -> RequestProjectionResult:
         raise NotImplementedError
 
     @abstractmethod
@@ -107,6 +133,32 @@ class MemoryStore(ABC):
         self, *, namespace: Namespace, turn_id: str, correlation_id: str
     ) -> list[TimelineEntry]:
         """Read one action/observation branch under an owned turn."""
+        raise NotImplementedError
+
+    def list_prompt_visible_entries(self, *, namespace: Namespace) -> list[TimelineEntry]:
+        """Read the current conversation's unsummarized provider-visible timeline."""
+        raise NotImplementedError
+
+    def get_turn_projections(
+        self,
+        *,
+        namespace: Namespace,
+        turn_id: str,
+        provider_profile: str,
+    ) -> list[ProjectionMessage]:
+        raise NotImplementedError
+
+    def list_projection_audits(
+        self,
+        *,
+        namespace: Namespace,
+        turn_id: str = "",
+        provider_profile: str = "",
+    ) -> list[ProjectionAudit]:
+        raise NotImplementedError
+
+    def get_conversation_generations(self, *, namespace: Namespace) -> tuple[int, int]:
+        """Return (compaction_generation, projection_generation)."""
         raise NotImplementedError
 
     @abstractmethod

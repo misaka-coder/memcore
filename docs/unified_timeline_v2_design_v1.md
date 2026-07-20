@@ -1,14 +1,16 @@
 # MemCore Unified Timeline V2 设计草案
 
-状态: implementation in progress；Schema foundation 与 Turn lifecycle 已实现，Projection ledger 待实现。
+状态: implementation in progress；Schema foundation、Turn lifecycle 与 Projection ledger 已实现，Compaction V2 待实现。
 
 当前实现检查点（2026-07-20）：
 
-- Slice 1 `Schema foundation` 已提交：正式 migration runner、V2 物理列/表、namespace-safe relation reads 与 V1 trace compatibility window；
-- Slice 2 `Turn lifecycle` 已实现：`begin_turn -> append_entry -> complete_turn / abort_turn`、显式 annotation target、并行 action/observation correlation、原子终态提交、visibility 物化与索引 outbox；
+- Slice 1 `Schema foundation` 已提交（`4b82e2d`）：正式 migration runner、V2 物理列/表、namespace-safe relation reads 与 V1 trace compatibility window；
+- Slice 2 `Turn lifecycle` 已提交（`24f1c1b`）：`begin_turn -> append_entry -> complete_turn / abort_turn`、显式 annotation target、并行 action/observation correlation、原子终态提交、visibility 物化与索引 outbox；
+- Slice 3 `Projection ledger` 已实现：versioned renderer registry、canonical/OpenAI/Anthropic adapter、不可变 projection rows、请求 hash audit、final projection 原子提交和 strict-prefix 验收；
 - `kind` 仍是开放 namespaced 字符串；关系完整性只约束通用 action/observation，不枚举工具、事件、Skill 或 Bot；
 - accepted empty annotation 与 missing/invalid annotation 已分开，只有 accepted target 自动进入 default retrieval；
-- 当前 final 暂存真实 `provider_output_raw`，尚未生成或持久化 provider-specific projection；Projection Ledger、renderer registry、strict-prefix hash 属于下一切片；
+- final 继续保留真实 `provider_output_raw`；宿主提供的真实 final projection 会与 annotation/final/turn close 同事务保存，没有提供时可由标准 adapter 产生显式 `canonical_fallback`；
+- 旧 Compaction 生成的 episode/semantic summary 尚未进入新 projection，因此 `build_context_projection()` 检测到旧 summary 时返回 `projection_compaction_v2_required`，不会静默丢掉摘要后假装上下文完整；
 - 本检查点没有切换 Akane，也没有改变 QQ、桌宠、金融或个人 Bot 的用户表现。旧 `record_*` API 暂时保持原行为，后续回填时只能变成薄适配或删除。
 
 本文定义 MemCore 从“通用三层记忆内核”演进为“统一时间线、稳定上下文投影与记忆读取内核”的目标形态。它不改变 MemCore 与宿主的基本边界：宿主仍负责渠道、权限、工具执行、文件本体、模型选择和最终请求；MemCore 负责把模型实际经历的输入、输出、工具与事件可靠地记录、投影、检索和压缩。
@@ -999,6 +1001,37 @@ Prompt 文案从“本轮用户原始消息”改为“本轮由宿主指定的�
 
 这是一条明确安全边界，不用本地路径或 base64 换取表面上的 100% 前缀一致。
 
+### 18.7 Slice 3 当前实现
+
+已新增 `memcore/projection.py`，并由 `MemorySystem` 暴露：
+
+```python
+projection = mem.build_context_projection(provider_profile="openai_chat")
+
+recorded = mem.record_request_projection(
+    turn_id=turn.turn_id,
+    provider_profile="openai_chat",
+    turn_messages=current_turn_actual_messages,
+    history_messages=actual_history_messages,
+    attempt=1,
+    model_route=model_route,
+    system_prefix=system_prompt,
+    tool_schema=tools,
+)
+
+mem.complete_turn(
+    ...,
+    provider_profile="openai_chat",
+    provider_projection=actual_final_assistant_message,
+)
+```
+
+`record_request_projection()` 的 `turn_messages` 必须是当前 turn 到本次请求为止的完整、带 source attribution 的 provider messages，而不是只传本次新增长度。Store 逐 profile 强制每个 prompt-visible source 只映射一次、projection index 连续、source coverage 只能按时间线前缀增长；任何覆盖旧 row、跳号或只写 final 的请求都在事务内拒绝。
+
+`system_prefix`、`tool_schema` 与 `model_route` 只参与 hash audit，不复制进数据库。source-attributed `system/developer` message 禁止持久化；base64/原生媒体、本地绝对路径与密钥形态会被稳定 omission marker 替代并产生 `media_omitted/skipped_unsafe` 状态。不同 provider profile 是不同 cache family，OpenAI tool calls 和 Anthropic tool use/result 不互相冒充。
+
+本切片只冻结未摘要 V2 raw timeline 与安全 legacy-unlinked 单条记录。检测到旧 episode/semantic summary 时结构化返回 `projection_compaction_v2_required`；摘要投影、token 预算与 compaction generation 的真正切换属于 Slice 4。本切片仍没有切换 Akane 用户链路。
+
 ## 19. Compaction V2 与共享 Runtime
 
 ### 19.1 压缩原子从 message 改为 closed turn
@@ -1601,9 +1634,9 @@ Akane 最终验收必须分别走个人 bot 普通私聊、个人群聊、金融
 每个切片只做一个可验证边界，并在通过后做聚焦 commit：
 
 1. **Schema foundation（已完成）**：migration runner、V2 columns、turn/projection tables、namespace-safe reads；
-2. **Turn lifecycle（已实现，待本切片提交）**：begin/append/complete/abort、annotation status、并行 correlation 与原子终态，尚不切 Akane；
-3. **Projection ledger（待实现）**：renderer registry、provider adapters、strict-prefix tests；
-4. **Compaction V2**：shared runtime、closed-turn/token planning、atomic summary commits；
+2. **Turn lifecycle（已完成）**：begin/append/complete/abort、annotation status、并行 correlation 与原子终态，尚不切 Akane；
+3. **Projection ledger（已实现，待本切片提交）**：renderer registry、provider adapters、immutable ledger、request audit、strict-prefix tests；
+4. **Compaction V2（待实现）**：shared runtime、closed-turn/token planning、atomic summary commits；
 5. **Retrieval admission**：visibility、kind flags、新 index generation、hard-filter tests；
 6. **Relation expansion**：turn/correlation/lineage closure、structured results；
 7. **Native tools V2**：policy、精简 schema、dispatcher 与模型决策验收；

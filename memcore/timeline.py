@@ -6,10 +6,13 @@ import json
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from .errors import SchemaError
 from .namespace import Actor, Namespace
+
+if TYPE_CHECKING:
+    from .projection import ProjectionMessage, ProjectionMessageInput
 
 _KIND_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)+$")
 _ID_PATTERN = re.compile(r"^[^\x00-\x1f\x7f]{1,256}$")
@@ -385,6 +388,7 @@ class TurnCompletion:
     kind: str = "message.assistant"
     payload: Mapping[str, Any] = field(default_factory=dict)
     trace_metadata: Mapping[str, Any] = field(default_factory=dict)
+    final_projection: ProjectionMessageInput | None = None
     date_label: str = ""
     time_of_day: str = ""
 
@@ -415,6 +419,13 @@ class TurnCompletion:
             "trace_metadata",
             _json_object(self.trace_metadata, "turn_completion_invalid_trace_metadata"),
         )
+        if self.final_projection is not None:
+            from .projection import ProjectionMessageInput
+
+            if not isinstance(self.final_projection, ProjectionMessageInput):
+                raise TypeError("final_projection must be a ProjectionMessageInput or None")
+            if str(self.final_projection.payload.get("role") or "").strip().lower() != "assistant":
+                raise SchemaError("turn_completion_final_projection_must_be_assistant")
         object.__setattr__(self, "close_reason", str(self.close_reason or "completed").strip()[:160])
 
 
@@ -425,6 +436,7 @@ class CompletionCommitResult:
     final_entry: TimelineEntry | None = None
     updated_targets: tuple[TimelineEntry, ...] = ()
     pending_correlations: tuple[str, ...] = ()
+    final_projection: ProjectionMessage | None = None
     reason: str = ""
 
     @property

@@ -27,6 +27,22 @@ from .index.memory_index import InMemoryVectorIndex
 from .llm.base import LLMClient
 from .namespace import Actor, Namespace
 from .prompts import PromptOverrides
+from .projection import (
+    ContextProjection,
+    ProjectionAdapter,
+    ProjectionMessage,
+    ProjectionMessageInput,
+    ProjectionStatus,
+    RendererRegistry,
+    RequestProjectionResult,
+    build_entry_projection_hashes,
+    build_projection_audit_input,
+    canonical_json_bytes,
+    default_renderer_registry,
+    normalize_provider_profile,
+    sanitize_projection_payload,
+    stable_projection_hash,
+)
 from .retrieval import ReadPipeline
 from .schema import TRACE_CATEGORIES, coerce_memory_metadata
 from .store.base import MemoryStore
@@ -65,6 +81,7 @@ class MemorySystem:
         enable_flavor: bool | None = None,
         persona_text: str = "",
         prompt_overrides: PromptOverrides | None = None,
+        renderer_registry: RendererRegistry | None = None,
     ) -> None:
         if not isinstance(llm, LLMClient):
             raise TypeError("llm must be an LLMClient instance (inject your model adapter)")
@@ -93,6 +110,13 @@ class MemorySystem:
         self.persona_text = str(persona_text or "")
         # 提示词治理:persona_text 便捷参数填进 overrides 的对应插槽(显式 overrides 优先)。
         self.prompt_overrides = self._resolve_overrides(prompt_overrides, self.persona_text)
+        if renderer_registry is not None and not isinstance(renderer_registry, RendererRegistry):
+            raise TypeError("renderer_registry must be a RendererRegistry or None")
+        self.renderer_registry = renderer_registry or default_renderer_registry()
+        self._projection = ProjectionAdapter(
+            renderer_registry=self.renderer_registry,
+            timezone=self.timezone,
+        )
 
         # 依赖装配:缺省自带 SQLite + 内存索引;embedding 必须显式(生产不静默退 hashed,见 §13.1)。
         self.embedding = self._resolve_embedding(embedding)
@@ -159,6 +183,7 @@ class MemorySystem:
         for entry in stimuli:
             if not isinstance(entry, TimelineEntryInput):
                 raise TypeError("stimuli must contain TimelineEntryInput values")
+            entry = self.renderer_registry.bind_input(entry)
             timestamp = int(entry.timestamp or now)
             prepared.append(
                 replace(
@@ -192,6 +217,7 @@ class MemorySystem:
 
         if not isinstance(entry, TimelineEntryInput):
             raise TypeError("entry must be a TimelineEntryInput")
+        entry = self.renderer_registry.bind_input(entry)
         resolved_turn_id = str(turn_id or entry.turn_id or "").strip()
         if not resolved_turn_id:
             raise SchemaError("timeline_entry_turn_id_required")
@@ -223,6 +249,8 @@ class MemorySystem:
         close_reason: str = "completed",
         payload: dict[str, Any] | None = None,
         trace_metadata: dict[str, Any] | None = None,
+        provider_profile: str = "",
+        provider_projection: ProjectionMessageInput | dict[str, Any] | None = None,
     ) -> CompletionCommitResult:
         """Atomically commit final speech, target annotations, visibility, and turn close."""
 
@@ -264,16 +292,45 @@ class MemorySystem:
             resolved_annotations = tuple(self._coerce_memory_annotation(annotation) for annotation in annotations)
 
         completed_at = int(timestamp or time.time())
+        resolved_source_id = str(source_id or "").strip()
+        resolved_final_projection: ProjectionMessageInput | None = None
+        if handle.status is TurnStatus.OPEN:
+            resolved_source_id = resolved_source_id or uuid.uuid4().hex
+            if isinstance(provider_projection, ProjectionMessageInput):
+                if (
+                    provider_profile
+                    and normalize_provider_profile(provider_profile) != provider_projection.provider_profile
+                ):
+                    raise SchemaError("turn_completion_projection_profile_mismatch")
+                resolved_final_projection = provider_projection
+            elif isinstance(provider_projection, dict):
+                if not provider_profile:
+                    raise SchemaError("turn_completion_projection_profile_required")
+                resolved_final_projection = ProjectionMessageInput(
+                    provider_profile=provider_profile,
+                    payload=provider_projection,
+                    source_ids=(resolved_source_id,),
+                )
+            elif provider_projection is not None:
+                raise TypeError("provider_projection must be a ProjectionMessageInput, dict, or None")
+            elif provider_profile:
+                raise SchemaError("turn_completion_projection_payload_required")
+            if resolved_final_projection is not None and not resolved_final_projection.source_ids:
+                resolved_final_projection = replace(
+                    resolved_final_projection,
+                    source_ids=(resolved_source_id,),
+                )
         completion = TurnCompletion(
             turn_id=normalized_turn_id,
             semantic_text=semantic_text,
             provider_output_raw=provider_output_raw,
             annotations=resolved_annotations,
             timestamp=completed_at,
-            source_id=source_id,
+            source_id=resolved_source_id,
             close_reason=close_reason,
             payload=dict(payload or {}),
             trace_metadata=dict(trace_metadata or {}),
+            final_projection=resolved_final_projection,
             date_label=timestamp_to_date_label(completed_at, self.timezone),
             time_of_day=infer_time_of_day(completed_at, self.timezone),
         )
@@ -292,6 +349,153 @@ class MemorySystem:
                 turn_id=turn_id,
                 reason=reason,
                 closed_at=int(closed_at or time.time()),
+            )
+        except NotImplementedError as exc:
+            raise SchemaError("store_timeline_v2_unsupported") from exc
+
+    def build_context_projection(self, *, provider_profile: str) -> ContextProjection:
+        """Build and freeze this conversation's provider-visible append-only history."""
+
+        profile = normalize_provider_profile(provider_profile)
+        try:
+            legacy_episodic = self.store.get_visible_episodic_summaries(
+                namespace=self.namespace,
+                limit=1,
+                cross_conversation=False,
+            )
+            legacy_semantic = self.store.get_recent_semantic_summaries(
+                namespace=self.namespace,
+                limit=1,
+                cross_conversation=False,
+            )
+        except NotImplementedError as exc:
+            raise SchemaError("store_timeline_v2_unsupported") from exc
+        if legacy_episodic or legacy_semantic:
+            raise SchemaError("projection_compaction_v2_required")
+        try:
+            entries = self.store.list_prompt_visible_entries(namespace=self.namespace)
+        except NotImplementedError as exc:
+            raise SchemaError("store_timeline_v2_unsupported") from exc
+
+        grouped: dict[str, list[TimelineEntry]] = {}
+        for entry in entries:
+            group_id = entry.turn_id or f"legacy.{stable_projection_hash({'source_id': entry.source_id})}"
+            grouped.setdefault(group_id, []).append(entry)
+
+        messages: list[ProjectionMessage] = []
+        for turn_id, turn_entries in grouped.items():
+            try:
+                saved = self.store.get_turn_projections(
+                    namespace=self.namespace,
+                    turn_id=turn_id,
+                    provider_profile=profile,
+                )
+            except NotImplementedError as exc:
+                raise SchemaError("store_timeline_v2_unsupported") from exc
+            covered = tuple(source_id for message in saved for source_id in message.source_ids)
+            expected = tuple(entry.source_id for entry in turn_entries)
+            if covered != expected[: len(covered)]:
+                raise SchemaError("projection_history_not_append_only")
+            remaining = turn_entries[len(covered) :]
+            if remaining:
+                start_index = max((message.projection_index for message in saved), default=-1) + 1
+                generated = list(
+                    self._projection.project_entries(
+                        remaining,
+                        provider_profile=profile,
+                        start_index=start_index,
+                    )
+                )
+                try:
+                    self.store.save_turn_projections(
+                        namespace=self.namespace,
+                        turn_id=turn_id,
+                        projections=generated,
+                    )
+                    saved = self.store.get_turn_projections(
+                        namespace=self.namespace,
+                        turn_id=turn_id,
+                        provider_profile=profile,
+                    )
+                except NotImplementedError as exc:
+                    raise SchemaError("store_timeline_v2_unsupported") from exc
+            messages.extend(saved)
+
+        try:
+            compaction_generation, projection_generation = self.store.get_conversation_generations(
+                namespace=self.namespace
+            )
+        except NotImplementedError as exc:
+            raise SchemaError("store_timeline_v2_unsupported") from exc
+        return ContextProjection(
+            provider_profile=profile,
+            messages=tuple(messages),
+            projection_version=max((message.projection_version for message in messages), default=1),
+            stable_prefix_hash=stable_projection_hash([message.payload for message in messages]),
+            entry_projection_hashes=build_entry_projection_hashes(messages),
+            compaction_generation=compaction_generation,
+            projection_generation=projection_generation,
+        )
+
+    def record_request_projection(
+        self,
+        *,
+        turn_id: str,
+        provider_profile: str,
+        turn_messages: list[ProjectionMessageInput],
+        history_messages: list[dict[str, Any]],
+        attempt: int,
+        model_route: Any = "",
+        system_prefix: Any = "",
+        tool_schema: Any = (),
+        created_at: int | None = None,
+    ) -> RequestProjectionResult:
+        """Atomically freeze current-turn messages and hash the actual request prefix."""
+
+        profile = normalize_provider_profile(provider_profile)
+        if not turn_messages:
+            raise SchemaError("projection_turn_messages_required")
+        prepared: list[ProjectionMessageInput] = []
+        for index, message in enumerate(turn_messages):
+            if not isinstance(message, ProjectionMessageInput):
+                raise TypeError("turn_messages must contain ProjectionMessageInput values")
+            if message.provider_profile != profile:
+                raise SchemaError("projection_audit_profile_mismatch")
+            if not message.source_ids:
+                raise SchemaError("projection_source_ids_required")
+            prepared.append(
+                replace(message, projection_index=index if message.projection_index < 0 else message.projection_index)
+            )
+
+        if len(history_messages) < len(prepared):
+            raise SchemaError("projection_actual_history_missing_turn_suffix")
+        actual_tail = history_messages[-len(prepared) :] if prepared else []
+        for actual, declared in zip(actual_tail, prepared):
+            safe_actual, _ = sanitize_projection_payload(actual)
+            if canonical_json_bytes(safe_actual) != canonical_json_bytes(declared.payload):
+                raise SchemaError("projection_actual_history_mismatch")
+        media_omitted = any(
+            message.projection_status is ProjectionStatus.MEDIA_OMITTED
+            or b"media omitted from persistent history" in canonical_json_bytes(message.payload)
+            for message in prepared
+        )
+        audit = build_projection_audit_input(
+            turn_id=turn_id,
+            attempt=attempt,
+            provider_profile=profile,
+            model_route=model_route,
+            system_prefix=system_prefix,
+            tool_schema=tool_schema,
+            history_messages=history_messages,
+            media_omitted=media_omitted,
+            created_at=int(created_at or time.time()),
+        )
+        try:
+            return self.store.commit_request_projection(
+                namespace=self.namespace,
+                turn_id=turn_id,
+                projections=prepared,
+                audit=audit,
             )
         except NotImplementedError as exc:
             raise SchemaError("store_timeline_v2_unsupported") from exc

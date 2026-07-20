@@ -423,6 +423,9 @@ _REQUIRED_COLUMNS = {
             "payload_json",
             "source_ids_json",
             "payload_hash",
+            "projection_status",
+            "projection_version",
+            "created_at",
         }
     ),
     "projection_audits": frozenset(
@@ -434,8 +437,14 @@ _REQUIRED_COLUMNS = {
             "turn_id",
             "attempt",
             "provider_profile",
+            "model_route_hash",
+            "system_prefix_hash",
+            "tool_schema_hash",
             "history_hash",
             "full_prefix_hash",
+            "projection_version",
+            "media_omitted",
+            "created_at",
         }
     ),
 }
