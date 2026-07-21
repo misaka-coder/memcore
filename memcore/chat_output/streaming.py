@@ -91,7 +91,14 @@ class StreamingSpeechParser:
             max_segments=self.max_segments,
         )
         if result.status == "parsed":
-            events.append({"type": "metadata_ready", "memory_metadata": dict(result.memory_metadata)})
+            events.append(
+                {
+                    "type": "metadata_ready",
+                    "memory_metadata": dict(result.memory_metadata),
+                    "metadata_status": result.metadata_status,
+                    "metadata_present": result.metadata_present,
+                }
+            )
         events.append({"type": "final", "payload": result.to_dict()})
         return events
 

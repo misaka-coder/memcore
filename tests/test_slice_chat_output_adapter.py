@@ -50,6 +50,8 @@ class ChatOutputParser(unittest.TestCase):
         )
         self.assertTrue(result.ok)
         self.assertEqual(result.status, "parsed")
+        self.assertEqual(result.metadata_status, "accepted")
+        self.assertTrue(result.metadata_present)
         self.assertEqual(result.speech, "哈啊？！真的吗。")
         self.assertEqual(result.segments, ["哈啊？！", "真的吗。"])
         self.assertEqual(result.presentation, {"emotion": "happy"})
@@ -76,6 +78,22 @@ class ChatOutputParser(unittest.TestCase):
         self.assertEqual(result.status, "invalid_contract")
         self.assertEqual(result.reason, "speech_required")
 
+    def test_missing_metadata_keeps_speech_without_claiming_model_acceptance(self) -> None:
+        result = parse_chat_output({"speech": "照常回复。"}, mode="memcore_json")
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.speech, "照常回复。")
+        self.assertEqual(result.metadata_status, "missing")
+        self.assertFalse(result.metadata_present)
+
+    def test_wrong_metadata_type_keeps_speech_and_reports_invalid_annotation(self) -> None:
+        result = parse_chat_output({"speech": "仍然回复。", "memory_metadata": []}, mode="memcore_json")
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.speech, "仍然回复。")
+        self.assertEqual(result.metadata_status, "invalid")
+        self.assertTrue(result.metadata_present)
+
     def test_plain_text_auto_mode(self) -> None:
         result = parse_chat_output("普通回复。第二句。", mode="auto")
         self.assertTrue(result.ok)
@@ -83,6 +101,8 @@ class ChatOutputParser(unittest.TestCase):
         self.assertEqual(result.speech, "普通回复。第二句。")
         self.assertEqual(result.segments, ["普通回复。", "第二句。"])
         self.assertEqual(result.memory_metadata, {})
+        self.assertEqual(result.metadata_status, "plain")
+        self.assertFalse(result.metadata_present)
 
     def test_broken_json_is_not_stored_as_speech(self) -> None:
         result = parse_chat_output('{"speech": "坏掉"', mode="auto")
@@ -173,7 +193,25 @@ class StreamingOutputParser(unittest.TestCase):
         )
         metadata = [e for e in events if e["type"] == "metadata_ready"][0]
         self.assertEqual(metadata["memory_metadata"]["keywords"], ["英伟达"])
+        self.assertEqual(metadata["metadata_status"], "accepted")
+        self.assertTrue(metadata["metadata_present"])
         self.assertEqual(events[-1]["payload"]["speech"], '哈啊？！他说："好吧。"')
+        self.assertEqual(events[-1]["payload"]["metadata_status"], "accepted")
+        self.assertTrue(events[-1]["payload"]["metadata_present"])
+
+    def test_stream_missing_metadata_keeps_speech_and_reports_missing(self) -> None:
+        stream = StreamingSpeechParser(mode="memcore_json")
+        events = stream.feed('{"speech":"正常播放。"}')
+        events += stream.finish()
+
+        final = events[-1]["payload"]
+        self.assertEqual(final["status"], "parsed")
+        self.assertEqual(final["speech"], "正常播放。")
+        self.assertEqual(final["metadata_status"], "missing")
+        self.assertFalse(final["metadata_present"])
+        metadata = [event for event in events if event["type"] == "metadata_ready"][0]
+        self.assertEqual(metadata["metadata_status"], "missing")
+        self.assertFalse(metadata["metadata_present"])
 
     def test_stream_ignores_nested_speech_key(self) -> None:
         stream = StreamingSpeechParser(mode="memcore_json")

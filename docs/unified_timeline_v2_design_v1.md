@@ -1003,7 +1003,7 @@ metadata_status: accepted / missing / invalid / plain
 metadata_present: bool
 ```
 
-`mode=memcore_json` 时 `memory_metadata` 必须是 object 且包含固定字段；字段值继续通过 coerce 约束。缺字段或错误类型返回 invalid_contract，不再静默把空对象当有效 annotation。`auto/plain` 可以得到 speech，但 annotation status 为 plain/missing。
+`mode=memcore_json` 时 speech 的交付状态与 annotation truth 分开：合法 object（包括模型明确输出的空 object）为 `accepted`，字段缺失为 `missing`，错误类型为 `invalid`；字段值继续通过 coerce 约束。缺失或错误 metadata 不得冒充有效 annotation，但也不阻断已经生成的 speech、流式显示或 TTS。宿主 fallback 的模板空对象保持 `missing`，只有宿主确实归一化出有效记忆信号时才可提升为 `accepted_host`。`auto/plain` 可以得到 speech，annotation status 为 `plain/missing`。
 
 Prompt 文案从“本轮用户原始消息”改为“本轮由宿主指定的记忆标注目标（可能是用户消息或触发回复的外部事件）”。工具中间轮仍不使用 final JSON contract。
 

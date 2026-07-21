@@ -53,8 +53,11 @@ def parse_chat_output(
         return ChatOutputParseResult(status=status, extra=_extra_fields(parsed), reason="speech_required")
 
     speech = speech_value.strip()
+    metadata_present = "memory_metadata" in parsed
+    metadata_value = parsed.get("memory_metadata")
+    metadata_status = "accepted" if isinstance(metadata_value, dict) else "invalid" if metadata_present else "missing"
     metadata = coerce_memory_metadata(
-        parsed.get("memory_metadata"),
+        metadata_value if isinstance(metadata_value, dict) else None,
         categories=categories,
         enable_flavor=enable_flavor,
     ).to_dict()
@@ -72,6 +75,8 @@ def parse_chat_output(
         status="parsed",
         speech=speech,
         memory_metadata=metadata,
+        metadata_status=metadata_status,
+        metadata_present=metadata_present,
         presentation=_presentation_fields(parsed),
         extra=_extra_fields(parsed),
         segments=segments,
@@ -102,7 +107,14 @@ def _plain_result(
         if enable_sentence_segments
         else []
     )
-    return ChatOutputParseResult(status="plain_text", speech=speech, memory_metadata={}, segments=segments)
+    return ChatOutputParseResult(
+        status="plain_text",
+        speech=speech,
+        memory_metadata={},
+        metadata_status="plain",
+        metadata_present=False,
+        segments=segments,
+    )
 
 
 def _coerce_json_object(output: Any) -> tuple[dict[str, Any] | None, str]:

@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 ChatOutputMode = Literal["auto", "plain", "memcore_json", "custom_json"]
 ChatOutputStatus = Literal["parsed", "plain_text", "output_unparsed", "invalid_contract"]
+MemoryMetadataStatus = Literal["accepted", "missing", "invalid", "plain"]
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,8 @@ class ChatOutputParseResult:
     extra: dict[str, Any] = field(default_factory=dict)
     segments: list[str] = field(default_factory=list)
     reason: str = ""
+    metadata_status: MemoryMetadataStatus = "missing"
+    metadata_present: bool = False
 
     @property
     def ok(self) -> bool:
@@ -38,6 +41,8 @@ class ChatOutputParseResult:
             "status": self.status,
             "speech": self.speech,
             "memory_metadata": dict(self.memory_metadata),
+            "metadata_status": self.metadata_status,
+            "metadata_present": self.metadata_present,
             "presentation": dict(self.presentation),
             "extra": dict(self.extra),
             "segments": list(self.segments),
