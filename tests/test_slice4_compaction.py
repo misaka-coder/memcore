@@ -125,6 +125,42 @@ class SummaryCycleViaFacade(unittest.TestCase):
         self.assertEqual(len(visible), 1)
         self.assertEqual(visible[0]["index_status"], "indexed")
 
+    def test_legacy_backlog_compacts_one_batch_per_run_and_preserves_lineage(self) -> None:
+        cfg = MemoryConfig(raw_trigger_count=4, summary_batch_size=2, episodic_compact_trigger_count=99)
+        llm = CapturingLLM()
+        mem = MemorySystem(
+            llm=llm,
+            namespace=Namespace(user_id="u1", conversation_id="c1"),
+            timezone="Asia/Shanghai",
+            config=cfg,
+            embedding=HashedEmbeddingProvider(),
+        )
+        for i in range(10):
+            mem.record_user_turn(f"消息{i}", timestamp=1000 + i, source_id=f"m{i}")
+
+        first = mem.compact_due_sync()
+
+        self.assertEqual(first["summaries_created"], 1)
+        self.assertEqual(len(mem.store.get_unsummarized_messages(namespace=mem.namespace)), 8)
+        self.assertEqual(
+            len([request for request in llm.requests if request.task_type == TaskType.SUMMARY]),
+            1,
+        )
+
+        results = [first]
+        for _ in range(5):
+            current = mem.compact_due_sync()
+            results.append(current)
+            if current["summaries_created"] == 0:
+                break
+
+        self.assertEqual([item["summaries_created"] for item in results], [1, 1, 1, 1, 0])
+        remaining = mem.store.get_unsummarized_messages(namespace=mem.namespace)
+        self.assertEqual([message["source_id"] for message in remaining], ["m8", "m9"])
+        visible = mem.store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10)
+        summarized_source_ids = {source_id for summary in visible for source_id in summary.get("source_ids", [])}
+        self.assertEqual(summarized_source_ids, {f"m{i}" for i in range(8)})
+
     def test_tool_trace_counts_toward_count_compaction_and_keeps_metadata(self) -> None:
         cfg = MemoryConfig(raw_trigger_count=4, summary_batch_size=2, episodic_compact_trigger_count=99)
         llm = CapturingLLM()
@@ -498,6 +534,8 @@ class SemanticAndReinforcement(unittest.TestCase):
         self.store.close()
 
     def test_episodic_compacts_to_semantic_and_reinforces(self) -> None:
+        llm = CapturingLLM()
+        compaction = Compaction(store=self.store, index=self.index, llm=llm, config=self.cfg, timezone="Asia/Shanghai")
         for i in range(4):
             self.store.add_summary(
                 namespace=self.ns,
@@ -510,13 +548,32 @@ class SemanticAndReinforcement(unittest.TestCase):
                     "core_facts": [f"事实{i}"],
                 },
             )
-        out = self.compaction.run_due(namespace=self.ns)
-        # 第一条语义新建,后续重叠(共享 recurring_topics)被融合
-        self.assertEqual(out["semantic_created"], 1)
-        self.assertGreaterEqual(out["reinforced"], 1)
+
+        first = compaction.run_due(namespace=self.ns)
+
+        self.assertEqual(first["semantic_created"], 1)
+        self.assertEqual(first["reinforced"], 0)
+        self.assertEqual(len(self.store.get_uncompacted_episodic_summaries(namespace=self.ns)), 3)
+        self.assertEqual(
+            len([request for request in llm.requests if request.task_type == TaskType.SEMANTIC]),
+            1,
+        )
+
+        second = compaction.run_due(namespace=self.ns)
+        third = compaction.run_due(namespace=self.ns)
+        fourth = compaction.run_due(namespace=self.ns)
+
+        self.assertEqual(second["semantic_created"], 0)
+        self.assertEqual(second["reinforced"], 1)
+        self.assertEqual(third["semantic_created"], 0)
+        self.assertEqual(third["reinforced"], 1)
+        self.assertEqual(fourth["semantic_created"], 0)
+        self.assertEqual(fourth["reinforced"], 0)
+        self.assertEqual(len(self.store.get_uncompacted_episodic_summaries(namespace=self.ns)), 1)
         recent = self.store.get_recent_semantic_summaries(namespace=self.ns, limit=10)
-        self.assertEqual(len(recent), 1)  # 都融进同一条
-        self.assertGreater(recent[0]["reinforcement_count"], 1)
+        self.assertEqual(len(recent), 1)
+        self.assertEqual(recent[0]["reinforcement_count"], 3)
+        self.assertEqual(recent[0]["source_summary_ids"], ["ep0", "ep1", "ep2"])
         self.assertEqual(recent[0]["index_status"], "indexed")
 
     def test_no_pending_index_left_after_compaction(self) -> None:

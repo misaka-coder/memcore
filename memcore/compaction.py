@@ -514,53 +514,51 @@ class Compaction:
 
     def _summarize_raw(self, namespace: Namespace, result: dict[str, Any]) -> None:
         msgs = self.store.get_unsummarized_messages(namespace=namespace)
-        while True:
-            batch = self._select_raw_summary_batch(msgs)
-            if not batch:
-                break
-            call = self._call_json(
-                TaskType.SUMMARY,
-                *build_summary_prompts(
-                    transcript=self._render_transcript(batch),
-                    batch_size=len(batch),
-                    overrides=self.overrides,
-                    enable_flavor=self.config.enable_flavor,
-                    reference_summary_text=self._render_reference_summaries(namespace),
-                ),
-                fallback={"diary_summary": "", "importance": 0.3, "key_events": [], "core_facts": []},
-            )
-            if not call.ok or not _has_summary_content(call.data):
-                result["summary_retry_pending"] += 1
-                return
-            payload = call.data
-            memory_metadata = self._summary_memory_metadata(payload.get("memory_metadata"), batch)
-            start_ts = min(int(m["timestamp"]) for m in batch)
-            end_ts = max(int(m["timestamp"]) for m in batch)
-            record = {
-                "summary_id": uuid.uuid4().hex,
-                "timestamp": end_ts,
-                "period_start_ts": start_ts,
-                "period_end_ts": end_ts,
-                "date_label": timestamp_to_date_label(end_ts, self.timezone),
-                "time_of_day": infer_time_of_day(end_ts, self.timezone),
-                "period_label": str(payload.get("period_label") or ""),
-                "event_type": str(payload.get("event_type") or ""),
-                "importance": _clamp01(payload.get("importance")),
-                "diary_summary": str(payload.get("diary_summary") or ""),
-                "key_events": _str_list(payload.get("key_events")),
-                "core_facts": _str_list(payload.get("core_facts")),
-                "memory_metadata": memory_metadata,
-                "semantic_tags": list(memory_metadata.get("keywords") or []),
-                "source_ids": [str(m["source_id"]) for m in batch],
-            }
-            saved = self.store.add_summary(namespace=namespace, record=record)
-            self.store.mark_messages_summarized([str(m["source_id"]) for m in batch], saved["summary_id"])
-            self._record_index_result(
-                result,
-                self._index(build_summary_entry(saved), saved["summary_id"]),
-            )
-            result["summaries_created"] += 1
-            msgs = self.store.get_unsummarized_messages(namespace=namespace)
+        batch = self._select_raw_summary_batch(msgs)
+        if not batch:
+            return
+        call = self._call_json(
+            TaskType.SUMMARY,
+            *build_summary_prompts(
+                transcript=self._render_transcript(batch),
+                batch_size=len(batch),
+                overrides=self.overrides,
+                enable_flavor=self.config.enable_flavor,
+                reference_summary_text=self._render_reference_summaries(namespace),
+            ),
+            fallback={"diary_summary": "", "importance": 0.3, "key_events": [], "core_facts": []},
+        )
+        if not call.ok or not _has_summary_content(call.data):
+            result["summary_retry_pending"] += 1
+            return
+        payload = call.data
+        memory_metadata = self._summary_memory_metadata(payload.get("memory_metadata"), batch)
+        start_ts = min(int(m["timestamp"]) for m in batch)
+        end_ts = max(int(m["timestamp"]) for m in batch)
+        record = {
+            "summary_id": uuid.uuid4().hex,
+            "timestamp": end_ts,
+            "period_start_ts": start_ts,
+            "period_end_ts": end_ts,
+            "date_label": timestamp_to_date_label(end_ts, self.timezone),
+            "time_of_day": infer_time_of_day(end_ts, self.timezone),
+            "period_label": str(payload.get("period_label") or ""),
+            "event_type": str(payload.get("event_type") or ""),
+            "importance": _clamp01(payload.get("importance")),
+            "diary_summary": str(payload.get("diary_summary") or ""),
+            "key_events": _str_list(payload.get("key_events")),
+            "core_facts": _str_list(payload.get("core_facts")),
+            "memory_metadata": memory_metadata,
+            "semantic_tags": list(memory_metadata.get("keywords") or []),
+            "source_ids": [str(m["source_id"]) for m in batch],
+        }
+        saved = self.store.add_summary(namespace=namespace, record=record)
+        self.store.mark_messages_summarized([str(m["source_id"]) for m in batch], saved["summary_id"])
+        self._record_index_result(
+            result,
+            self._index(build_summary_entry(saved), saved["summary_id"]),
+        )
+        result["summaries_created"] += 1
 
     def _select_raw_summary_batch(self, msgs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         cfg = self.config
@@ -681,95 +679,95 @@ class Compaction:
     def _semanticize_episodic(self, namespace: Namespace, result: dict[str, Any]) -> None:
         cfg = self.config
         eps = self.store.get_uncompacted_episodic_summaries(namespace=namespace)
-        while len(eps) >= cfg.episodic_compact_trigger_count:
-            batch = eps[: cfg.episodic_compact_batch_size]
-            generation, _ = self.store.get_conversation_generations(namespace=namespace)
-            call = self._call_json(
-                TaskType.SEMANTIC,
-                *build_semantic_prompts(
-                    source_text=self._render_episodes(batch),
-                    overrides=self.overrides,
-                    enable_flavor=self.config.enable_flavor,
+        if len(eps) < cfg.episodic_compact_trigger_count:
+            return
+        batch = eps[: cfg.episodic_compact_batch_size]
+        generation, _ = self.store.get_conversation_generations(namespace=namespace)
+        call = self._call_json(
+            TaskType.SEMANTIC,
+            *build_semantic_prompts(
+                source_text=self._render_episodes(batch),
+                overrides=self.overrides,
+                enable_flavor=self.config.enable_flavor,
+            ),
+            fallback={"semantic_summary": "", "importance": 0.4, "stable_facts": []},
+        )
+        if not call.ok or not _has_semantic_content(call.data):
+            result["semantic_retry_pending"] += 1
+            return
+        payload = call.data
+        start_ts = min(int(s.get("period_start_ts") or s.get("timestamp") or 0) for s in batch)
+        end_ts = max(int(s.get("period_end_ts") or s.get("timestamp") or 0) for s in batch)
+        incoming = {
+            "timestamp": end_ts,
+            "period_start_ts": start_ts,
+            "period_end_ts": end_ts,
+            "date_label": timestamp_to_date_label(end_ts, self.timezone),
+            "time_of_day": infer_time_of_day(end_ts, self.timezone),
+            "importance": _clamp01(payload.get("importance")),
+            "semantic_summary": str(payload.get("semantic_summary") or ""),
+            "stable_facts": _str_list(payload.get("stable_facts")),
+            "recurring_topics": _str_list(payload.get("recurring_topics")),
+            "important_people": _str_list(payload.get("important_people")),
+            "open_loops": _str_list(payload.get("open_loops")),
+            "memory_metadata": coerce_memory_metadata(
+                payload.get("memory_metadata"), categories=cfg.categories, enable_flavor=cfg.enable_flavor
+            ).to_dict(),
+            "source_summary_ids": [str(s["summary_id"]) for s in batch],
+        }
+        incoming["semantic_tags"] = list(incoming["memory_metadata"].get("keywords") or [])
+
+        target = self._find_reinforcement_target(namespace, incoming)
+        if target is not None:
+            record = self._merge_reinforcement(target, incoming)
+            reinforcement_target_id = str(target["semantic_id"])
+            reinforcement_target_row_version = int(target.get("row_version") or 0)
+        else:
+            record = {
+                "semantic_id": self._stable_semantic_id(
+                    namespace,
+                    tuple(str(summary["summary_id"]) for summary in batch),
                 ),
-                fallback={"semantic_summary": "", "importance": 0.4, "stable_facts": []},
-            )
-            if not call.ok or not _has_semantic_content(call.data):
-                result["semantic_retry_pending"] += 1
-                return
-            payload = call.data
-            start_ts = min(int(s.get("period_start_ts") or s.get("timestamp") or 0) for s in batch)
-            end_ts = max(int(s.get("period_end_ts") or s.get("timestamp") or 0) for s in batch)
-            incoming = {
-                "timestamp": end_ts,
-                "period_start_ts": start_ts,
-                "period_end_ts": end_ts,
-                "date_label": timestamp_to_date_label(end_ts, self.timezone),
-                "time_of_day": infer_time_of_day(end_ts, self.timezone),
-                "importance": _clamp01(payload.get("importance")),
-                "semantic_summary": str(payload.get("semantic_summary") or ""),
-                "stable_facts": _str_list(payload.get("stable_facts")),
-                "recurring_topics": _str_list(payload.get("recurring_topics")),
-                "important_people": _str_list(payload.get("important_people")),
-                "open_loops": _str_list(payload.get("open_loops")),
-                "memory_metadata": coerce_memory_metadata(
-                    payload.get("memory_metadata"), categories=cfg.categories, enable_flavor=cfg.enable_flavor
-                ).to_dict(),
-                "source_summary_ids": [str(s["summary_id"]) for s in batch],
+                "reinforcement_count": 1,
+                "last_reinforced_ts": end_ts,
+                **incoming,
             }
-            incoming["semantic_tags"] = list(incoming["memory_metadata"].get("keywords") or [])
+            reinforcement_target_id = ""
+            reinforcement_target_row_version = 0
 
-            target = self._find_reinforcement_target(namespace, incoming)
-            if target is not None:
-                record = self._merge_reinforcement(target, incoming)
-                reinforcement_target_id = str(target["semantic_id"])
-                reinforcement_target_row_version = int(target.get("row_version") or 0)
-            else:
-                record = {
-                    "semantic_id": self._stable_semantic_id(
-                        namespace,
-                        tuple(str(summary["summary_id"]) for summary in batch),
-                    ),
-                    "reinforcement_count": 1,
-                    "last_reinforced_ts": end_ts,
-                    **incoming,
-                }
-                reinforcement_target_id = ""
-                reinforcement_target_row_version = 0
-
-            snapshot = SemanticSnapshot(
-                namespace_key=(
-                    namespace.tenant_id or "",
-                    namespace.user_id,
-                    namespace.domain_id or "",
-                    namespace.conversation_id or "",
-                ),
-                compaction_generation=generation,
-                summary_ids=tuple(str(summary["summary_id"]) for summary in batch),
-                summary_row_versions=tuple(
-                    (str(summary["summary_id"]), int(summary.get("row_version") or 0)) for summary in batch
-                ),
-                reinforcement_target_id=reinforcement_target_id,
-                reinforcement_target_row_version=reinforcement_target_row_version,
-            )
-            committed = self.store.commit_semantic_batch(
-                namespace=namespace,
-                commit=SemanticCommitInput(snapshot=snapshot, semantic_record=record),
-            )
-            if not committed.committed or committed.semantic_record is None:
-                result["status"] = committed.status
-                result["reason"] = committed.reason
-                return
-            saved = committed.semantic_record
-            result["compaction_generation"] = committed.compaction_generation
-            if target is not None:
-                result["reinforced"] += 1
-            else:
-                result["semantic_created"] += 1
-            self._record_index_result(
-                result,
-                self._index(build_semantic_entry(saved), saved["semantic_id"]),
-            )
-            eps = self.store.get_uncompacted_episodic_summaries(namespace=namespace)
+        snapshot = SemanticSnapshot(
+            namespace_key=(
+                namespace.tenant_id or "",
+                namespace.user_id,
+                namespace.domain_id or "",
+                namespace.conversation_id or "",
+            ),
+            compaction_generation=generation,
+            summary_ids=tuple(str(summary["summary_id"]) for summary in batch),
+            summary_row_versions=tuple(
+                (str(summary["summary_id"]), int(summary.get("row_version") or 0)) for summary in batch
+            ),
+            reinforcement_target_id=reinforcement_target_id,
+            reinforcement_target_row_version=reinforcement_target_row_version,
+        )
+        committed = self.store.commit_semantic_batch(
+            namespace=namespace,
+            commit=SemanticCommitInput(snapshot=snapshot, semantic_record=record),
+        )
+        if not committed.committed or committed.semantic_record is None:
+            result["status"] = committed.status
+            result["reason"] = committed.reason
+            return
+        saved = committed.semantic_record
+        result["compaction_generation"] = committed.compaction_generation
+        if target is not None:
+            result["reinforced"] += 1
+        else:
+            result["semantic_created"] += 1
+        self._record_index_result(
+            result,
+            self._index(build_semantic_entry(saved), saved["semantic_id"]),
+        )
 
     def _stable_semantic_id(self, namespace: Namespace, summary_ids: tuple[str, ...]) -> str:
         return stable_projection_hash(
