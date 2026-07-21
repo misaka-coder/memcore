@@ -7,6 +7,7 @@ import unittest
 from typing import Any
 
 from memcore import (
+    CANONICAL_PROFILE,
     CompactionSnapshot,
     EntryOrigin,
     HashedEmbeddingProvider,
@@ -19,6 +20,7 @@ from memcore import (
     MemorySystem,
     Namespace,
     OPENAI_PROFILE,
+    ProjectionMessageInput,
     SQLiteMemoryStore,
     SchemaError,
     SummaryRecordInput,
@@ -264,6 +266,67 @@ class CompactionV2Base(unittest.TestCase):
 
 
 class ClosedTurnPlanningTests(CompactionV2Base):
+    def test_explicit_provider_profile_uses_actual_frozen_request_size(self) -> None:
+        mem, store, _ = self.make_mem(
+            config=_projected_config(
+                max_prompt_history_tokens=4_000,
+                target_prompt_history_tokens=2_000,
+                projection_profile=CANONICAL_PROFILE,
+            )
+        )
+        try:
+            first = mem.begin_turn(
+                stimuli=[_stimulus("简短问题", source_id="user-0", timestamp=1000)],
+                turn_id="turn-0",
+                opened_at=1000,
+            )
+            actual_user = {"role": "user", "content": "真实 provider 请求中的大块" + "x" * 12_000}
+            mem.record_request_projection(
+                turn_id=first.turn_id,
+                provider_profile=OPENAI_PROFILE,
+                turn_messages=[
+                    ProjectionMessageInput(
+                        provider_profile=OPENAI_PROFILE,
+                        payload=actual_user,
+                        source_ids=("user-0",),
+                    )
+                ],
+                history_messages=[actual_user],
+            )
+            mem.complete_turn(
+                turn_id=first.turn_id,
+                semantic_text="简短回答",
+                provider_output_raw='{"speech":"简短回答"}',
+                memory_annotation={},
+                annotation_status="accepted",
+                timestamp=1001,
+                source_id="final-0",
+                provider_profile=OPENAI_PROFILE,
+                provider_projection={"role": "assistant", "content": '{"speech":"简短回答"}'},
+            )
+            _complete_simple_turn(mem, 1)
+
+            canonical_projection = mem.build_context_projection(provider_profile=CANONICAL_PROFILE)
+            openai_projection = mem.build_context_projection(provider_profile=OPENAI_PROFILE)
+            canonical_result = mem.compact_due_sync()
+
+            self.assertEqual(canonical_result["status"], "not_due")
+            self.assertEqual(canonical_result["provider_profile"], CANONICAL_PROFILE)
+            self.assertGreater(
+                len(canonical_json_bytes(openai_projection.payloads)),
+                len(canonical_json_bytes(canonical_projection.payloads)) + 10_000,
+            )
+
+            provider_result = mem.compact_due_sync(provider_profile=OPENAI_PROFILE)
+            self.assertEqual(provider_result["status"], "compacted")
+            self.assertEqual(provider_result["provider_profile"], OPENAI_PROFILE)
+            self.assertGreater(provider_result["before_projected_tokens"], 12_000)
+            self.assertIn("user-0", provider_result["summary_source_ids"])
+            self.assertIn("final-0", provider_result["summary_source_ids"])
+        finally:
+            mem.close()
+            store.close()
+
     def test_projected_token_compaction_replaces_only_complete_old_turns(self) -> None:
         mem, store, _ = self.make_mem(config=_projected_config())
         try:

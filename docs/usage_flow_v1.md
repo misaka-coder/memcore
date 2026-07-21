@@ -80,6 +80,11 @@ For tests, scripts, or deterministic shutdown, use `compact_due_sync()`.
 For live chat, prefer `compact_due_background()` so summarization does not block
 the visible reply.
 
+If the host dynamically selects a provider, pass the actual projection profile
+used by the completed request, for example
+`mem.compact_due_background(provider_profile="openai_chat")`. Omitting it keeps
+the configured `MemoryConfig.projection_profile` fallback.
+
 ## Required Host Pieces
 
 A production host must provide or choose:

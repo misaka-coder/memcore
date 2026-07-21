@@ -89,6 +89,7 @@ class SemanticBatchCommitResult:
 @dataclass
 class CompactionResult:
     status: str = "not_due"
+    provider_profile: str = ""
     source_turn_count: int = 0
     source_entry_count: int = 0
     before_projected_tokens: int = 0
@@ -107,6 +108,7 @@ class CompactionResult:
     def to_dict(self) -> dict[str, Any]:
         return {
             "status": self.status,
+            "provider_profile": self.provider_profile,
             "source_turn_count": self.source_turn_count,
             "source_entry_count": self.source_entry_count,
             "before_projected_tokens": self.before_projected_tokens,

@@ -129,6 +129,10 @@ stats = mem.reindex_all()  # 默认 upsert 当前 tenant/user/domain 下全部�
 `compact_due_sync()` 是同步确定性入口,适合单测、CLI、管理脚本或进程退出前 flush。在线聊天产品默认应使用
 `compact_due_background()`。
 
+如果宿主按请求动态选择 provider,应把本轮实际投影 profile 传给压缩入口,例如
+`mem.compact_due_background(provider_profile="openai_chat")`。这样 `projected_tokens` 预算按模型真正收到的
+provider history 计算；不传时继续使用 `MemoryConfig.projection_profile`,兼容固定 provider 的宿主。
+
 raw token 压缩只影响 raw → episodic 的触发/批次选择,不会改变检索条目结构。开启时必须提供与模型 tokenizer 对齐的
 `TokenCounter`;memcore 不会静默用字符估算冒充 token:
 

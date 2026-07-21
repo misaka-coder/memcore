@@ -94,8 +94,10 @@ class Compaction:
         )
         self.runtime = runtime or MemCoreRuntime()
 
-    def run_due(self, *, namespace: Namespace) -> dict[str, Any]:
+    def run_due(self, *, namespace: Namespace, provider_profile: str = "") -> dict[str, Any]:
         result = CompactionResult().to_dict()
+        profile = str(provider_profile or self.config.projection_profile).strip().lower()
+        result["provider_profile"] = profile
         lock = self.runtime.lock_registry.lock_for(
             store_identity=self.store.runtime_identity(),
             namespace=namespace,
@@ -109,7 +111,7 @@ class Compaction:
             except NotImplementedError:
                 bundles = []
             if any(not bundle.legacy for bundle in bundles):
-                self._summarize_timeline_v2(namespace, bundles, result)
+                self._summarize_timeline_v2(namespace, bundles, result, provider_profile=profile)
             else:
                 self._summarize_raw(namespace, result)
                 if result["summaries_created"]:
@@ -133,10 +135,12 @@ class Compaction:
         namespace: Namespace,
         bundles: list[TurnBundle],
         result: dict[str, Any],
+        *,
+        provider_profile: str,
     ) -> None:
         if not bundles:
             return
-        profile = self.config.projection_profile
+        profile = provider_profile
         generation, _ = self.store.get_conversation_generations(namespace=namespace)
         result["compaction_generation"] = generation
         projections: dict[str, list[ProjectionMessage]] = {}

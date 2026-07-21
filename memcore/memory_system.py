@@ -965,21 +965,30 @@ class MemorySystem:
             actor=actor,
         )
 
-    def compact_due_sync(self) -> dict[str, Any]:
+    def compact_due_sync(self, *, provider_profile: str = "") -> dict[str, Any]:
         """同步压缩(阻塞直到完成)。
 
         仅建议用于单测、CLI、管理脚本或进程退出前的确定性 flush。聊天请求链路应使用
-        compact_due_background(),避免压缩 LLM 调用阻塞用户可见回复。
+        compact_due_background(),避免压缩 LLM 调用阻塞用户可见回复。显式传入
+        provider_profile 时，压缩预算按该次真实 provider 投影计算；空值继续使用配置默认值。
         """
-        return self._compaction.run_due(namespace=self.namespace)
+        return self._compaction.run_due(
+            namespace=self.namespace,
+            provider_profile=provider_profile,
+        )
 
-    def compact_due_background(self) -> Future:
+    def compact_due_background(self, *, provider_profile: str = "") -> Future:
         """异步压缩:提交到单 worker 后台线程,立刻返回 Future,不阻塞聊天链路。
 
         单 worker = 所有压缩串行,不会压垮 LLM/库;同 namespace 还有 Compaction 内部锁兜底。
-        Future.result() 可取压缩统计;聊天产品里通常 fire-and-forget。用完调 close() 收线程。
+        Future.result() 可取压缩统计;聊天产品里通常 fire-and-forget。provider_profile 语义与
+        compact_due_sync() 相同。用完调 close() 收线程。
         """
-        return self.runtime.submit_compaction(self._compaction.run_due, namespace=self.namespace)
+        return self.runtime.submit_compaction(
+            self._compaction.run_due,
+            namespace=self.namespace,
+            provider_profile=provider_profile,
+        )
 
     def close(self, *, wait: bool = True) -> None:
         """收掉后台压缩线程。store/index 生命周期由调用方自理。"""
