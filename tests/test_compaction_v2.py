@@ -266,6 +266,31 @@ class CompactionV2Base(unittest.TestCase):
 
 
 class ClosedTurnPlanningTests(CompactionV2Base):
+    def test_projected_compaction_honors_episode_entry_limit_without_splitting_turns(self) -> None:
+        config = _projected_config(
+            max_prompt_history_tokens=260,
+            target_prompt_history_tokens=60,
+            compaction_max_source_tokens=10000,
+            summary_batch_size=3,
+            episodic_visible_max=1,
+        )
+        mem, store, _ = self.make_mem(config=config)
+        try:
+            for number in range(8):
+                _complete_simple_turn(mem, number)
+
+            result = mem.compact_due_sync(provider_profile=OPENAI_PROFILE)
+
+            self.assertEqual(result["status"], "compacted")
+            self.assertEqual(result["source_entry_limit"], 3)
+            self.assertEqual(result["source_turn_count"], 2)
+            self.assertEqual(result["source_entry_count"], 4)
+            self.assertEqual(result["selected_episode_entry_count"], 4)
+            self.assertGreater(result["after_projected_tokens"], config.max_prompt_history_tokens)
+        finally:
+            mem.close()
+            store.close()
+
     def test_large_backlog_is_compacted_in_bounded_token_passes(self) -> None:
         source_token_limit = 180
         config = _projected_config(

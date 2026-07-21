@@ -167,9 +167,12 @@ class Compaction:
         )
         selection_token_target = min(removal_target, source_token_limit) if source_token_limit else removal_target
         result["source_token_limit"] = source_token_limit
+        source_entry_limit = self.config.summary_batch_size
+        result["source_entry_limit"] = source_entry_limit
 
         selected: list[TurnBundle] = []
         selected_tokens = 0
+        selected_episode_entries = 0
         total_bundle_count = len(bundles)
         blocked_reason = ""
         for component in components:
@@ -181,10 +184,13 @@ class Compaction:
                 break
             selected.extend(component)
             selected_tokens += sum(bundle_tokens[bundle.turn_id] for bundle in component)
+            selected_episode_entries += sum(
+                1 for bundle in component for entry in bundle.entries if self._is_episode_entry(entry)
+            )
             if self.config.compaction_policy == "count_compat":
                 if sum(len(bundle.entries) for bundle in selected) >= removal_target:
                     break
-            elif selected_tokens >= selection_token_target:
+            elif selected_tokens >= selection_token_target or selected_episode_entries >= source_entry_limit:
                 break
 
         if not selected:
@@ -200,6 +206,7 @@ class Compaction:
         )
         source_ids = tuple(entry.source_id for entry in ordered_entries)
         result["selected_projected_tokens"] = selected_tokens
+        result["selected_episode_entry_count"] = selected_episode_entries
         projection_hashes_by_source: dict[str, list[str]] = {}
         for turn_id in selected_ids:
             for message in projections[turn_id]:
@@ -228,11 +235,7 @@ class Compaction:
             token_count_quality=token_quality,
         )
 
-        episode_entries = [
-            entry
-            for entry in ordered_entries
-            if entry.turn_role not in {TurnRole.ACTION, TurnRole.OBSERVATION} and not entry.kind.startswith("material.")
-        ]
+        episode_entries = [entry for entry in ordered_entries if self._is_episode_entry(entry)]
         operation_entries = [entry for entry in ordered_entries if entry not in episode_entries]
         summary_inputs: list[SummaryRecordInput] = []
         if episode_entries:
@@ -299,6 +302,10 @@ class Compaction:
         result["compaction_generation"] = committed.compaction_generation
         result["summaries_created"] += len(committed.summaries)
         result["after_projected_tokens"] = max(0, before_tokens - selected_tokens) + summary_tokens
+
+    @staticmethod
+    def _is_episode_entry(entry: TimelineEntry) -> bool:
+        return entry.turn_role not in {TurnRole.ACTION, TurnRole.OBSERVATION} and not entry.kind.startswith("material.")
 
     def _freeze_bundle_projection(
         self,
