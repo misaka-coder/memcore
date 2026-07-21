@@ -74,6 +74,7 @@ class _TextEnum(str, Enum):
 class ProjectionStatus(_TextEnum):
     COMPLETE = "complete"
     CANONICAL_FALLBACK = "canonical_fallback"
+    REQUEST_FROZEN = "request_frozen"
     MEDIA_OMITTED = "media_omitted"
     SKIPPED_UNSAFE = "skipped_unsafe"
 
@@ -83,6 +84,11 @@ _STATUS_PRIORITY = {
     ProjectionStatus.CANONICAL_FALLBACK: 1,
     ProjectionStatus.MEDIA_OMITTED: 2,
     ProjectionStatus.SKIPPED_UNSAFE: 3,
+    # Request freezing is a lifecycle boundary: once a safe payload has crossed
+    # it, later attempts must not replace that projection.  Keep it above the
+    # rendering/safety statuses; media omission is still carried by the sanitized
+    # payload marker and the request audit's ``media_omitted`` flag.
+    ProjectionStatus.REQUEST_FROZEN: 4,
 }
 
 
@@ -746,6 +752,7 @@ class ProjectionAdapter:
             intermediate: TimelineEntry | None = None
             if (
                 entry.turn_role is TurnRole.INTERMEDIATE
+                and entry.origin.value == "assistant"
                 and index + 1 < len(entries)
                 and entries[index + 1].turn_role is TurnRole.ACTION
             ):
@@ -829,6 +836,7 @@ class ProjectionAdapter:
             intermediate: TimelineEntry | None = None
             if (
                 entry.turn_role is TurnRole.INTERMEDIATE
+                and entry.origin.value == "assistant"
                 and index + 1 < len(entries)
                 and entries[index + 1].turn_role is TurnRole.ACTION
             ):

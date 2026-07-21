@@ -145,10 +145,12 @@ If the host app handles images or files, record only material references with
 and `system.material_cleanup <kind> <file_id>` blocks with
 `categories=["material_trace"]`. Store original files and derived OCR, vision
 descriptions, or document chunks in the host file/derived stores. Current-turn
-multimodal models may receive the image through the provider request; non-
-multimodal models should receive derived text. Historical follow-ups should
-find the `material_trace` anchor first, then load available derived content via
-host tools.
+multimodal models may receive the image through the provider request. For non-
+multimodal models, do not race the final chat model against OCR/vision parsing:
+wait for derived content, or return a structured pending/unavailable material
+tool result and do not let the model describe the image from the anchor alone.
+Historical follow-ups should find the `material_trace` anchor first, then load
+available derived content via host tools.
 In group or multi-speaker uploads, pass `actor=Actor(stable_id=..., display_name=...)`
 to `record_material_reference(...)` so the attachment keeps uploader attribution.
 

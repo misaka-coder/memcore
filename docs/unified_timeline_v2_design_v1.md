@@ -985,6 +985,12 @@ MemCore 不组装宿主完整 system prompt，因此采用两阶段协议:
 
 这样 MemCore 不接管模型 HTTP，却保存真正影响下一轮历史的 provider message。system/persona/tool schema 只保存 hash，不复制敏感 prompt。
 
+请求冻结以 **projection message** 为粒度，而不是以整个 turn 为粒度。某条 projection 第一次经过真实 transport
+边界时，可以用 observer 看到的安全实际 payload 替换 canonical fallback，并标为 `request_frozen`；之后该条
+projection 不得再改变。同一 open turn 在后续工具轮追加的 action/observation/material projection 尚未经过请求
+边界，因此仍可分别完成自己的第一次冻结。这样第一轮 user 已冻结，不会阻止第二轮新增工具消息进入 ledger，
+也不会允许后续请求反过来改写已发送的 user/tool payload。
+
 ### 18.4 Provider 切换
 
 结构化 `payload_json + relations` 是跨 provider 权威。若下一轮使用不同 profile:
@@ -1016,6 +1022,11 @@ Prompt 文案从“本轮用户原始消息”改为“本轮由宿主指定的�
 - 缓存审计把该轮列为明确断点；
 - 后续历史使用安全文字/derived projection，不假装仍附有原图。
 
+若图片由工具在本轮中产生或加载，宿主必须保持最初 stimulus/user projection 不变，并在线性时间线中按
+`tool action -> tool observation -> material.model_input` 追加媒体输入。真实图片块只附在最后这条新增
+provider message 上；observer 冻结时把图片替换为稳定 omission marker。禁止为了省事把工具图片重新塞回
+最初 user message，因为那会改写已冻结投影并破坏缓存前缀与审计真实性。
+
 这是一条明确安全边界，不用本地路径或 base64 换取表面上的 100% 前缀一致。
 
 ### 18.7 Slice 3 当前实现
@@ -1044,6 +1055,9 @@ mem.complete_turn(
 ```
 
 `record_request_projection()` 的 `turn_messages` 必须是当前 turn 到本次请求为止的完整、带 source attribution 的 provider messages，而不是只传本次新增长度。Store 逐 profile 强制每个 prompt-visible source 只映射一次、projection index 连续、source coverage 只能按时间线前缀增长；任何覆盖旧 row、跳号或只写 final 的请求都在事务内拒绝。
+
+生成重试也属于真实请求边界：同一 MemCore turn 的重试必须复用相同的 current user payload、历史和动态上下文，
+不得在 user 尾部临时拼接 retry note。重试原因可以进入宿主日志/指标，但不能偷偷改变可持久化 conversation。
 
 `system_prefix`、`tool_schema` 与 `model_route` 只参与 hash audit，不复制进数据库。source-attributed `system/developer` message 禁止持久化；base64/原生媒体、本地绝对路径与密钥形态会被稳定 omission marker 替代并产生 `media_omitted/skipped_unsafe` 状态。不同 provider profile 是不同 cache family，OpenAI tool calls 和 Anthropic tool use/result 不互相冒充。
 
@@ -1508,6 +1522,11 @@ dispatcher 边界捕获参数错误、权限拒绝、Store/Index 不可用和未
 - 下一轮优先读取相同 profile 的已保存 projection，恢复完全相同的 tool call id、参数顺序和 result 结构；
 - provider-specific `_append_native_*` 在验收后删除，最多保留一个调用 MemCore adapter 的薄函数，不长期双实现。
 
+当前 Akane repair pass 已把 provider-specific 拼装收敛为一个薄的 projection 选择/当轮媒体附加步骤：工具
+call/result 的 role、call id、参数和顺序由 MemCore `ProjectionAdapter` 产生；Akane 只按 source id 取回
+当前新增 projection，并把不可持久化图片附到对应 `material.model_input`。该薄层仍处于真实 provider 验收窗口，
+不得重新长出第二套 OpenAI/Anthropic renderer。
+
 ### 22.4 终态 raw output 接口
 
 `companion_v01/llm_runtime.py` 的流式路径已有 `ChatJSONStreamResult.raw_text`，直接传给 `complete_turn(provider_output_raw=...)`。
@@ -1632,6 +1651,8 @@ tests/test_runtime_scheduler.py
 - 同 profile 连续请求满足严格增长前缀；
 - provider 切换形成新 cache family；
 - media omission 形成可解释断点且不泄漏 base64/path；
+- 工具新加载的图片位于 tool result 之后，不能改写已经 `request_frozen` 的原始 user projection；
+- 同一 turn 的生成重试保持 current user payload 字节一致；
 - final 保存真实 raw output，不是 parsed 后重新序列化。
 
 检索与扩窗：

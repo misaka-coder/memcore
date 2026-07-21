@@ -117,6 +117,8 @@ SUMMARY_SYSTEM = (
     "memory_metadata 只用于检索入库:keywords 0-4 个短标签,按未来正常聊天里可能命中的问法选词,"
     "不要写成短句,也不要机械补太宽泛的上位词;subject_scopes 从 user/assistant/other 选,categories 从固定枚举选。\n"
     "不要编造对话里没有出现的事实。importance 必须是 0.0 到 1.0 之间的数字,不要写“高/中/低”。\n"
+    "若后续消息明确说某个任务/材料已清理、取消、不再需要或已经结束,必须保留这个关闭状态;"
+    "更早的失败、等待确认或待处理只能作为历史经过,不能继续写成当前未完成事项。\n"
     "key_events 和 core_facts 必须是 JSON 数组。只输出一个合法 JSON 对象,不要解释或代码块。"
 )
 
@@ -131,6 +133,8 @@ SEMANTIC_SYSTEM = (
     "字段固定为 semantic_summary, importance, stable_facts, recurring_topics, important_people, open_loops, memory_metadata。\n"
     "stable_facts 要稳定、客观、适合长期保留;不要把角色设定写进去。\n"
     "recurring_topics 抓反复出现的话题;important_people 只留明显重要或反复出现的人;open_loops 记仍在推进的事项。\n"
+    "只有来源摘要最新状态仍明确在推进的事项才能进入 open_loops;已清理、取消、不再需要或已经结束的事项不能进入 open_loops,"
+    "旧失败也不能覆盖后来的关闭状态。\n"
     "不要编造摘要里没有的长期结论。importance 必须是 0.0 到 1.0 之间的数字。\n"
     "stable_facts/recurring_topics/important_people/open_loops 必须是 JSON 数组。只输出一个合法 JSON 对象。"
 )
@@ -144,6 +148,8 @@ REINFORCEMENT_SYSTEM = (
     "你就是当前角色,正在重新整理一条自己的长期记忆。你会收到一条已有长期语义记忆,以及一组新的阶段摘要压缩结果。\n"
     "如果它们明显属于同一长期主线,请输出一条融合后的长期语义记忆,严格输出 JSON,字段同语义记忆。\n"
     "尽量保留已有稳定事实,同时自然吸收新近重复出现的内容。不要因为新内容只出现一次就推翻旧的稳定印象。\n"
+    "但状态更新必须以后来的明确记录为准:新内容若说明任务已清理、取消、不再需要或结束,"
+    "应移除已有 open_loops 中对应待办,只可把它保留为历史经过。\n"
     "不要写成流水账。importance 必须是 0.0 到 1.0 之间的数字。各列表字段必须是 JSON 数组。只输出一个合法 JSON 对象。"
 )
 

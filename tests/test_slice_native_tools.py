@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from memcore import (
@@ -16,6 +17,7 @@ from memcore import (
     MemorySystem,
     Namespace,
     SQLiteMemoryStore,
+    ToolDispatchPolicy,
     build_native_memory_tool_specs,
     dispatch_native_memory_tool,
 )
@@ -60,6 +62,8 @@ class NativeToolSpecs(unittest.TestCase):
             retrieve["parameters"]["properties"]["categories"]["items"]["enum"],
             ["preference", "material_trace"],
         )
+        self.assertIn("include_explicit", retrieve["parameters"]["properties"])
+        self.assertIn("kind_patterns", retrieve["parameters"]["properties"])
 
     def test_openai_strict_schema_makes_optional_fields_nullable_required(self) -> None:
         tools = build_native_memory_tool_specs(categories=("preference",), tool_format="openai")
@@ -86,6 +90,49 @@ class NativeToolSpecs(unittest.TestCase):
 
 
 class NativeToolDispatch(unittest.TestCase):
+    def test_explicit_kind_queries_require_and_cannot_expand_host_policy(self) -> None:
+        seen: list[dict] = []
+
+        class FakeMem:
+            config = SimpleNamespace(categories=("preference",))
+
+            def retrieve_for_turn(self, **kwargs):
+                seen.append(kwargs)
+                return ["event result"]
+
+        denied = dispatch_native_memory_tool(
+            "retrieve_for_turn",
+            {"query": "财经事件", "include_explicit": True, "kind_patterns": ["event.finance.*"]},
+            mem=FakeMem(),
+            current={"source_id": "current"},
+        )
+        widened = dispatch_native_memory_tool(
+            "retrieve_for_turn",
+            {"query": "工具", "include_explicit": True, "kind_patterns": ["tool.*"]},
+            mem=FakeMem(),
+            current={"source_id": "current"},
+            policy=ToolDispatchPolicy(
+                allow_explicit_trace=True,
+                allowed_kind_prefixes=("event.finance",),
+            ),
+        )
+        allowed = dispatch_native_memory_tool(
+            "retrieve_for_turn",
+            {"query": "财经事件", "include_explicit": True, "kind_patterns": ["event.finance.*"]},
+            mem=FakeMem(),
+            current={"source_id": "current"},
+            policy=ToolDispatchPolicy(
+                allow_explicit_trace=True,
+                allowed_kind_prefixes=("event.finance",),
+            ),
+        )
+
+        self.assertEqual(denied["status"], "forbidden")
+        self.assertEqual(widened["status"], "forbidden")
+        self.assertTrue(allowed["ok"])
+        self.assertEqual(seen[0]["kind_patterns"], ["event.finance.*"])
+        self.assertTrue(seen[0]["include_explicit"])
+
     def test_retrieve_for_turn_dispatches_and_excludes_visible_context(self) -> None:
         mem, store, index, emb = _shared_mem(conversation="c1")
         other = MemorySystem(
@@ -170,9 +217,28 @@ class NativeToolDispatch(unittest.TestCase):
 
         self.assertTrue(out["ok"])
         self.assertEqual(seen[0]["preferred_source"], "derived")
+        self.assertEqual(out["result"]["requested_file_id"], "file_img_001")
         self.assertEqual(out["result"]["status"], "derived_ready")
         self.assertFalse(missing["ok"])
         self.assertEqual(missing["reason"], "material_loader_not_configured")
+        store.close()
+
+    def test_load_material_rejects_mismatched_file_id_result(self) -> None:
+        mem, store, _index, _emb = _shared_mem()
+
+        def load_material(_args: dict) -> dict:
+            return {"file_id": "old_file", "status": "derived_ready", "text": "上一张图的摘要"}
+
+        out = dispatch_native_memory_tool(
+            "load_material",
+            {"file_id": "file_img_001", "kind": "image", "preferred_source": "derived"},
+            mem=mem,
+            material_loader=load_material,
+        )
+
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["status"], "file_id_mismatch")
+        self.assertIn("requested=file_img_001", out["reason"])
         store.close()
 
 

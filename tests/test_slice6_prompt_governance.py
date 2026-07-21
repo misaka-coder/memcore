@@ -15,7 +15,14 @@ from memcore.prompts import (
 )
 
 # 焊死必现的标记:字段契约 + 质量规则 + "只输出 JSON"。
-_WELDED_SUMMARY = ("diary_summary", "core_facts", "只输出一个合法 JSON", "时间锚点", "多方/群聊归因")
+_WELDED_SUMMARY = (
+    "diary_summary",
+    "core_facts",
+    "只输出一个合法 JSON",
+    "时间锚点",
+    "多方/群聊归因",
+    "不能继续写成当前未完成事项",
+)
 _WELDED_SEMANTIC = ("stable_facts", "recurring_topics", "只输出一个合法 JSON", "memory_metadata 标注")
 
 

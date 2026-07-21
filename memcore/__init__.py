@@ -70,6 +70,7 @@ from .llm.base import LLMClient, LLMRequest, LLMResult, ResponseFormat, TaskType
 from .memory_system import MemorySystem
 from .native_tools import (
     NATIVE_MEMORY_TOOL_NAMES,
+    ToolDispatchPolicy,
     build_native_memory_tool_specs,
     dispatch_native_memory_tool,
 )
@@ -120,6 +121,7 @@ __all__ = [
     # 门面
     "MemorySystem",
     "NATIVE_MEMORY_TOOL_NAMES",
+    "ToolDispatchPolicy",
     "build_native_memory_tool_specs",
     "dispatch_native_memory_tool",
     # 配置 / 命名空间

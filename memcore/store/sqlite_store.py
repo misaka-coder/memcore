@@ -651,6 +651,7 @@ class SQLiteMemoryStore(MemoryStore):
                 namespace=namespace,
                 turn_id=audit.turn_id,
                 projections=projections,
+                allow_open_request_replacement=True,
             )
             media_omitted = audit.media_omitted or any(
                 item.projection_status is ProjectionStatus.MEDIA_OMITTED for item in stored
@@ -669,6 +670,7 @@ class SQLiteMemoryStore(MemoryStore):
         namespace: Namespace,
         turn_id: str,
         projections: list[ProjectionMessageInput],
+        allow_open_request_replacement: bool = False,
     ) -> tuple[ProjectionMessage, ...]:
         normalized_turn_id = self._normalize_relation_id(turn_id, field="turn_id")
         if not projections:
@@ -767,13 +769,48 @@ class SQLiteMemoryStore(MemoryStore):
             existing = existing_by_index.get(projection_index)
             if existing is not None:
                 existing_record = self._row_to_record(existing, "prompt_projections")
-                if (
+                projection_changed = (
                     str(existing["payload_hash"] or "") != payload_hash
                     or tuple(existing_record.get("source_ids") or ()) != source_ids
                     or str(existing["projection_status"] or "") != item.projection_status.value
                     or int(existing["projection_version"] or 0) != item.projection_version
-                ):
-                    raise SchemaError("projection_immutable_conflict")
+                )
+                if projection_changed:
+                    existing_status = str(existing["projection_status"] or "")
+                    can_replace = bool(
+                        allow_open_request_replacement
+                        and turn is not None
+                        and str(turn["status"] or "") == TurnStatus.OPEN.value
+                        # Earlier messages in an open turn may already be audited
+                        # while newly appended tool projections have not crossed a
+                        # request boundary yet.  Freeze per projection, not per turn.
+                        and existing_status != ProjectionStatus.REQUEST_FROZEN.value
+                        and tuple(existing_record.get("source_ids") or ()) == source_ids
+                        and int(existing["projection_version"] or 0) == item.projection_version
+                    )
+                    if not can_replace:
+                        raise SchemaError("projection_immutable_conflict")
+                    self._conn.execute(
+                        """
+                        UPDATE prompt_projections
+                        SET payload_json = ?, payload_hash = ?, projection_status = ?, created_at = ?
+                        WHERE projection_id = ?
+                        """,
+                        (
+                            _json_dumps(payload),
+                            payload_hash,
+                            item.projection_status.value,
+                            now,
+                            str(existing["projection_id"] or ""),
+                        ),
+                    )
+                    existing = self._conn.execute(
+                        "SELECT * FROM prompt_projections WHERE projection_id = ?",
+                        (str(existing["projection_id"] or ""),),
+                    ).fetchone()
+                    if existing is None:
+                        raise SchemaError("projection_update_failed")
+                    existing_record = self._row_to_record(existing, "prompt_projections")
                 stored.append(ProjectionMessage.from_record(existing_record))
                 continue
 

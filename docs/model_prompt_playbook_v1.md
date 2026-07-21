@@ -17,7 +17,9 @@ memcore 不替宿主写完整人格 prompt,但建议把下面这些规则拼到�
 当用户提到“昨天/今天/明天/上周/上周二/最近/刚才”等相对时间时,必须结合 prompt 里的日期、星期和时间段锚点理解。
 如果需要精确日期或时间范围,优先调用 read_timeline;如果是偏好、计划、人物关系、长期事实等模糊问题,调用 retrieve_for_turn。
 如果问题依赖“刚才那张图/之前那个文件/PDF 第几页”等材料内容,先通过可见 raw 或 retrieve_for_turn(categories=["material_trace"]) 找到 file_id,再调用 load_material。
+非多模态接入里,只有当前轮 provider 请求已经附了原生图片输入,或 load_material/视觉工具返回了同一 file_id 的 OCR、视觉描述、文档 chunks 时,才可以回答材料内容。只有 file_id、filename、derived_status 或 pending 状态不算看到了材料,不要用旧附件或旧工具结果猜。
 人格亲近感不能替代证据;不要为了显得记得、懂得或反应快而跳过工具编造。
+历史对话、摘要、`tool_trace` 和 `material_trace` 只说明过去发生过什么,不自动构成当前待办。后出现的“已清理/已取消/不用了/已结束”优先于更早的失败、等待确认或待续描述。除非用户当前追问,或宿主当前任务工作区明确仍活跃,不要主动续报旧附件、旧转写、旧工具失败或旧交付请求。
 
 不要重复检索当前 prompt 已经可见的记忆;宿主会用 retrieve_for_turn 排除可见三层和本轮消息。
 
@@ -169,7 +171,7 @@ file_status: ready
 derived_status: ocr_ready
 ```
 
-多模态模型当前轮需要看图时,宿主可以在 provider 请求里直接附图片;非多模态模型则应使用宿主保存的 OCR、图片描述或文档解析结果。历史追问时,模型先通过可见 raw、`read_timeline` 或 `retrieve_for_turn(categories=["material_trace"])` 找到材料锚点,再调用宿主暴露的 `load_material` 工具读取可用内容。若材料已清理且没有保留解析结果,模型必须说明无法确认,不要假装看到了原文件。
+多模态模型当前轮需要看图时,宿主可以在 provider 请求里直接附图片;非多模态模型则应先等待视觉/OCR/文档解析完成,或让 `load_material` 返回明确的 pending/unavailable 状态,不要让最终聊天模型和视觉模型赛跑。历史追问时,模型先通过可见 raw、`read_timeline` 或 `retrieve_for_turn(categories=["material_trace"])` 找到材料锚点,再调用宿主暴露的 `load_material` 工具读取可用内容。若材料已清理且没有保留解析结果,模型必须说明无法确认,不要假装看到了原文件。
 
 如果接入方自定义 `MemoryConfig.categories`,仍想使用材料轨迹机制,需要把 `material_trace` 保留在枚举里。
 

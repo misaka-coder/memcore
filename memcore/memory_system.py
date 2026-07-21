@@ -41,6 +41,7 @@ from .projection import (
     build_projection_audit_input,
     canonical_json_bytes,
     default_renderer_registry,
+    merge_projection_status,
     normalize_provider_profile,
     sanitize_projection_payload,
     stable_projection_hash,
@@ -503,7 +504,8 @@ class MemorySystem:
         provider_profile: str,
         turn_messages: list[ProjectionMessageInput],
         history_messages: list[dict[str, Any]],
-        attempt: int,
+        audit_history_messages: list[dict[str, Any]] | None = None,
+        attempt: int = 0,
         model_route: Any = "",
         system_prefix: Any = "",
         tool_schema: Any = (),
@@ -512,6 +514,17 @@ class MemorySystem:
         """Atomically freeze current-turn messages and hash the actual request prefix."""
 
         profile = normalize_provider_profile(provider_profile)
+        resolved_attempt = int(attempt or 0)
+        if resolved_attempt < 1:
+            try:
+                existing_audits = self.store.list_projection_audits(
+                    namespace=self.namespace,
+                    turn_id=turn_id,
+                    provider_profile=profile,
+                )
+            except NotImplementedError as exc:
+                raise SchemaError("store_timeline_v2_unsupported") from exc
+            resolved_attempt = max((audit.attempt for audit in existing_audits), default=0) + 1
         if not turn_messages:
             raise SchemaError("projection_turn_messages_required")
         prepared: list[ProjectionMessageInput] = []
@@ -523,7 +536,14 @@ class MemorySystem:
             if not message.source_ids:
                 raise SchemaError("projection_source_ids_required")
             prepared.append(
-                replace(message, projection_index=index if message.projection_index < 0 else message.projection_index)
+                replace(
+                    message,
+                    projection_index=index if message.projection_index < 0 else message.projection_index,
+                    projection_status=merge_projection_status(
+                        ProjectionStatus.REQUEST_FROZEN,
+                        message.projection_status,
+                    ),
+                )
             )
 
         if len(history_messages) < len(prepared):
@@ -540,12 +560,12 @@ class MemorySystem:
         )
         audit = build_projection_audit_input(
             turn_id=turn_id,
-            attempt=attempt,
+            attempt=resolved_attempt,
             provider_profile=profile,
             model_route=model_route,
             system_prefix=system_prefix,
             tool_schema=tool_schema,
-            history_messages=history_messages,
+            history_messages=(audit_history_messages if audit_history_messages is not None else history_messages),
             media_omitted=media_omitted,
             created_at=int(created_at or time.time()),
         )

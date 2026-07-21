@@ -61,6 +61,8 @@ metadata 回写 → `record_assistant_turn` → 后台压缩的完整闭环。
 `dispatch_native_memory_tool(...)` 分发 `retrieve_for_turn` / `read_timeline` / `load_material`。
 `load_material` 只调用宿主传入的 `material_loader` 回调,用于读取 file_store/derived_store 中的原图、
 OCR、视觉描述、文档 chunks 或当前清理状态;memcore 不保存文件本体。
+非多模态接入不要让最终聊天模型和视觉/OCR 解析赛跑:要么先等宿主 derived_store 写入同一
+`file_id` 的摘要/OCR,要么让 `load_material` 返回 pending/unavailable,避免模型只凭附件锚点或旧结果猜图。
 
 设计亮点说明见 `docs/design_highlights_v1.md`;接入聊天模型时建议先读 `docs/model_prompt_playbook_v1.md`。
 如果让 AI 编码助手接入本库,请先把根目录 `AGENTS.md` 交给它读;独立接入流程见

@@ -8,7 +8,9 @@ apps can wire into their model provider's native tool-calling loop.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from typing import Any
 
 from .schema import DEFAULT_CATEGORIES, SUBJECT_SCOPES
@@ -18,6 +20,14 @@ MATERIAL_SOURCE_PREFERENCES: tuple[str, ...] = ("auto", "original", "derived")
 NATIVE_MEMORY_TOOL_NAMES: tuple[str, ...] = ("retrieve_for_turn", "read_timeline", "load_material")
 
 MaterialLoader = Callable[[dict[str, Any]], Any]
+
+
+@dataclass(frozen=True)
+class ToolDispatchPolicy:
+    """Host-owned permissions; model arguments can only narrow this grant."""
+
+    allow_explicit_trace: bool = False
+    allowed_kind_prefixes: tuple[str, ...] = ()
 
 
 def build_native_memory_tool_specs(
@@ -53,6 +63,7 @@ def dispatch_native_memory_tool(
     mem: Any,
     current: dict[str, Any] | None = None,
     material_loader: MaterialLoader | None = None,
+    policy: ToolDispatchPolicy | None = None,
 ) -> dict[str, Any]:
     """Dispatch a native tool call to memcore or a host material loader.
 
@@ -66,7 +77,7 @@ def dispatch_native_memory_tool(
     if error:
         return _err(name, "invalid_arguments", error)
     if name == "retrieve_for_turn":
-        return _dispatch_retrieve(args, mem=mem, current=current)
+        return _dispatch_retrieve(args, mem=mem, current=current, policy=policy or ToolDispatchPolicy())
     if name == "read_timeline":
         return _dispatch_timeline(args, mem=mem)
     if name == "load_material":
@@ -74,7 +85,13 @@ def dispatch_native_memory_tool(
     return _err(name, "unknown_tool", f"unsupported_tool:{name}")
 
 
-def _dispatch_retrieve(args: dict[str, Any], *, mem: Any, current: dict[str, Any] | None) -> dict[str, Any]:
+def _dispatch_retrieve(
+    args: dict[str, Any],
+    *,
+    mem: Any,
+    current: dict[str, Any] | None,
+    policy: ToolDispatchPolicy,
+) -> dict[str, Any]:
     unknown = _unknown_keys(
         args,
         {
@@ -85,6 +102,8 @@ def _dispatch_retrieve(args: dict[str, Any], *, mem: Any, current: dict[str, Any
             "subject_scopes",
             "importance_min",
             "time_hint",
+            "include_explicit",
+            "kind_patterns",
         },
     )
     if unknown:
@@ -113,6 +132,19 @@ def _dispatch_retrieve(args: dict[str, Any], *, mem: Any, current: dict[str, Any
     time_hint, error = _time_hint(args.get("time_hint"))
     if error:
         return _err("retrieve_for_turn", "invalid_arguments", error)
+    include_explicit = args.get("include_explicit", False)
+    if not isinstance(include_explicit, bool):
+        return _err("retrieve_for_turn", "invalid_arguments", "include_explicit_must_be_boolean")
+    kind_patterns, error = _string_list(args.get("kind_patterns"), "kind_patterns")
+    if error:
+        return _err("retrieve_for_turn", "invalid_arguments", error)
+    authorized_patterns, error_status, error = _authorize_kind_patterns(
+        include_explicit=include_explicit,
+        kind_patterns=kind_patterns,
+        policy=policy,
+    )
+    if error:
+        return _err("retrieve_for_turn", error_status, error)
 
     filters: dict[str, Any] = {
         "keywords": keywords,
@@ -124,8 +156,15 @@ def _dispatch_retrieve(args: dict[str, Any], *, mem: Any, current: dict[str, Any
         filters["importance_min"] = importance_min
     if time_hint:
         filters["time_hint"] = time_hint
+    filters["include_explicit"] = include_explicit
+    filters["kind_patterns"] = authorized_patterns
 
-    result = mem.retrieve_for_turn(current=current, query=query, **filters)
+    try:
+        result = mem.retrieve_for_turn(current=current, query=query, **filters)
+    except ValueError as exc:
+        return _err("retrieve_for_turn", "invalid_filter", str(exc) or "invalid_filter")
+    except Exception:
+        return _err("retrieve_for_turn", "failed", "internal_error")
     return _ok("retrieve_for_turn", {"snippets": result, "count": len(result)})
 
 
@@ -176,7 +215,10 @@ def _dispatch_material(args: dict[str, Any], *, material_loader: MaterialLoader 
         result = material_loader(payload)
     except Exception as exc:  # pragma: no cover - exact host failures vary
         return _err("load_material", "loader_failed", str(exc) or exc.__class__.__name__)
-    return _ok("load_material", result if isinstance(result, dict) else {"content": result})
+    material_payload, error = _material_result_payload(result, requested_file_id=file_id)
+    if error:
+        return _err("load_material", "file_id_mismatch", error, result=material_payload)
+    return _ok("load_material", material_payload)
 
 
 def _coerce_arguments(arguments: Any) -> tuple[dict[str, Any], str]:
@@ -192,8 +234,46 @@ def _coerce_arguments(arguments: Any) -> tuple[dict[str, Any], str]:
     return {}, "arguments_must_be_object"
 
 
+def _material_result_payload(result: Any, *, requested_file_id: str) -> tuple[dict[str, Any], str]:
+    if not isinstance(result, dict):
+        return {"requested_file_id": requested_file_id, "content": result}, ""
+    payload = dict(result)
+    returned_file_id = str(payload.get("file_id") or "").strip()
+    if returned_file_id and returned_file_id != requested_file_id:
+        return payload, f"material_file_id_mismatch:requested={requested_file_id},returned={returned_file_id}"
+    payload.setdefault("requested_file_id", requested_file_id)
+    return payload, ""
+
+
 def _required_string(args: dict[str, Any], key: str) -> str:
     return str(args.get(key) or "").strip()
+
+
+def _authorize_kind_patterns(
+    *,
+    include_explicit: bool,
+    kind_patterns: list[str],
+    policy: ToolDispatchPolicy,
+) -> tuple[list[str], str, str]:
+    if not include_explicit:
+        return ([], "invalid_arguments", "kind_patterns_require_include_explicit") if kind_patterns else ([], "", "")
+    if not kind_patterns:
+        return [], "invalid_arguments", "explicit_kind_patterns_required"
+    if not policy.allow_explicit_trace:
+        return [], "forbidden", "explicit_trace_not_authorized"
+    allowed = [str(item or "").strip().lower().rstrip(".*") for item in policy.allowed_kind_prefixes]
+    allowed = [item for item in allowed if item]
+    normalized: list[str] = []
+    for raw in kind_patterns:
+        pattern = str(raw or "").strip().lower()
+        if not re.fullmatch(r"[a-z0-9_-]+(?:\.[a-z0-9_-]+)*(?:\.\*)?", pattern):
+            return [], "invalid_arguments", "invalid_kind_pattern"
+        base = pattern[:-2] if pattern.endswith(".*") else pattern
+        if not any(base == prefix or base.startswith(prefix + ".") for prefix in allowed):
+            return [], "forbidden", "kind_pattern_not_authorized"
+        if pattern not in normalized:
+            normalized.append(pattern)
+    return normalized[:8], "", ""
 
 
 def _optional_string(value: Any) -> str:
@@ -352,7 +432,8 @@ def _nullable_type(value: Any) -> Any:
 def _retrieve_description() -> str:
     return (
         "Fuzzy memory search for preferences, plans, people, old facts, relationships, "
-        "promises, and material/tool trace anchors. Excludes visible context for the current turn."
+        "promises, and material/tool trace anchors. Excludes visible context for the current turn. "
+        "Use include_explicit with a precise kind_patterns value only when tool, event, skill, or material records are needed."
     )
 
 
@@ -391,6 +472,15 @@ def _retrieve_schema(categories: list[str]) -> dict[str, Any]:
                     "start_ts": {"type": "integer"},
                     "end_ts": {"type": "integer"},
                 },
+            },
+            "include_explicit": {
+                "type": "boolean",
+                "description": "Whether this query intentionally needs explicit trace/event/material records.",
+            },
+            "kind_patterns": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Exact kinds or trailing-wildcard prefixes authorized by the host.",
             },
         },
     }

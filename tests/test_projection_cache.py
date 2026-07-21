@@ -29,6 +29,7 @@ from memcore import (
     TurnStatus,
     canonical_json_bytes,
     is_strict_message_prefix,
+    stable_projection_hash,
 )
 
 
@@ -374,6 +375,51 @@ class ProviderAdapterTests(ProjectionBase):
             ["preface-a", "preface-b"],
         )
 
+    def test_environment_media_between_tool_rounds_stays_user_input(self) -> None:
+        handle = self.mem.begin_turn(
+            stimuli=[_stimulus("先加载图片再查资料", source_id="media-loop-user")],
+            turn_id="media-between-tools",
+        )
+        self.mem.append_entry(_action("load-image", source_id="media-load-action"), turn_id=handle.turn_id)
+        self.mem.append_entry(
+            _observation("load-image", source_id="media-load-result", text="图片已加载"),
+            turn_id=handle.turn_id,
+        )
+        self.mem.append_entry(
+            TimelineEntryInput(
+                source_id="media-model-input",
+                kind="material.model_input",
+                origin=EntryOrigin.ENVIRONMENT,
+                turn_role=TurnRole.INTERMEDIATE,
+                semantic_text="工具为当前模型请求加载了图片：img_001。",
+                payload={"items": [{"attachment_handle": "img_001", "mime_type": "image/png"}]},
+                semanticize=False,
+            ),
+            turn_id=handle.turn_id,
+        )
+        self.mem.append_entry(_action("search-next", source_id="media-search-action"), turn_id=handle.turn_id)
+        self.mem.append_entry(
+            _observation("search-next", source_id="media-search-result", text="查到补充资料"),
+            turn_id=handle.turn_id,
+        )
+
+        openai = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE).payloads
+        anthropic = self.mem.build_context_projection(provider_profile=ANTHROPIC_PROFILE).payloads
+
+        self.assertEqual(
+            [message["role"] for message in openai],
+            ["user", "assistant", "tool", "user", "assistant", "tool"],
+        )
+        self.assertIn("material.model_input", str(openai[3]["content"]))
+        self.assertIsNone(openai[4]["content"])
+        self.assertEqual(openai[4]["tool_calls"][0]["id"], "search-next")
+        self.assertEqual(
+            [message["role"] for message in anthropic],
+            ["user", "assistant", "user", "user", "assistant", "user"],
+        )
+        self.assertIn("material.model_input", str(anthropic[3]["content"]))
+        self.assertEqual(anthropic[4]["content"][0]["id"], "search-next")
+
     def test_open_tool_loop_projection_only_appends_new_batches(self) -> None:
         handle = self.mem.begin_turn(
             stimuli=[_stimulus("逐步查", source_id="loop-question")],
@@ -464,7 +510,7 @@ class PrefixAndLedgerTests(ProjectionBase):
         )
         before_final = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)
         self.assertEqual(before_final.payloads, (user_payload,))
-        self.assertEqual(request.projections[0].projection_status, ProjectionStatus.COMPLETE)
+        self.assertEqual(request.projections[0].projection_status, ProjectionStatus.REQUEST_FROZEN)
 
         completed = self.mem.complete_turn(
             turn_id=handle.turn_id,
@@ -538,6 +584,180 @@ class PrefixAndLedgerTests(ProjectionBase):
         )
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].payload, payload)
+        self.assertEqual(len(self.store.list_projection_audits(namespace=self.namespace)), 2)
+
+    def test_first_real_request_replaces_unfrozen_open_turn_projection(self) -> None:
+        handle = self.mem.begin_turn(
+            stimuli=[_stimulus("canonical", source_id="replace-user")],
+            turn_id="replace-turn",
+        )
+        canonical = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)
+        self.assertEqual(len(canonical.messages), 1)
+        actual_payload = {"role": "user", "content": "actual provider-visible message"}
+
+        result = self.mem.record_request_projection(
+            turn_id=handle.turn_id,
+            provider_profile=OPENAI_PROFILE,
+            turn_messages=[
+                ProjectionMessageInput(
+                    provider_profile=OPENAI_PROFILE,
+                    payload=actual_payload,
+                    source_ids=("replace-user",),
+                )
+            ],
+            history_messages=[actual_payload],
+            attempt=1,
+        )
+
+        self.assertEqual(result.projections[0].payload, actual_payload)
+        self.assertEqual(result.projections[0].projection_status, ProjectionStatus.REQUEST_FROZEN)
+        rebuilt = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)
+        self.assertEqual(rebuilt.payloads, (actual_payload,))
+
+    def test_request_audit_can_hash_wire_items_without_changing_chat_projection(self) -> None:
+        handle = self.mem.begin_turn(
+            stimuli=[_stimulus("tool", source_id="wire-user")],
+            turn_id="wire-turn",
+        )
+        chat_payload = {"role": "assistant", "tool_calls": [{"id": "call-1", "type": "function"}]}
+        wire_payload = {"type": "function_call", "call_id": "call-1", "name": "lookup", "arguments": "{}"}
+        result = self.mem.record_request_projection(
+            turn_id=handle.turn_id,
+            provider_profile=OPENAI_PROFILE,
+            turn_messages=[
+                ProjectionMessageInput(
+                    provider_profile=OPENAI_PROFILE,
+                    payload=chat_payload,
+                    source_ids=("wire-user",),
+                )
+            ],
+            history_messages=[chat_payload],
+            audit_history_messages=[wire_payload],
+            attempt=1,
+        )
+
+        self.assertEqual(result.projections[0].payload, chat_payload)
+        self.assertEqual(result.audit.history_hash, stable_projection_hash([wire_payload]))
+
+    def test_request_projection_cannot_change_after_first_audit(self) -> None:
+        handle = self.mem.begin_turn(
+            stimuli=[_stimulus("first", source_id="locked-user")],
+            turn_id="locked-turn",
+        )
+        first_payload = {"role": "user", "content": "first wire"}
+        self.mem.record_request_projection(
+            turn_id=handle.turn_id,
+            provider_profile=OPENAI_PROFILE,
+            turn_messages=[
+                ProjectionMessageInput(
+                    provider_profile=OPENAI_PROFILE,
+                    payload=first_payload,
+                    source_ids=("locked-user",),
+                )
+            ],
+            history_messages=[first_payload],
+            attempt=1,
+        )
+        changed_payload = {"role": "user", "content": "changed wire"}
+        with self.assertRaisesRegex(SchemaError, "projection_immutable_conflict"):
+            self.mem.record_request_projection(
+                turn_id=handle.turn_id,
+                provider_profile=OPENAI_PROFILE,
+                turn_messages=[
+                    ProjectionMessageInput(
+                        provider_profile=OPENAI_PROFILE,
+                        payload=changed_payload,
+                        source_ids=("locked-user",),
+                    )
+                ],
+                history_messages=[changed_payload],
+                attempt=2,
+            )
+        stored = self.store.get_turn_projections(
+            namespace=self.namespace,
+            turn_id=handle.turn_id,
+            provider_profile=OPENAI_PROFILE,
+        )
+        self.assertEqual(stored[0].payload, first_payload)
+        self.assertEqual(len(self.store.list_projection_audits(namespace=self.namespace)), 1)
+
+    def test_tool_projections_appended_after_first_audit_freeze_once(self) -> None:
+        handle = self.mem.begin_turn(
+            stimuli=[_stimulus("run tools", source_id="append-user")],
+            turn_id="append-tools-turn",
+        )
+        first = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)
+        first_payload = {"role": "user", "content": "actual current request"}
+        self.mem.record_request_projection(
+            turn_id=handle.turn_id,
+            provider_profile=OPENAI_PROFILE,
+            turn_messages=[
+                ProjectionMessageInput(
+                    provider_profile=OPENAI_PROFILE,
+                    payload=first_payload,
+                    source_ids=first.messages[0].source_ids,
+                    projection_index=first.messages[0].projection_index,
+                )
+            ],
+            history_messages=[first_payload],
+            attempt=1,
+        )
+        self.mem.append_entry(_action("call-late", source_id="append-action"), turn_id=handle.turn_id)
+        self.mem.append_entry(
+            _observation("call-late", source_id="append-observation", text="late result"),
+            turn_id=handle.turn_id,
+        )
+        expanded = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)
+        self.assertEqual(len(expanded.messages), 3)
+        self.assertEqual(expanded.messages[0].projection_status, ProjectionStatus.REQUEST_FROZEN)
+        self.assertNotEqual(expanded.messages[1].projection_status, ProjectionStatus.REQUEST_FROZEN)
+
+        second = self.mem.record_request_projection(
+            turn_id=handle.turn_id,
+            provider_profile=OPENAI_PROFILE,
+            turn_messages=[
+                ProjectionMessageInput(
+                    provider_profile=OPENAI_PROFILE,
+                    payload=dict(message.payload),
+                    source_ids=message.source_ids,
+                    projection_index=message.projection_index,
+                    projection_status=message.projection_status,
+                    projection_version=message.projection_version,
+                )
+                for message in expanded.messages
+            ],
+            history_messages=[dict(message.payload) for message in expanded.messages],
+            attempt=2,
+        )
+
+        self.assertEqual(
+            [item.projection_status for item in second.projections],
+            [
+                ProjectionStatus.REQUEST_FROZEN,
+                ProjectionStatus.REQUEST_FROZEN,
+                ProjectionStatus.REQUEST_FROZEN,
+            ],
+        )
+        changed = [dict(message.payload) for message in second.projections]
+        changed[-1] = {**changed[-1], "content": "changed late result"}
+        with self.assertRaisesRegex(SchemaError, "projection_immutable_conflict"):
+            self.mem.record_request_projection(
+                turn_id=handle.turn_id,
+                provider_profile=OPENAI_PROFILE,
+                turn_messages=[
+                    ProjectionMessageInput(
+                        provider_profile=OPENAI_PROFILE,
+                        payload=payload,
+                        source_ids=message.source_ids,
+                        projection_index=message.projection_index,
+                        projection_status=message.projection_status,
+                        projection_version=message.projection_version,
+                    )
+                    for message, payload in zip(second.projections, changed)
+                ],
+                history_messages=changed,
+                attempt=3,
+            )
         self.assertEqual(len(self.store.list_projection_audits(namespace=self.namespace)), 2)
 
     def test_request_projection_mismatch_rolls_back_projection_and_audit(self) -> None:
