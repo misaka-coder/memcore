@@ -7,7 +7,7 @@
 - Slice 1 `Schema foundation` 已提交（`4b82e2d`）：正式 migration runner、V2 物理列/表、namespace-safe relation reads 与 V1 trace compatibility window；
 - Slice 2 `Turn lifecycle` 已提交（`24f1c1b`）：`begin_turn -> append_entry -> complete_turn / abort_turn`、显式 annotation target、并行 action/observation correlation、原子终态提交、visibility 物化与索引 outbox；
 - Slice 3 `Projection ledger` 已提交（`38727e1`）：versioned renderer registry、canonical/OpenAI/Anthropic adapter、不可变 projection rows、请求 hash audit、final projection 原子提交和 strict-prefix 验收；
-- Slice 4 `Compaction V2` 已提交（`41d55b4`）：共享 `MemCoreRuntime`、closed-turn/token planning、summary/semantic 两阶段原子提交、episode/operation lineage 分离，以及压缩后 summary/semantic projection；
+- Slice 4 `Compaction V2` 已提交（`41d55b4`）：共享 `MemCoreRuntime`、terminal-turn/token planning、summary/semantic 两阶段原子提交、episode/operation lineage 分离，以及压缩后 summary/semantic projection；
 - Slice 5 `Retrieval admission` 已提交（`df09a50`）：结构化 query/result、visibility/annotation/kind/conversation/index-generation 硬准入、开放 kind prefix flags、评分前过滤与有界 semantic relaxation；
 - Slice 6 `Relation expansion` 已提交（`3523c26`）：Namespace-safe lineage closure、stimulus/final 原子组、并行 correlation branch、派生层去重、visible lineage 排除与精确 token budget；
 - Akane cutover primitives 已实现：无模型回复的 typed standalone entry，以及不提前授予检索准入的 staged annotation；
@@ -1065,7 +1065,7 @@ Slice 3 最初只冻结未摘要 V2 raw timeline 与安全 legacy-unlinked 单�
 
 ## 19. Compaction V2 与共享 Runtime
 
-### 19.1 压缩原子从 message 改为 closed turn
+### 19.1 压缩原子从 message 改为 terminal turn
 
 当前按消息数量和 `role == "assistant"` 猜测轮次结束的实现不能继续扩展。V2 的可压缩单位是 `TurnBundle`：
 
@@ -1112,7 +1112,7 @@ projection_profile
 
 不能只统计 `entry.content`。没有 provider tokenizer 时使用 `TokenCounter` 的明确 fallback，并在结果中返回 `token_count_quality=estimated`；`count_compat` 只用于旧部署过渡，不作为 V2 验收模式。
 
-压缩只选择最老的连续 closed-turn 前缀，使压缩后估算历史落到 `target_prompt_history_tokens`，同时保留至少一个可配置的近期完整 turn 窗口。若第一个不可压缩 turn 已导致超预算，返回结构化 `status=blocked_by_open_turn`，不得切断该 turn 来伪装成功。
+压缩只选择最老的连续 terminal-turn 前缀（`closed` 或 `aborted`），使压缩后估算历史落到 `target_prompt_history_tokens`，同时保留至少一个可配置的近期完整 turn 窗口。`aborted` 只总结真实已提交条目，不补造 assistant final；若第一个 `open` turn 已导致超预算，返回结构化 `status=blocked_by_open_turn`，不得切断该 turn 来伪装成功。
 
 ### 19.3 两阶段原子提交与幂等重试
 
@@ -1149,7 +1149,7 @@ V2 不再把 source metadata 的 category 并集原样继承给 summary。尤其
 - `memory.episode_summary`：总结 annotation targets、助手终态结论和对人物/偏好/计划有意义的事实，可进入 episodic/semantic 生命周期；
 - `memory.operation_digest`：记录工具名称、执行状态、材料来源和错误等运行轨迹，默认 `retrieval_visibility=explicit`、`semanticize=false`。
 
-同一个 turn 可同时贡献两种输出，但二者使用不同且不重叠的 source lineage 和 index entry：stimulus/intermediate/final 归 episode，action/observation/material trace 归 operation digest；两条 record 在同一 `commit_summary_batch()` 事务提交，保证整个 closed turn 要么一起被替换，要么都不替换。个人语义强化只读取 accepted annotation、final semantic text 和已有 semantic lineage；原始 tool observation 不能仅因物理上夹在用户与 final 之间就进入 personal semantic memory。
+同一个 turn 可同时贡献两种输出，但二者使用不同且不重叠的 source lineage 和 index entry：stimulus/intermediate/final 归 episode，action/observation/material trace 归 operation digest；两条 record 在同一 `commit_summary_batch()` 事务提交，保证整个 terminal turn 要么一起被替换，要么都不替换。个人语义强化只读取 accepted annotation、final semantic text 和已有 semantic lineage；原始 tool observation 不能仅因物理上夹在用户与 final 之间就进入 personal semantic memory。
 
 工具结果中真正被模型采用的事实通常已体现在 assistant final；若宿主需要让某个结构化材料长期可查，应把它保存为有自身语义策略的 `material.*` entry，而不是把所有 tool result 提升为普通记忆。
 
@@ -1201,7 +1201,7 @@ reason
 
 - `MemorySystem` 可注入进程级共享 runtime；未注入时创建 owned runtime，只有 owner 的 `close()` 会关闭 executor；
 - conversation lock 使用安全 `store_identity + namespace + conversation`，SQLite 文件 identity 只保存规范化路径 hash，不暴露绝对路径；
-- V2 压缩只选择最老的连续 closed-turn 前缀，并至少保留配置的近期完整 turn；open/aborted 前缀返回结构化阻塞状态，不切断工具分支；
+- V2 压缩只选择最老的连续 terminal-turn 前缀，并至少保留配置的近期完整 turn；`aborted` 可按真实条目压缩但不伪造 final，只有 `open` 前缀返回结构化阻塞状态；
 - projected-token 口径包含 provider role/content、结构化 payload、工具批次和固定 framing；无 tokenizer 时明确返回 `estimated`；
 - `commit_summary_batch()` 与 `commit_semantic_batch()` 使用 `BEGIN IMMEDIATE`，在单事务内重验 generation、row version、turn status、连续前缀和 projection hash；
 - 普通 episode 与 operation digest 使用互不重叠的 source lineage 同批提交；operation digest 默认 explicit 且不进入长期语义压缩；
@@ -1584,7 +1584,7 @@ shadow 阶段不得双发消息、双执行工具或把 shadow summary 注入模
 | `memcore/memory_system.py` | 新生命周期、runtime 注入、结构化 retrieval | 旧 API 只剩薄 adapter |
 | `memcore/projection.py` | canonical/OpenAI/Anthropic adapter 与 ledger | 同一 entry/profile 字节稳定 |
 | `memcore/rendering.py` | registry、prefix resolution、canonical fallback | 未知 kind 安全可渲染 |
-| `memcore/compaction.py` | closed-turn/token/lineage 原子压缩 | 不切断并行工具 branch |
+| `memcore/compaction.py` | terminal-turn/token/lineage 原子压缩 | 不切断并行工具 branch，不让 aborted 永久阻塞 |
 | `memcore/retrieval.py` | QueryPlan、hard filters、关系扩窗、结构化结果 | 被过滤记录从未进入评分 |
 | `memcore/index/metadata_filters.py` | kind flags 与 filter compiler | 新 kind prefix 可前置过滤 |
 | `memcore/index/entry_builder.py` | V2 flags/visibility/generation metadata | Chroma metadata 全为支持的标量 |
@@ -1710,7 +1710,7 @@ Akane 最终验收必须分别走个人 bot 普通私聊、个人群聊、金融
 1. **Schema foundation（已完成）**：migration runner、V2 columns、turn/projection tables、namespace-safe reads；
 2. **Turn lifecycle（已完成）**：begin/append/complete/abort、annotation status、并行 correlation 与原子终态，尚不切 Akane；
 3. **Projection ledger（已完成）**：renderer registry、provider adapters、immutable ledger、request audit、strict-prefix tests；
-4. **Compaction V2（已提交：`41d55b4`）**：shared runtime、closed-turn/token planning、atomic summary/semantic commits；
+4. **Compaction V2（已提交：`41d55b4`）**：shared runtime、terminal-turn/token planning、atomic summary/semantic commits；
 5. **Retrieval admission（已提交：`df09a50`）**：visibility、kind flags、新 index generation、hard-filter tests；
 6. **Relation expansion（已提交：`3523c26`）**：turn/correlation/lineage closure、structured results、atomic token budget；
 7. **Akane cutover primitives（已实现，待本切片提交）**：typed standalone entry、staged annotation；

@@ -1128,8 +1128,12 @@ class SQLiteMemoryStore(MemoryStore):
                 turn = self._conn.execute("SELECT * FROM turns WHERE turn_id = ?", (turn_id,)).fetchone()
                 if turn is None or int(turn["row_version"] or 0) != row_version:
                     return SummaryBatchCommitResult(status="stale_batch", reason="turn_version_changed")
-                if str(turn["status"] or "") != TurnStatus.CLOSED.value:
-                    return SummaryBatchCommitResult(status="stale_batch", reason="turn_not_closed")
+                try:
+                    turn_status = TurnStatus(str(turn["status"] or ""))
+                except ValueError:
+                    return SummaryBatchCommitResult(status="stale_batch", reason="turn_status_invalid")
+                if not turn_status.terminal:
+                    return SummaryBatchCommitResult(status="stale_batch", reason="turn_not_terminal")
 
             current_hashes = self._projection_hashes_by_source_locked(
                 namespace=namespace,

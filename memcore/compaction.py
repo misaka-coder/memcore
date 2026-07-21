@@ -48,7 +48,7 @@ from .time_anchor import (
     infer_time_of_day,
     timestamp_to_date_label,
 )
-from .timeline import TimelineEntry, TurnRole, TurnStatus
+from .timeline import TimelineEntry, TurnRole
 from .token_counter import TokenCounter
 
 
@@ -163,8 +163,8 @@ class Compaction:
         total_bundle_count = len(bundles)
         blocked_reason = ""
         for component in components:
-            if any(bundle.status is not TurnStatus.CLOSED for bundle in component):
-                blocked_reason = "open_or_aborted_turn_in_prefix"
+            if any(not bundle.status.terminal for bundle in component):
+                blocked_reason = "open_turn_in_prefix"
                 break
             if total_bundle_count - len(selected) - len(component) < self.config.compaction_min_recent_turns:
                 blocked_reason = "recent_turn_window"
@@ -178,7 +178,7 @@ class Compaction:
                 break
 
         if not selected:
-            result["status"] = "blocked_by_open_turn" if blocked_reason.startswith("open") else "not_due"
+            result["status"] = "blocked_by_open_turn" if blocked_reason == "open_turn_in_prefix" else "not_due"
             result["reason"] = blocked_reason
             result["after_projected_tokens"] = before_tokens
             return

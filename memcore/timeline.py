@@ -60,6 +60,12 @@ class TurnStatus(_TextEnum):
     CLOSED = "closed"
     ABORTED = "aborted"
 
+    @property
+    def terminal(self) -> bool:
+        """Whether no more entries may be appended to this turn."""
+
+        return self in {TurnStatus.CLOSED, TurnStatus.ABORTED}
+
 
 class AnnotationStatus(_TextEnum):
     UNANNOTATED = "unannotated"

@@ -26,6 +26,7 @@ from memcore import (
     TokenCounter,
     TurnBundle,
     TurnRole,
+    TurnStatus,
     canonical_json_bytes,
 )
 from memcore.llm.base import TaskType
@@ -315,6 +316,7 @@ class ClosedTurnPlanningTests(CompactionV2Base):
             _complete_simple_turn(mem, 1)
             result = mem.compact_due_sync()
             self.assertEqual(result["status"], "blocked_by_open_turn")
+            self.assertEqual(result["reason"], "open_turn_in_prefix")
             self.assertEqual(llm.summary_calls, 0)
             self.assertEqual(store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10), [])
             self.assertEqual(len(store.get_unsummarized_messages(namespace=mem.namespace)), 3)
@@ -354,7 +356,7 @@ class ClosedTurnPlanningTests(CompactionV2Base):
             mem.close()
             store.close()
 
-    def test_aborted_oldest_turn_blocks_compaction_without_becoming_a_partial_summary(self) -> None:
+    def test_aborted_oldest_turn_compacts_without_fabricating_a_reply(self) -> None:
         mem, store, llm = self.make_mem(
             config=_projected_config(max_prompt_history_tokens=100, target_prompt_history_tokens=60)
         )
@@ -374,10 +376,19 @@ class ClosedTurnPlanningTests(CompactionV2Base):
             _complete_simple_turn(mem, 1)
 
             result = mem.compact_due_sync()
-            self.assertEqual(result["status"], "blocked_by_open_turn")
-            self.assertEqual(result["reason"], "open_or_aborted_turn_in_prefix")
-            self.assertEqual(llm.summary_calls, 0)
-            self.assertEqual(store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10), [])
+            self.assertEqual(result["status"], "compacted")
+            self.assertEqual(llm.summary_calls, 1)
+            self.assertEqual(result["summary_source_ids"], ["aborted-user"])
+            self.assertEqual(
+                [item["source_id"] for item in store.get_unsummarized_messages(namespace=mem.namespace)],
+                ["user-1", "final-1"],
+            )
+            turn = store.get_turn(namespace=mem.namespace, turn_id="aborted-turn")
+            self.assertIsNotNone(turn)
+            self.assertEqual(turn.status, TurnStatus.ABORTED)
+            summaries = store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10)
+            self.assertEqual(len(summaries), 1)
+            self.assertEqual(summaries[0]["source_ids"], ["aborted-user"])
         finally:
             mem.close()
             store.close()
