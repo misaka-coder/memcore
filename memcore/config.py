@@ -43,7 +43,7 @@ class MemoryConfig:
     target_prompt_history_tokens: int = 10000
     reserved_current_turn_tokens: int = 2000
     reserved_retrieval_tokens: int = 2000
-    compaction_max_source_tokens: int = 32000
+    compaction_max_source_tokens: int = 24000
     projection_profile: str = "canonical_user_assistant"
     compaction_min_recent_turns: int = 1
     compaction_schema_version: int = 2
