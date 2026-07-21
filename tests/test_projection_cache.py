@@ -69,7 +69,24 @@ def _action(call_id: str, *, source_id: str) -> TimelineEntryInput:
     )
 
 
-def _observation(call_id: str, *, source_id: str, text: str) -> TimelineEntryInput:
+def _intermediate(text: str, *, source_id: str) -> TimelineEntryInput:
+    return TimelineEntryInput(
+        source_id=source_id,
+        kind="message.assistant.intermediate",
+        origin=EntryOrigin.ASSISTANT,
+        turn_role=TurnRole.INTERMEDIATE,
+        semantic_text=text,
+        payload={"text": text},
+    )
+
+
+def _observation(
+    call_id: str,
+    *,
+    source_id: str,
+    text: str,
+    status: str = "success",
+) -> TimelineEntryInput:
     return TimelineEntryInput(
         source_id=source_id,
         kind="tool.web_search.result",
@@ -78,7 +95,7 @@ def _observation(call_id: str, *, source_id: str, text: str) -> TimelineEntryInp
         semantic_text=text,
         payload={"output": text},
         correlation_id=call_id,
-        trace_metadata={"tool_name": "web_search", "status": "success"},
+        trace_metadata={"tool_name": "web_search", "status": status},
     )
 
 
@@ -289,6 +306,74 @@ class ProviderAdapterTests(ProjectionBase):
         openai = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)
         self.assertNotEqual(openai.stable_prefix_hash, projection.stable_prefix_hash)
 
+    def test_provider_tool_results_preserve_content_and_anthropic_terminal_errors(self) -> None:
+        handle = self.mem.begin_turn(
+            stimuli=[_stimulus("查失败路径", source_id="error-question")],
+            turn_id="provider-tool-errors",
+        )
+        self.mem.append_entry(_action("call-error", source_id="action-error"), turn_id=handle.turn_id)
+        self.mem.append_entry(_action("call-cancelled", source_id="action-cancelled"), turn_id=handle.turn_id)
+        self.mem.append_entry(
+            _observation(
+                "call-cancelled",
+                source_id="result-cancelled",
+                text="cancelled verbatim",
+                status="cancelled",
+            ),
+            turn_id=handle.turn_id,
+        )
+        self.mem.append_entry(
+            _observation("call-error", source_id="result-error", text="error verbatim", status="error"),
+            turn_id=handle.turn_id,
+        )
+
+        openai = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE).payloads
+        anthropic = self.mem.build_context_projection(provider_profile=ANTHROPIC_PROFILE).payloads
+
+        self.assertEqual([item["content"] for item in openai[-2:]], ["cancelled verbatim", "error verbatim"])
+        self.assertEqual(
+            anthropic[-1]["content"],
+            [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "call-cancelled",
+                    "content": "cancelled verbatim",
+                    "is_error": True,
+                },
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "call-error",
+                    "content": "error verbatim",
+                    "is_error": True,
+                },
+            ],
+        )
+
+    def test_tool_preface_and_parallel_calls_share_the_original_assistant_message(self) -> None:
+        handle = self.mem.begin_turn(
+            stimuli=[_stimulus("同时查", source_id="preface-question")],
+            turn_id="preface-tool-turn",
+        )
+        self.mem.append_entry(
+            _intermediate("我一起查一下。", source_id="preface-assistant"),
+            turn_id=handle.turn_id,
+        )
+        self.mem.append_entry(_action("preface-a", source_id="preface-action-a"), turn_id=handle.turn_id)
+        self.mem.append_entry(_action("preface-b", source_id="preface-action-b"), turn_id=handle.turn_id)
+
+        openai = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE).payloads
+        anthropic = self.mem.build_context_projection(provider_profile=ANTHROPIC_PROFILE).payloads
+
+        self.assertEqual([item["role"] for item in openai], ["user", "assistant"])
+        self.assertEqual(openai[1]["content"], "我一起查一下。")
+        self.assertEqual([item["id"] for item in openai[1]["tool_calls"]], ["preface-a", "preface-b"])
+        self.assertEqual([item["role"] for item in anthropic], ["user", "assistant"])
+        self.assertEqual(anthropic[1]["content"][0], {"type": "text", "text": "我一起查一下。"})
+        self.assertEqual(
+            [item["id"] for item in anthropic[1]["content"][1:]],
+            ["preface-a", "preface-b"],
+        )
+
     def test_open_tool_loop_projection_only_appends_new_batches(self) -> None:
         handle = self.mem.begin_turn(
             stimuli=[_stimulus("逐步查", source_id="loop-question")],
@@ -312,6 +397,24 @@ class ProviderAdapterTests(ProjectionBase):
         results = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)
         self.assertTrue(is_strict_message_prefix(actions.payloads, results.payloads))
         self.assertEqual([item["tool_call_id"] for item in results.payloads[-2:]], ["loop-b", "loop-a"])
+
+        self.mem.complete_turn(
+            turn_id=handle.turn_id,
+            semantic_text="第一轮完成",
+            provider_output_raw="first final raw",
+            memory_annotation={"keywords": ["工具"]},
+            annotation_status="accepted",
+            source_id="loop-final",
+        )
+        closed = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)
+        self.mem.begin_turn(
+            stimuli=[_stimulus("普通下一问", source_id="after-tool-question")],
+            turn_id="after-tool-turn",
+        )
+        next_turn = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)
+        self.assertTrue(is_strict_message_prefix(closed.payloads, next_turn.payloads))
+        self.assertEqual(next_turn.payloads[-1]["role"], "user")
+        self.assertIn("普通下一问", next_turn.payloads[-1]["content"])
 
 
 class PrefixAndLedgerTests(ProjectionBase):

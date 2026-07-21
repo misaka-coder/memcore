@@ -677,6 +677,10 @@ class ProjectionAdapter:
         return str(raw if raw is not None and str(raw) else entry.semantic_text)
 
     @staticmethod
+    def _assistant_intermediate_text(entry: TimelineEntry) -> str:
+        return str(entry.semantic_text or "")
+
+    @staticmethod
     def _tool_name(entry: TimelineEntry) -> str:
         trace_name = str(entry.trace_metadata.get("tool_name") or "").strip()
         if trace_name:
@@ -695,6 +699,25 @@ class ProjectionAdapter:
         if "arguments" in payload:
             return payload["arguments"]
         return payload
+
+    def _tool_result_content(self, entry: TimelineEntry) -> str:
+        payload = dict(entry.payload)
+        output = payload.get("output")
+        if isinstance(output, str):
+            return output
+        return self._render(entry).text
+
+    @staticmethod
+    def _tool_result_is_error(entry: TimelineEntry) -> bool:
+        return str(entry.trace_metadata.get("status") or "").strip().lower() in {
+            "cancelled",
+            "canceled",
+            "denied",
+            "error",
+            "failed",
+            "failure",
+            "rejected",
+        }
 
     def _project_canonical(self, entries: Sequence[TimelineEntry]) -> list[ProjectionMessageInput]:
         messages: list[ProjectionMessageInput] = []
@@ -720,6 +743,15 @@ class ProjectionAdapter:
         index = 0
         while index < len(entries):
             entry = entries[index]
+            intermediate: TimelineEntry | None = None
+            if (
+                entry.turn_role is TurnRole.INTERMEDIATE
+                and index + 1 < len(entries)
+                and entries[index + 1].turn_role is TurnRole.ACTION
+            ):
+                intermediate = entry
+                index += 1
+                entry = entries[index]
             if entry.turn_role is TurnRole.ACTION:
                 batch: list[TimelineEntry] = []
                 while index < len(entries) and entries[index].turn_role is TurnRole.ACTION:
@@ -744,8 +776,17 @@ class ProjectionAdapter:
                 messages.append(
                     ProjectionMessageInput(
                         provider_profile=OPENAI_PROFILE,
-                        payload={"role": "assistant", "content": None, "tool_calls": tool_calls},
-                        source_ids=tuple(item.source_id for item in batch),
+                        payload={
+                            "role": "assistant",
+                            "content": self._assistant_intermediate_text(intermediate)
+                            if intermediate is not None
+                            else None,
+                            "tool_calls": tool_calls,
+                        },
+                        source_ids=(
+                            *((intermediate.source_id,) if intermediate is not None else ()),
+                            *(item.source_id for item in batch),
+                        ),
                         projection_status=ProjectionStatus.CANONICAL_FALLBACK,
                     )
                 )
@@ -755,7 +796,7 @@ class ProjectionAdapter:
                 payload = {
                     "role": "tool",
                     "tool_call_id": entry.correlation_id,
-                    "content": rendered.text,
+                    "content": self._tool_result_content(entry),
                 }
             elif entry.origin.value == "assistant":
                 payload = {
@@ -785,12 +826,23 @@ class ProjectionAdapter:
         index = 0
         while index < len(entries):
             entry = entries[index]
+            intermediate: TimelineEntry | None = None
+            if (
+                entry.turn_role is TurnRole.INTERMEDIATE
+                and index + 1 < len(entries)
+                and entries[index + 1].turn_role is TurnRole.ACTION
+            ):
+                intermediate = entry
+                index += 1
+                entry = entries[index]
             if entry.turn_role is TurnRole.ACTION:
                 batch: list[TimelineEntry] = []
                 while index < len(entries) and entries[index].turn_role is TurnRole.ACTION:
                     batch.append(entries[index])
                     index += 1
-                content = [
+                content = (
+                    [{"type": "text", "text": self._assistant_intermediate_text(intermediate)}] if intermediate else []
+                ) + [
                     {
                         "type": "tool_use",
                         "id": item.correlation_id,
@@ -803,7 +855,10 @@ class ProjectionAdapter:
                     ProjectionMessageInput(
                         provider_profile=ANTHROPIC_PROFILE,
                         payload={"role": "assistant", "content": content},
-                        source_ids=tuple(item.source_id for item in batch),
+                        source_ids=(
+                            *((intermediate.source_id,) if intermediate is not None else ()),
+                            *(item.source_id for item in batch),
+                        ),
                         projection_status=ProjectionStatus.CANONICAL_FALLBACK,
                     )
                 )
@@ -813,14 +868,16 @@ class ProjectionAdapter:
                 while index < len(entries) and entries[index].turn_role is TurnRole.OBSERVATION:
                     batch.append(entries[index])
                     index += 1
-                content = [
-                    {
+                content = []
+                for item in batch:
+                    result_block = {
                         "type": "tool_result",
                         "tool_use_id": item.correlation_id,
-                        "content": self._render(item).text,
+                        "content": self._tool_result_content(item),
                     }
-                    for item in batch
-                ]
+                    if self._tool_result_is_error(item):
+                        result_block["is_error"] = True
+                    content.append(result_block)
                 messages.append(
                     ProjectionMessageInput(
                         provider_profile=ANTHROPIC_PROFILE,
