@@ -43,6 +43,7 @@ class MemoryConfig:
     target_prompt_history_tokens: int = 10000
     reserved_current_turn_tokens: int = 2000
     reserved_retrieval_tokens: int = 2000
+    compaction_max_source_tokens: int = 32000
     projection_profile: str = "canonical_user_assistant"
     compaction_min_recent_turns: int = 1
     compaction_schema_version: int = 2
@@ -95,6 +96,7 @@ class MemoryConfig:
             "semantic_visible_limit": self.semantic_visible_limit,
             "max_prompt_history_tokens": self.max_prompt_history_tokens,
             "target_prompt_history_tokens": self.target_prompt_history_tokens,
+            "compaction_max_source_tokens": self.compaction_max_source_tokens,
             "compaction_min_recent_turns": self.compaction_min_recent_turns,
             "compaction_schema_version": self.compaction_schema_version,
             "semantic_reinforcement_lookback": self.semantic_reinforcement_lookback,

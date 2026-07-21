@@ -162,6 +162,12 @@ class Compaction:
             result["after_projected_tokens"] = before_tokens
             return
 
+        source_token_limit = (
+            self.config.compaction_max_source_tokens if self.config.compaction_policy == "projected_tokens" else 0
+        )
+        selection_token_target = min(removal_target, source_token_limit) if source_token_limit else removal_target
+        result["source_token_limit"] = source_token_limit
+
         selected: list[TurnBundle] = []
         selected_tokens = 0
         total_bundle_count = len(bundles)
@@ -178,7 +184,7 @@ class Compaction:
             if self.config.compaction_policy == "count_compat":
                 if sum(len(bundle.entries) for bundle in selected) >= removal_target:
                     break
-            elif selected_tokens >= removal_target:
+            elif selected_tokens >= selection_token_target:
                 break
 
         if not selected:
@@ -193,6 +199,7 @@ class Compaction:
             key=lambda entry: entry.seq_no,
         )
         source_ids = tuple(entry.source_id for entry in ordered_entries)
+        result["selected_projected_tokens"] = selected_tokens
         projection_hashes_by_source: dict[str, list[str]] = {}
         for turn_id in selected_ids:
             for message in projections[turn_id]:

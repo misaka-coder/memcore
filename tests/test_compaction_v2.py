@@ -266,6 +266,47 @@ class CompactionV2Base(unittest.TestCase):
 
 
 class ClosedTurnPlanningTests(CompactionV2Base):
+    def test_large_backlog_is_compacted_in_bounded_token_passes(self) -> None:
+        source_token_limit = 180
+        config = _projected_config(
+            max_prompt_history_tokens=260,
+            target_prompt_history_tokens=60,
+            compaction_max_source_tokens=source_token_limit,
+            episodic_visible_max=1,
+        )
+        mem, store, _ = self.make_mem(config=config)
+        try:
+            for number in range(8):
+                _complete_simple_turn(mem, number)
+
+            initial = mem.build_context_projection(provider_profile=OPENAI_PROFILE)
+            first = mem.compact_due_sync(provider_profile=OPENAI_PROFILE)
+
+            self.assertEqual(first["status"], "compacted")
+            self.assertEqual(first["source_token_limit"], source_token_limit)
+            self.assertGreaterEqual(first["selected_projected_tokens"], source_token_limit)
+            self.assertLess(first["source_turn_count"], 7)
+            self.assertGreater(first["after_projected_tokens"], config.max_prompt_history_tokens)
+
+            results = [first]
+            for _ in range(12):
+                current = mem.compact_due_sync(provider_profile=OPENAI_PROFILE)
+                results.append(current)
+                if current["status"] == "not_due":
+                    break
+
+            final = mem.build_context_projection(provider_profile=OPENAI_PROFILE)
+            self.assertEqual(results[-1]["status"], "not_due")
+            self.assertLessEqual(
+                sum(len(canonical_json_bytes(message.payload).decode("utf-8")) + 4 for message in final.messages),
+                config.max_prompt_history_tokens,
+            )
+            self.assertGreater(final.compaction_generation, 1)
+            self.assertGreater(len(initial.messages), len(final.messages))
+        finally:
+            mem.close()
+            store.close()
+
     def test_explicit_provider_profile_uses_actual_frozen_request_size(self) -> None:
         mem, store, _ = self.make_mem(
             config=_projected_config(
