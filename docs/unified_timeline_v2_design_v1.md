@@ -1222,7 +1222,7 @@ reason
 - 压缩后的 summary/semantic 继续走统一 projection ledger，`after_projected_tokens` 与实际可见 provider payload 使用同一计数口径；
 - 索引失败保留 pending outbox 并在结果中返回 `index_status=pending`，不回滚已提交的 SQL 事实；
 - V1 `record_*` 数据在没有 V2 turn 时继续走 legacy compatibility 路径。该切片提交时尚未切换 Akane、QQ、桌宠、金融或个人 Bot；当前状态见文档顶部检查点；
-- Retrieval admission 与 Relation expansion 已完成：visibility/kind/policy/index generation 在评分前硬过滤，随后按 turn/correlation/lineage 扩成受 token budget 约束的原子结果；下一切片是 Native Tools V2。
+- Retrieval admission 与 Relation expansion 已完成：visibility/kind/policy/index generation 在评分前硬过滤，随后按 turn/correlation/lineage 扩成受 token budget 约束的原子结果；Native Memory Tools 的 schema/dispatch 已完成，宿主 provider transport 仍由接入方负责。
 
 ## 20. Retrieval V2 的具体实现
 
