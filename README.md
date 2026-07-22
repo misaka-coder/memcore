@@ -57,7 +57,8 @@
 - **Chat Output Adapter ✅**:标准 JSON 输出契约、`speech` 流式解析、普通文本尽力分段、raw metadata 回写流程见 `docs/chat_output_adapter_v1.md`;工具调用阶段不套该 JSON,只在最终回复阶段输出 memcore JSON。
 - **稳定投影与缓存审计 ✅**:canonical/OpenAI/Anthropic provider projection、renderer/version、strict-prefix 验收、projection hash 与真实请求 audit;MemCore 保证前缀稳定,不替 provider 承诺缓存必命中。
 - **开放动作/结果时间线 ✅**:`append_action(...)` / `append_observation(...)` 可记录原生工具、JSON、XML、标签或宿主自定义协议；实际 provider 消息可冻结回 projection ledger。可选小型 `retention_anchor` 在 operation 压缩后保留资源 ID、版本、hash 等重载锚点，不复制完整结果。
-- **有界后台维护 ✅**:每次 `compact_due` 只推进一个 raw batch 和一个 semantic batch;积压由后续调度渐进处理,不在单次维护里连续清仓。
+- **有界后台维护 ✅**:每次 `compact_due` 只提交一个 raw compaction generation 和一个 semantic batch；
+  token 模式按配置比例一次选足最旧的完整 turn/component，不再被旧条目批次或独立 source 上限提前截断。
 
 核心 + 评测台 + Timeline V2 基础 + provider projection + embedding 三路 + outbox 自愈
 + Chat Output Adapter + importance 衰减均已完成;V1 兼容迁移和宿主切换仍保留明确窗口。
@@ -182,6 +183,11 @@ class MyTokenCounter(TokenCounter):
 cfg = MemoryConfig(raw_compaction_policy="token", raw_token_trigger=12000, raw_token_batch_ratio=0.67)
 mem = MemorySystem(..., config=cfg, token_counter=MyTokenCounter())
 ```
+
+Timeline V2 的 `projected_tokens` 同样复用 `raw_token_trigger` 与
+`raw_token_batch_ratio`，但统计目标 provider 的完整 raw projection，并以完整
+terminal turn/relation component 为切点。`summary_batch_size` 只属于 count policy，
+不会在 projected-token 模式下提前终止批次。
 
 ## 公开边界:本库提供什么 / 接入方自备什么
 

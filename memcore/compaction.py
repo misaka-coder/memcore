@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import math
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -161,28 +162,28 @@ class Compaction:
             projections[bundle.turn_id] = frozen
             bundle_tokens[bundle.turn_id] = sum(self._count_projection_tokens(item) for item in frozen)
 
+        raw_projected_tokens = sum(bundle_tokens.values())
         memory_tokens = self._visible_memory_projection_tokens(namespace, profile)
-        before_tokens = memory_tokens + sum(bundle_tokens.values())
+        before_tokens = memory_tokens + raw_projected_tokens
         result["before_projected_tokens"] = before_tokens
+        result["before_raw_projected_tokens"] = raw_projected_tokens
         result["token_count_quality"] = token_quality
         components = self._bundle_components(bundles)
-        due, removal_target = self._compaction_due_target(bundles=bundles, before_tokens=before_tokens)
+        due, removal_target = self._compaction_due_target(
+            bundles=bundles,
+            raw_projected_tokens=raw_projected_tokens,
+        )
+        result["planned_source_tokens"] = (
+            removal_target if due and self.config.compaction_policy == "projected_tokens" else 0
+        )
         if not due:
             result["status"] = "not_due"
             result["after_projected_tokens"] = before_tokens
+            result["after_raw_projected_tokens"] = raw_projected_tokens
             return
-
-        source_token_limit = (
-            self.config.compaction_max_source_tokens if self.config.compaction_policy == "projected_tokens" else 0
-        )
-        selection_token_target = min(removal_target, source_token_limit) if source_token_limit else removal_target
-        result["source_token_limit"] = source_token_limit
-        source_entry_limit = self.config.summary_batch_size
-        result["source_entry_limit"] = source_entry_limit
 
         selected: list[TurnBundle] = []
         selected_tokens = 0
-        selected_episode_entries = 0
         total_bundle_count = len(bundles)
         blocked_reason = ""
         for component in components:
@@ -194,19 +195,30 @@ class Compaction:
                 break
             selected.extend(component)
             selected_tokens += sum(bundle_tokens[bundle.turn_id] for bundle in component)
-            selected_episode_entries += sum(
-                1 for bundle in component for entry in bundle.entries if self._is_episode_entry(entry)
-            )
             if self.config.compaction_policy == "count_compat":
                 if sum(len(bundle.entries) for bundle in selected) >= removal_target:
                     break
-            elif selected_tokens >= selection_token_target or selected_episode_entries >= source_entry_limit:
+            elif selected_tokens >= removal_target:
                 break
+
+        # V1's oversized-first-turn escape hatch, upgraded to V2 terminal
+        # components.  A complete history with no legal recent tail must not
+        # remain permanently above the token trigger merely because
+        # compaction_min_recent_turns is non-zero.
+        if (
+            not selected
+            and blocked_reason == "recent_turn_window"
+            and all(bundle.status.terminal for bundle in bundles)
+        ):
+            selected = list(bundles)
+            selected_tokens = raw_projected_tokens
+            blocked_reason = ""
 
         if not selected:
             result["status"] = "blocked_by_open_turn" if blocked_reason == "open_turn_in_prefix" else "not_due"
             result["reason"] = blocked_reason
             result["after_projected_tokens"] = before_tokens
+            result["after_raw_projected_tokens"] = raw_projected_tokens
             return
 
         selected_ids = {bundle.turn_id for bundle in selected}
@@ -216,7 +228,6 @@ class Compaction:
         )
         source_ids = tuple(entry.source_id for entry in ordered_entries)
         result["selected_projected_tokens"] = selected_tokens
-        result["selected_episode_entry_count"] = selected_episode_entries
         projection_hashes_by_source: dict[str, list[str]] = {}
         for turn_id in selected_ids:
             for message in projections[turn_id]:
@@ -265,6 +276,7 @@ class Compaction:
                 result["reason"] = "summary_retry_pending"
                 result["summary_retry_pending"] += 1
                 result["after_projected_tokens"] = before_tokens
+                result["after_raw_projected_tokens"] = raw_projected_tokens
                 return
             summary_inputs.append(
                 self._episode_summary_input(
@@ -285,6 +297,7 @@ class Compaction:
             result["status"] = committed.status
             result["reason"] = committed.reason
             result["after_projected_tokens"] = before_tokens
+            result["after_raw_projected_tokens"] = raw_projected_tokens
             return
         for saved in committed.summaries:
             self._record_index_result(
@@ -312,6 +325,7 @@ class Compaction:
         result["compaction_generation"] = committed.compaction_generation
         result["summaries_created"] += len(committed.summaries)
         result["after_projected_tokens"] = max(0, before_tokens - selected_tokens) + summary_tokens
+        result["after_raw_projected_tokens"] = max(0, raw_projected_tokens - selected_tokens)
 
     @staticmethod
     def _is_episode_entry(entry: TimelineEntry) -> bool:
@@ -374,14 +388,18 @@ class Compaction:
             current_last = max(current_last, bundle.last_seq_no)
         return components
 
-    def _compaction_due_target(self, *, bundles: list[TurnBundle], before_tokens: int) -> tuple[bool, int]:
+    def _compaction_due_target(
+        self,
+        *,
+        bundles: list[TurnBundle],
+        raw_projected_tokens: int,
+    ) -> tuple[bool, int]:
         if self.config.compaction_policy == "count_compat":
             entry_count = sum(len(bundle.entries) for bundle in bundles)
             return (entry_count >= self.config.raw_trigger_count, self.config.summary_batch_size)
-        reserved = self.config.reserved_current_turn_tokens + self.config.reserved_retrieval_tokens
-        effective_max = self.config.max_prompt_history_tokens - reserved
-        effective_target = self.config.target_prompt_history_tokens - reserved
-        return (before_tokens > effective_max, max(1, before_tokens - effective_target))
+        trigger = self.config.raw_token_trigger
+        planned = max(1, math.ceil(trigger * float(self.config.raw_token_batch_ratio)))
+        return (raw_projected_tokens >= trigger, planned)
 
     def _count_projection_tokens(self, message: ProjectionMessage) -> int:
         text = canonical_json_bytes(message.payload).decode("utf-8")

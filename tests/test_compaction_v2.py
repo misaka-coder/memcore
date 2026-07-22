@@ -95,10 +95,8 @@ class FailSecondSummaryStore(SQLiteMemoryStore):
 def _projected_config(**overrides: Any) -> MemoryConfig:
     values: dict[str, Any] = {
         "compaction_policy": "projected_tokens",
-        "max_prompt_history_tokens": 260,
-        "target_prompt_history_tokens": 140,
-        "reserved_current_turn_tokens": 0,
-        "reserved_retrieval_tokens": 0,
+        "raw_token_trigger": 260,
+        "raw_token_batch_ratio": 0.67,
         "compaction_min_recent_turns": 1,
         "episodic_compact_trigger_count": 99,
         "projection_profile": OPENAI_PROFILE,
@@ -280,11 +278,10 @@ class CompactionV2Base(unittest.TestCase):
 
 
 class ClosedTurnPlanningTests(CompactionV2Base):
-    def test_projected_compaction_honors_episode_entry_limit_without_splitting_turns(self) -> None:
+    def test_projected_compaction_is_not_truncated_by_legacy_entry_batch_size(self) -> None:
         config = _projected_config(
-            max_prompt_history_tokens=260,
-            target_prompt_history_tokens=60,
-            compaction_max_source_tokens=10000,
+            raw_token_trigger=260,
+            raw_token_batch_ratio=0.75,
             summary_batch_size=3,
             episodic_visible_max=1,
         )
@@ -296,21 +293,17 @@ class ClosedTurnPlanningTests(CompactionV2Base):
             result = mem.compact_due_sync(provider_profile=OPENAI_PROFILE)
 
             self.assertEqual(result["status"], "compacted")
-            self.assertEqual(result["source_entry_limit"], 3)
-            self.assertEqual(result["source_turn_count"], 2)
-            self.assertEqual(result["source_entry_count"], 4)
-            self.assertEqual(result["selected_episode_entry_count"], 4)
-            self.assertGreater(result["after_projected_tokens"], config.max_prompt_history_tokens)
+            self.assertGreater(result["source_entry_count"], config.summary_batch_size)
+            self.assertGreaterEqual(result["selected_projected_tokens"], result["planned_source_tokens"])
+            self.assertLess(result["after_raw_projected_tokens"], result["before_raw_projected_tokens"])
         finally:
             mem.close()
             store.close()
 
-    def test_large_backlog_is_compacted_in_bounded_token_passes(self) -> None:
-        source_token_limit = 180
+    def test_large_backlog_reaches_ratio_target_in_one_pass(self) -> None:
         config = _projected_config(
-            max_prompt_history_tokens=260,
-            target_prompt_history_tokens=60,
-            compaction_max_source_tokens=source_token_limit,
+            raw_token_trigger=900,
+            raw_token_batch_ratio=0.75,
             episodic_visible_max=1,
         )
         mem, store, _ = self.make_mem(config=config)
@@ -322,26 +315,28 @@ class ClosedTurnPlanningTests(CompactionV2Base):
             first = mem.compact_due_sync(provider_profile=OPENAI_PROFILE)
 
             self.assertEqual(first["status"], "compacted")
-            self.assertEqual(first["source_token_limit"], source_token_limit)
-            self.assertGreaterEqual(first["selected_projected_tokens"], source_token_limit)
-            self.assertLess(first["source_turn_count"], 7)
-            self.assertGreater(first["after_projected_tokens"], config.max_prompt_history_tokens)
-
-            results = [first]
-            for _ in range(12):
-                current = mem.compact_due_sync(provider_profile=OPENAI_PROFILE)
-                results.append(current)
-                if current["status"] == "not_due":
-                    break
+            self.assertGreaterEqual(first["selected_projected_tokens"], first["planned_source_tokens"])
+            self.assertLess(first["after_raw_projected_tokens"], config.raw_token_trigger)
 
             final = mem.build_context_projection(provider_profile=OPENAI_PROFILE)
-            self.assertEqual(results[-1]["status"], "not_due")
-            self.assertLessEqual(
-                sum(len(canonical_json_bytes(message.payload).decode("utf-8")) + 4 for message in final.messages),
-                config.max_prompt_history_tokens,
-            )
-            self.assertGreater(final.compaction_generation, 1)
+            self.assertEqual(mem.compact_due_sync(provider_profile=OPENAI_PROFILE)["status"], "not_due")
+            self.assertEqual(final.compaction_generation, 1)
             self.assertGreater(len(initial.messages), len(final.messages))
+        finally:
+            mem.close()
+            store.close()
+
+    def test_single_oversized_terminal_turn_compacts_without_a_recent_tail(self) -> None:
+        mem, store, _ = self.make_mem(config=_projected_config(raw_token_trigger=200))
+        try:
+            _complete_simple_turn(mem, 0, payload={"blob": "x" * 1200})
+
+            result = mem.compact_due_sync(provider_profile=OPENAI_PROFILE)
+
+            self.assertEqual(result["status"], "compacted")
+            self.assertEqual(result["source_turn_count"], 1)
+            self.assertEqual(result["summary_source_ids"], ["user-0", "final-0"])
+            self.assertEqual(result["after_raw_projected_tokens"], 0)
         finally:
             mem.close()
             store.close()
@@ -349,8 +344,7 @@ class ClosedTurnPlanningTests(CompactionV2Base):
     def test_explicit_provider_profile_uses_actual_frozen_request_size(self) -> None:
         mem, store, _ = self.make_mem(
             config=_projected_config(
-                max_prompt_history_tokens=4_000,
-                target_prompt_history_tokens=2_000,
+                raw_token_trigger=4_000,
                 projection_profile=CANONICAL_PROFILE,
             )
         )
@@ -441,9 +435,7 @@ class ClosedTurnPlanningTests(CompactionV2Base):
             store.close()
 
     def test_open_oldest_turn_blocks_compaction_without_splitting_it(self) -> None:
-        mem, store, llm = self.make_mem(
-            config=_projected_config(max_prompt_history_tokens=100, target_prompt_history_tokens=60)
-        )
+        mem, store, llm = self.make_mem(config=_projected_config(raw_token_trigger=100))
         try:
             mem.begin_turn(
                 stimuli=[
@@ -468,9 +460,7 @@ class ClosedTurnPlanningTests(CompactionV2Base):
             store.close()
 
     def test_large_structured_payload_counts_even_when_semantic_text_is_short(self) -> None:
-        mem, store, _ = self.make_mem(
-            config=_projected_config(max_prompt_history_tokens=300, target_prompt_history_tokens=160)
-        )
+        mem, store, _ = self.make_mem(config=_projected_config(raw_token_trigger=300))
         try:
             _complete_simple_turn(mem, 0, payload={"blob": "z" * 1200})
             _complete_simple_turn(mem, 1)
@@ -485,7 +475,7 @@ class ClosedTurnPlanningTests(CompactionV2Base):
 
     def test_projected_token_fallback_is_explicitly_marked_estimated(self) -> None:
         mem, store, _ = self.make_mem(
-            config=_projected_config(max_prompt_history_tokens=200, target_prompt_history_tokens=100),
+            config=_projected_config(raw_token_trigger=200),
             with_token_counter=False,
         )
         try:
@@ -500,9 +490,7 @@ class ClosedTurnPlanningTests(CompactionV2Base):
             store.close()
 
     def test_aborted_oldest_turn_compacts_without_fabricating_a_reply(self) -> None:
-        mem, store, llm = self.make_mem(
-            config=_projected_config(max_prompt_history_tokens=100, target_prompt_history_tokens=60)
-        )
+        mem, store, llm = self.make_mem(config=_projected_config(raw_token_trigger=100))
         try:
             mem.begin_turn(
                 stimuli=[

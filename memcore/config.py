@@ -38,12 +38,11 @@ class MemoryConfig:
     semantic_visible_limit: int = 5  # 可见长期记忆数
 
     # --- Unified Timeline V2 压缩预算 ---
+    # V2 复用上面的 raw_token_trigger/raw_token_batch_ratio：token 决定
+    # 何时压缩和大致压缩多少，完整 terminal turn/component 决定实际边界。
     compaction_policy: str = "projected_tokens"  # "projected_tokens" | "count_compat"
-    max_prompt_history_tokens: int = 16000
-    target_prompt_history_tokens: int = 10000
     reserved_current_turn_tokens: int = 2000
     reserved_retrieval_tokens: int = 2000
-    compaction_max_source_tokens: int = 24000
     projection_profile: str = "canonical_user_assistant"
     compaction_min_recent_turns: int = 1
     compaction_schema_version: int = 2
@@ -94,9 +93,6 @@ class MemoryConfig:
             "episodic_compact_trigger_count": self.episodic_compact_trigger_count,
             "episodic_compact_batch_size": self.episodic_compact_batch_size,
             "semantic_visible_limit": self.semantic_visible_limit,
-            "max_prompt_history_tokens": self.max_prompt_history_tokens,
-            "target_prompt_history_tokens": self.target_prompt_history_tokens,
-            "compaction_max_source_tokens": self.compaction_max_source_tokens,
             "compaction_min_recent_turns": self.compaction_min_recent_turns,
             "compaction_schema_version": self.compaction_schema_version,
             "semantic_reinforcement_lookback": self.semantic_reinforcement_lookback,
@@ -138,13 +134,6 @@ class MemoryConfig:
             value = getattr(self, name)
             if not isinstance(value, int) or value < 0:
                 raise ConfigError(f"{name} must be a non-negative int, got {value!r}")
-        if self.target_prompt_history_tokens >= self.max_prompt_history_tokens:
-            raise ConfigError("target_prompt_history_tokens must be < max_prompt_history_tokens")
-        reserved = self.reserved_current_turn_tokens + self.reserved_retrieval_tokens
-        if reserved >= self.target_prompt_history_tokens:
-            raise ConfigError(
-                "reserved_current_turn_tokens + reserved_retrieval_tokens must be < target_prompt_history_tokens"
-            )
         self.projection_profile = str(self.projection_profile or "").strip().lower()
         if not self.projection_profile:
             raise ConfigError("projection_profile must be non-empty")

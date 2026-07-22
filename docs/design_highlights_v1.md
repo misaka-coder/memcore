@@ -121,13 +121,15 @@ V2 通过 turn、stimulus/final、correlation action/observation 和 summary lin
 合法的 namespaced kind。renderer 可以扩展可读性,但不会因为新增业务类型就复制
 一套 MemCore 逻辑,也不会借渲染器绕过 namespace、visibility 或工具授权。
 
-### 17. 后台维护有界,不拿稳定性换“清仓速度”
+### 17. 后台维护有界,但不把差值切成连续小压缩
 
-一次 `compact_due` 只推进一个 raw batch 和一个 semantic batch。失败返回结构化
-retry/deferred,后续调度继续；历史 legacy 数据也不会通过一次长跑被静默删除。
+一次 `compact_due` 只提交一个 raw compaction generation 和一个 semantic batch。
+projected-token 模式会在这一个 generation 内按配置比例选足最旧的完整
+turn/component；不会复用 count 批次或独立 source 上限，把同一个差值拆成聊天
+过程中连续发生的小压缩。失败返回结构化 retry/deferred，不提交半批 lineage。
 
-价值:高活跃群不会因为压缩欠账同时制造一串模型请求,模型调用、延迟和数据提交
-边界都能被观测和控制。
+价值:高活跃群不会因为旧条目限制连续改写 prompt 前缀，同时模型调用、延迟和
+数据提交边界仍然可观测、可回滚。
 
 ### 18. 动作—结果开放接缝，不接管宿主工具架构
 

@@ -3,6 +3,11 @@
 > 状态:已实现。
 > 目标:只把 raw -> episodic 的触发/批次选择从固定条数扩展为可选 token policy;episodic -> semantic 和 semantic 强化合并继续按条目。
 
+> Timeline V2 延续同一策略值：`raw_token_trigger` 决定触发线，
+> `raw_token_batch_ratio` 决定计划压缩比例；统计升级为真实 provider raw
+> projection，切点升级为完整 terminal turn/relation component。旧
+> `summary_batch_size` 不参与 V2 projected-token 批次截断。
+
 ## 背景
 
 当前 raw 压缩由 `MemoryConfig.raw_trigger_count` 和 `MemoryConfig.summary_batch_size` 控制:

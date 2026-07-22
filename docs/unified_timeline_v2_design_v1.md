@@ -8,7 +8,7 @@
 - Slice 2 `Turn lifecycle` 已提交（`24f1c1b`）：`begin_turn -> append_entry -> complete_turn / abort_turn`、显式 annotation target、并行 action/observation correlation、原子终态提交、visibility 物化与索引 outbox；
 - Slice 3 `Projection ledger` 已提交（`38727e1`）：versioned renderer registry、canonical/OpenAI/Anthropic adapter、不可变 projection rows、请求 hash audit、final projection 原子提交和 strict-prefix 验收；
 - Slice 4 `Compaction V2` 已提交（`41d55b4`）：共享 `MemCoreRuntime`、terminal-turn/token planning、summary/semantic 两阶段原子提交、episode/operation lineage 分离，以及压缩后 summary/semantic projection；
-- 后续压缩可靠性修复已提交（`23213d9`、`006ead2`、`d97afbc`）：按实际 provider projection 做有界 source/episode pass；单次 `run_due()` 只推进一个 raw batch 和一个 semantic batch，重复调度继续处理欠账；
+- 后续压缩可靠性修复已提交（`23213d9`、`006ead2`、`d97afbc`），并在差值策略 repair 中收口：按实际 provider projection 规划一次 raw generation；token 模式按比例选足完整 component，不再复用旧条目批次或独立 source 上限；单次 `run_due()` 仍只提交一个 raw generation 和一个 semantic batch；
 - Slice 5 `Retrieval admission` 已提交（`df09a50`）：结构化 query/result、visibility/annotation/kind/conversation/index-generation 硬准入、开放 kind prefix flags、评分前过滤与有界 semantic relaxation；
 - Slice 6 `Relation expansion` 已提交（`3523c26`）：Namespace-safe lineage closure、stimulus/final 原子组、并行 correlation branch、派生层去重、visible lineage 排除与精确 token budget；
 - Akane cutover primitives 已实现：无模型回复的 typed standalone entry，以及不提前授予检索准入的 staged annotation；
@@ -1112,10 +1112,9 @@ TurnBundle
 
 ```text
 compaction_policy: projected_tokens / count_compat
-max_prompt_history_tokens
-target_prompt_history_tokens
-reserved_current_turn_tokens
-reserved_retrieval_tokens
+raw_token_trigger
+raw_token_batch_ratio
+compaction_min_recent_turns
 projection_profile
 ```
 
@@ -1130,7 +1129,15 @@ projection_profile
 
 不能只统计 `entry.content`。没有 provider tokenizer 时使用 `TokenCounter` 的明确 fallback，并在结果中返回 `token_count_quality=estimated`；`count_compat` 只用于旧部署过渡，不作为 V2 验收模式。
 
-压缩只选择最老的连续 terminal-turn 前缀（`closed` 或 `aborted`），使压缩后估算历史落到 `target_prompt_history_tokens`，同时保留至少一个可配置的近期完整 turn 窗口。`aborted` 只总结真实已提交条目，不补造 assistant final；若第一个 `open` turn 已导致超预算，返回结构化 `status=blocked_by_open_turn`，不得切断该 turn 来伪装成功。
+当未摘要 raw projection 达到 `raw_token_trigger` 时，压缩从最老的连续
+terminal-turn 前缀（`closed` 或 `aborted`）开始，累计到
+`raw_token_trigger * raw_token_batch_ratio`，并以完整 relation component 为实际
+切点。token 只负责规划，条目/turn/component 负责原子边界；
+`summary_batch_size` 与独立 source token 上限不得在 projected-token 模式下提前
+截断本轮目标。通常保留至少一个可配置的近期完整 turn；若单个完整 terminal
+history 自身已经超线且不存在合法尾部，允许整块压缩，避免永久超预算。
+`aborted` 只总结真实已提交条目，不补造 assistant final；若第一个 `open` turn
+已导致超预算，返回结构化 `status=blocked_by_open_turn`，不得切断该 turn 来伪装成功。
 
 ### 19.3 两阶段原子提交与幂等重试
 

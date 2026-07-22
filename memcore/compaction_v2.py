@@ -94,10 +94,10 @@ class CompactionResult:
     source_entry_count: int = 0
     before_projected_tokens: int = 0
     after_projected_tokens: int = 0
+    before_raw_projected_tokens: int = 0
+    after_raw_projected_tokens: int = 0
+    planned_source_tokens: int = 0
     selected_projected_tokens: int = 0
-    source_token_limit: int = 0
-    selected_episode_entry_count: int = 0
-    source_entry_limit: int = 0
     token_count_quality: str = "not_counted"
     summary_source_ids: list[str] = field(default_factory=list)
     compaction_generation: int = 0
@@ -117,10 +117,10 @@ class CompactionResult:
             "source_entry_count": self.source_entry_count,
             "before_projected_tokens": self.before_projected_tokens,
             "after_projected_tokens": self.after_projected_tokens,
+            "before_raw_projected_tokens": self.before_raw_projected_tokens,
+            "after_raw_projected_tokens": self.after_raw_projected_tokens,
+            "planned_source_tokens": self.planned_source_tokens,
             "selected_projected_tokens": self.selected_projected_tokens,
-            "source_token_limit": self.source_token_limit,
-            "selected_episode_entry_count": self.selected_episode_entry_count,
-            "source_entry_limit": self.source_entry_limit,
             "token_count_quality": self.token_count_quality,
             "summary_source_ids": list(self.summary_source_ids),
             "compaction_generation": self.compaction_generation,
