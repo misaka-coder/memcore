@@ -150,6 +150,10 @@ tool_result = dispatch_native_memory_tool(
     mem=mem,
     current=cur,
     material_loader=load_material_from_host_store,
+    policy=ToolDispatchPolicy(
+        allow_explicit_trace=True,
+        allowed_kind_prefixes=("material",),  # choose only product-approved prefixes
+    ),
 )
 ```
 
@@ -159,10 +163,11 @@ If the product wants cross-turn recall of tool calls/results, record them with
 
 If the host app records tool calls or tool results into raw memory, prefer
 `record_tool_exchange(...)`. It writes `assistant.tool_call <tool> <call_id>`
-and `tool.<tool> <call_id>` blocks with `categories=["tool_trace"]`. The
-default count policy lets these records contribute to raw compaction triggers,
-so tool-only timelines enter the normal summary lifecycle. Normal retrieval
-still excludes them unless the model explicitly asks for `tool_trace`.
+and `tool.<tool> <call_id>` blocks. The compatibility metadata may still contain
+`categories=["tool_trace"]`, but V2 identity and admission use typed roles,
+`kind`, visibility, and correlation lineage. These records contribute to the
+normal token compaction lifecycle. Retrieval requires `include_explicit=true`,
+an authorized precise `kind_patterns` value, and host policy approval.
 
 For new Timeline V2 hosts, `append_action(...)` and
 `append_observation(...)` are the protocol-neutral primitives. Their `kind` and
@@ -189,7 +194,8 @@ multimodal models may receive the image through the provider request. For non-
 multimodal models, do not race the final chat model against OCR/vision parsing:
 wait for derived content, or return a structured pending/unavailable material
 tool result and do not let the model describe the image from the anchor alone.
-Historical follow-ups should find the `material_trace` anchor first, then load
+Historical follow-ups should find the material anchor in visible/timeline
+context or through authorized explicit `material.*` retrieval, then load
 available derived content via host tools.
 In group or multi-speaker uploads, pass `actor=Actor(stable_id=..., display_name=...)`
 to `record_material_reference(...)` so the attachment keeps uploader attribution.
@@ -241,7 +247,7 @@ When an AI agent integrates `memcore`, follow this order:
 4. Expose `retrieve_for_turn` and `read_timeline` as model tools.
 5. Add the model prompt guidance and optional JSON contract.
 6. Parse the final reply before storing assistant speech.
-7. Update current user-turn metadata from parsed `memory_metadata`.
+7. Commit parsed `memory_metadata` to the host-selected annotation target.
 8. Record the assistant turn with clean speech, not broken JSON.
 9. Run background compaction after the visible reply path.
 10. Keep API keys, local paths, logs, databases, and cached model files out of

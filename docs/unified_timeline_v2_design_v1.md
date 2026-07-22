@@ -1,6 +1,6 @@
 # MemCore Unified Timeline V2 设计与实现说明
 
-状态: package implementation baseline complete；Schema foundation、Turn lifecycle、Projection ledger、Compaction V2、Retrieval admission、Relation expansion 以及 native memory tool schema/dispatch 已实现。宿主的 provider-native transport 与 Akane 旧 API 薄适配仍处于迁移窗口。
+状态（2026-07-22）: package 与 Akane 回填均已完成。Timeline V2 是唯一运行权威；Schema foundation、Turn lifecycle、Projection ledger、Compaction V2、Retrieval admission、Relation expansion、native memory tool schema/dispatch 和 Akane 读写切换均已落地。provider-native transport、产品 prompt assembly 与工具执行继续由宿主负责，这是稳定架构边界，不是待迁移能力。
 
 当前实现检查点（2026-07-22）：
 
@@ -19,7 +19,7 @@
 - accepted empty annotation 与 missing/invalid annotation 已分开，只有 accepted target 自动进入 default retrieval；
 - final 继续保留真实 `provider_output_raw`；宿主提供的真实 final projection 会与 annotation/final/turn close 同事务保存，没有提供时可由标准 adapter 产生显式 `canonical_fallback`；
 - episode/semantic summary 已进入同一不可变 projection ledger；`before/after_projected_tokens` 按目标 provider payload 计数，不再只统计正文；
-- 旧 `add_summary() + mark_*()` 分事务压缩当前只供包内旧写入口过渡，不再承诺第三方兼容；Akane 切换新 Turn API 后直接删除，不保留长期双实现；
+- `add_summary() + mark_*()` 分事务 Store 方法只为测试 fixture、历史导入和维护兼容保留；V2 runtime 不调用它们，唯一在线压缩权威是原子的 `commit_summary_batch()` / `commit_semantic_batch()`；
 - package 的 V2 能力已回填 Akane；Akane 仍保留产品级 prompt assembly、provider transport 和旧 `record_*` 薄适配。旧 API 不再作为 MemCore 内部新能力的扩展入口。
 
 本文定义 MemCore 从“通用三层记忆内核”演进为“统一时间线、稳定上下文投影与记忆读取内核”的目标形态。它不改变 MemCore 与宿主的基本边界：宿主仍负责渠道、权限、工具执行、文件本体、模型选择和最终请求；MemCore 负责把模型实际经历的输入、输出、工具与事件可靠地记录、投影、检索和压缩。
@@ -66,7 +66,7 @@
 
 ## 3. TimelineEntry V2
 
-逻辑记录结构如下；第 16 节给出本轮代码审计后确定的 SQLite 列拆分。后续实现可以调整非公共索引，但不能删减这些公共语义。
+逻辑记录结构如下；第 16 节给出代码审计后确定并已实现的 SQLite 列拆分。未来内部索引可以演进，但不能删减这些公共语义。
 
 ```text
 source_id                    # 继续作为权威 entry id；公共语义可称 entry_id，但不新增第二套 ID
@@ -150,7 +150,9 @@ annotation_target_id / annotation_status / annotator
 source / tool_name / call_id / status / mime / file_id / provider / host tags
 ```
 
-现有 `event_trace/tool_trace/material_trace` 不再与偏好、计划等语义 categories 共用同一枚举。旧字段在迁移期可映射到 `kind + trace_metadata`。
+`event_trace/tool_trace/material_trace` 只可能作为旧接入兼容 metadata 保留，
+不再承担事件、工具或材料的权威身份与检索开关；V2 使用
+`kind + trace_metadata + retrieval_visibility`。
 
 ### 4.3 检索自动准入
 
@@ -415,7 +417,7 @@ turn = mem.begin_turn(
 mem.append_action(..., turn_id=turn.turn_id, correlation_id=call_id)
 mem.append_observation(..., turn_id=turn.turn_id, correlation_id=call_id)
 # 高级接入仍可直接使用 append_entry(TimelineEntryInput(...))。
-# 兼容的 record_tool_exchange() 不接收 V2 turn 参数。
+# record_tool_exchange() 同样必须接收当前开放的 V2 turn_id。
 
 projection = mem.build_context_projection(provider_profile="openai_chat")
 
@@ -448,7 +450,10 @@ Timeline V2 已有正式 schema version/migration runner。后续迁移应满足
 - SQLite 仍是真相源，向量索引可以删除后重建；
 - 迁移报告结构化返回 migrated/skipped/ambiguous/failed 数量和 reason。
 
-## 12. 分阶段实现
+## 12. 分阶段实现记录
+
+本节记录已经完成的落地顺序，不是当前待办。当前运行状态以文档顶部检查点和
+`public_capabilities_v1.md` 为准。
 
 ### A. 当前版本稳定与真实发布
 
@@ -594,7 +599,9 @@ V2 核心能力已经在 package 中可用；下面是仍然真实存在的兼�
 10. 模型可直接传 `cross_conversation=true`，但 dispatcher 没有宿主权限对象再次约束。
 11. prompt envelope 与 provider-native tool history 的权威实现仍留在 Akane。
 
-### 15.4 额外发现的可靠性问题
+### 15.4 审计时发现并已关闭的可靠性问题
+
+以下描述的是 V2 实施前的审计结果，不是当前仍存在的缺口：
 
 - `add_summary()` 与 `mark_messages_summarized()` 是两个事务；进程在中间退出可能留下重复摘要。semantic commit 同理。
 - `get_record_by_source_id()` 是全局回表；检索当前依赖索引 hard where 保证安全，V2 关系读取必须再带 namespace owner 校验。
@@ -603,7 +610,7 @@ V2 核心能力已经在 package 中可用；下面是仍然真实存在的兼�
 - OpenAI strict tool schema 会把所有可选字段变成 required + nullable；模型侧 schema 参数越多，请求越冗长且越难正确调用。
 - Chroma collection 当前只按 embedding key 命名；索引 metadata schema 升级后缺少明确 index generation。
 
-这些问题进入下面的实现切片，不另开新的重构主线。
+这些问题已在下列实现切片中收口，没有另开第二套重构主线。
 
 ## 16. SQLite V2 物理实现
 
@@ -666,12 +673,12 @@ index_key TEXT NOT NULL DEFAULT ''
 
 兼容列语义:
 
-- `content` 在迁移窗口继续保存旧调用方可读的 canonical/semantic text，但新权威输入是 `payload_json + semantic_text`；
+- `content` 继续作为旧调用方可读的兼容列；V2 权威输入是 `payload_json + semantic_text`；
 - `role` 继续保留给旧 adapter 和旧记录，不再承载新记录的 call id/payload；
-- `memory_metadata_json` 从 V2 起只表示 memory annotation，不再存 trace 技术标签；
+- `memory_metadata_json` 表示 memory annotation；旧 standalone/迁移记录可能保留 trace category 兼容副本，但 V2 不以它判断 trace 身份或检索准入；
 - `source_id` 就是 entry id，不添加重复主键。
 
-建议新增索引:
+当前使用的主要索引:
 
 ```sql
 CREATE INDEX idx_messages_scope_turn
@@ -814,18 +821,17 @@ PRIMARY KEY(namespace..., turn_id, attempt, provider_profile)
 
 - Schema foundation 先把 trace category **复制**到 `trace_metadata_json`，annotation status 仍按非 trace 语义字段判断；
 - 普通 user/event raw 中已有非 trace 语义 metadata 的记录标为 `accepted_legacy`；
-- foundation 阶段暂时保留旧 `memory_metadata.categories` 中的 trace category，供尚未切换的 V1 compaction/retrieval 消费，避免升级数据库后显式轨迹检索和压缩触发降级；
-- Retrieval/Compaction V2 切换时，同一切片改为只读 `kind + trace_metadata`，随后执行结构化 cleanup migration 删除这个兼容副本；
+- trace category 可以保留在旧 `memory_metadata.categories` 中作为兼容副本，但 V2 compaction/retrieval 只以 typed role、`kind + trace_metadata`、visibility 和 policy 为权威；
+- 兼容副本不会打开候选池，也不会影响 V2 relation/compaction 分区；未来删除旧便捷 API 时可以单独清理，不要求破坏性重写历史记录；
 - 不因迁移伪造模型 annotation。
 
-这是明确的 documented migration window，不是长期双权威：
+这是明确的 compatibility boundary，不是双权威：
 
 ```text
-开始: Timeline V2 Slice 1 / schema version 2
-临时旧消费者: compaction.py、retrieval.py、entry_builder.py 对 trace categories 的读取
-新权威: kind + trace_metadata_json
-删除目标: Retrieval admission/Compaction V2 切片完成时
-守护验证: 旧 tool/event/material 显式检索与 compaction tests 在窗口内必须继续通过
+兼容数据: 旧记录与 standalone 便捷 API 可保留 trace category 副本
+运行权威: typed role + kind + trace_metadata_json + retrieval_visibility
+准入保证: category 本身不能打开 explicit tool/event/material 候选
+守护验证: 旧数据仍可迁移、压缩和经授权显式读取
 ```
 
 ## 17. Store 与 MemorySystem API 的具体改造
@@ -1232,7 +1238,7 @@ reason
 - 普通 episode 与 operation digest 使用互不重叠的 source lineage 同批提交；operation digest 默认 explicit 且不进入长期语义压缩；
 - 压缩后的 summary/semantic 继续走统一 projection ledger，`after_projected_tokens` 与实际可见 provider payload 使用同一计数口径；
 - 索引失败保留 pending outbox 并在结果中返回 `index_status=pending`，不回滚已提交的 SQL 事实；
-- V1 `record_*` 数据在没有 V2 turn 时继续走 legacy compatibility 路径。该切片提交时尚未切换 Akane、QQ、桌宠、金融或个人 Bot；当前状态见文档顶部检查点；
+- V1 `record_*` 历史数据在没有 V2 turn 时作为 closed standalone component 进入同一 V2 planner；Akane、QQ、桌宠、金融和个人 Bot 的当前主链均已切换，状态见文档顶部检查点；
 - Retrieval admission 与 Relation expansion 已完成：visibility/kind/policy/index generation 在评分前硬过滤，随后按 turn/correlation/lineage 扩成受 token budget 约束的原子结果；Native Memory Tools 的 schema/dispatch 已完成，宿主 provider transport 仍由接入方负责。
 
 ## 20. Retrieval V2 的具体实现
@@ -1411,7 +1417,7 @@ SQLite 保存当前 index generation 和每条 entry 的 indexed generation。ki
 - summary/semantic 使用 Store lineage closure；semantic 命中会压掉其 source summary/raw，断裂、循环或跨 Namespace lineage 会从 index 隔离并计入结构化 diagnostics；
 - `retrieve_for_turn` 的 visible exclusion 已扩为上下游 lineage closure，当前 prompt 已见 raw 不能通过 derived 层绕回；
 - token budget 对序列化后的完整 match 计数。可容纳时保留完整组，剩余预算不足时整体省略；单组自身超预算时只返回显式 truncated anchor，`semantic_text` 不保留未计费副本；
-- 没有 relations 的旧记录不会再做 `seq_no ± N` 推测，只返回自身；该切片提交时尚未切换 Akane 或云端 Bot，当前回填状态见文档顶部检查点。
+- 没有 relations 的旧记录不会再做 `seq_no ± N` 推测，只返回自身；Akane 与云端 Bot 当前已经使用这套关系扩窗语义。
 
 ## 21. 给模型的 Native Memory Tools
 
@@ -1505,7 +1511,11 @@ dispatcher 边界捕获参数错误、权限拒绝、Store/Index 不可用和未
 
 验收记录模型输入、tool call、结构化 tool result 和最终回复，但清除密钥、绝对路径和敏感正文。
 
-## 22. Akane 文件级回填与旧权威删除
+## 22. Akane 文件级回填结果与旧权威删除
+
+本节保留文件级职责和当时的切换顺序，便于审计为什么这些逻辑归属于 MemCore
+或宿主。当前回填已经完成；下文描述的是现有边界和历史迁移记录，不是要求接入方
+再次复制一遍 Akane 的迁移过程。
 
 ### 22.1 `companion_v01/memcore_integration/manager.py`
 
@@ -1517,7 +1527,7 @@ dispatcher 边界捕获参数错误、权限拒绝、Store/Index 不可用和未
 - 保留 legacy import 和结构化状态转换；
 - 删除 `_render_prompt_context_layers()`、`_project_timeline_result()` 等与包重复的私有渲染；
 - index warmup/repair 走 MemCore runtime，不再持有独立 `_index_warmup_executor`；
-- `record_user_turn/record_external_event/...` 在迁移窗口内只做新 API 的薄适配，不维护第二套行为。
+- `record_user_turn/record_external_event/...` 只做 typed standalone API 的薄适配，不维护第二套行为。
 
 一个 Akane 进程无论挂载多少 bot，manager 只携带实例配置和 Namespace，不复制一套能力逻辑。bot 间记忆隔离由 Namespace 数据决定，不能靠不同 manager 分叉代码。
 
@@ -1533,32 +1543,29 @@ dispatcher 边界捕获参数错误、权限拒绝、Store/Index 不可用和未
 6. 终态 JSON 解析后调用一次 `complete_turn()`；
 7. complete 成功后才安排 compaction。
 
-不能继续分别调用 `_record_memcore_input_turn()`、若干 tool trace 写入、`_update_memcore_turn_metadata()` 和 `_record_memcore_assistant_turn()` 来拼出一个“看起来完整”的轮次。迁移期间这些方法可以内部委托给一个 `TurnSession`，但新主链完成后应删除或降为仅供 legacy import 的 adapter。
+当前主链不再分别调用 `_record_memcore_input_turn()`、若干 tool trace 写入、`_update_memcore_turn_metadata()` 和 `_record_memcore_assistant_turn()` 来拼出一个“看起来完整”的轮次。遗留名字只允许是 typed turn API 的薄 adapter，不得恢复为第二条写路径。
 
 工具执行、QQ 发送、图片理解、GPT-SoVITS 和金融业务判断仍留在 Akane；移入 MemCore 的只是通用 action/observation 的结构化记录和 provider projection。
 
 ### 22.3 原生多工具 history 移入 projection adapter
 
-当前 `_append_native_tool_history_batch()`、`_append_native_openai_tool_history_batch()`、`_append_native_anthropic_tool_history_batch()` 已能在单次请求内保留并行批次，但跨轮只留下文本 trace。
-
-回填后：
+当前结果：
 
 - Akane 工具编排器继续产生 provider-neutral `ToolExchangeBatch`；
 - MemCore `ProjectionAdapter` 把 batch 投影成 OpenAI/Anthropic 的原生 assistant calls + tool results；
 - Akane 只把 adapter 输出追加给 provider，并在发送前回传 ledger；
 - 下一轮优先读取相同 profile 的已保存 projection，恢复完全相同的 tool call id、参数顺序和 result 结构；
-- provider-specific `_append_native_*` 在验收后删除，最多保留一个调用 MemCore adapter 的薄函数，不长期双实现。
+- provider-specific `_append_native_*` 已退出权威实现；宿主只保留调用 MemCore adapter 和附加当轮不可持久化媒体的薄步骤。
 
 当前 Akane repair pass 已把 provider-specific 拼装收敛为一个薄的 projection 选择/当轮媒体附加步骤：工具
 call/result 的 role、call id、参数和顺序由 MemCore `ProjectionAdapter` 产生；Akane 只按 source id 取回
-当前新增 projection，并把不可持久化图片附到对应 `material.model_input`。该薄层仍处于真实 provider 验收窗口，
-不得重新长出第二套 OpenAI/Anthropic renderer。
+当前新增 projection，并把不可持久化图片附到对应 `material.model_input`。不得重新长出第二套 OpenAI/Anthropic renderer。
 
 ### 22.4 终态 raw output 接口
 
 `companion_v01/llm_runtime.py` 的流式路径已有 `ChatJSONStreamResult.raw_text`，直接传给 `complete_turn(provider_output_raw=...)`。
 
-同步 `call_chat_json()` 当前只返回 parsed dict，需要新增 raw-result 版本，例如：
+同步链路已经提供 `call_chat_json_result()`，返回 parsed 与真实 raw output：
 
 ```text
 ChatJSONResult
@@ -1568,25 +1575,26 @@ ChatJSONResult
 └── usage/cache fields
 ```
 
-旧 `call_chat_json()` 可暂时返回 `.parsed` 保持兼容，新 MemCore 主链使用 `call_chat_json_result()`。不能从 parsed dict 再 `json.dumps()` 冒充模型原始输出，否则字段顺序、空白和 provider 历史都可能变化，破坏下一轮前缀。
+旧 `call_chat_json()` 返回 `.parsed` 保持兼容，MemCore 主链使用 `call_chat_json_result()`。不能从 parsed dict 再 `json.dumps()` 冒充模型原始输出，否则字段顺序、空白和 provider 历史都可能变化，破坏下一轮前缀。
 
-### 22.5 `response_builder.py` 与 prompt envelope 删除窗口
+### 22.5 `response_builder.py` 与 prompt envelope 清理结果
 
 `companion_v01/engine_services/response_builder.py` 调用 MemCore
 `build_context_projection(provider_profile=...)`，然后再由 Akane 添加人格、当前动态
-上下文和本轮工具 schema。以下逻辑进入删除窗口：
+上下文和本轮工具 schema。以下逻辑已经退出运行权威并删除：
 
 - `_attach_message_prompt_envelopes()`；
 - `_sync_current_message_prompt_envelope()`；
 - Akane 自己按 source id 拼历史 envelope 的路径。
 
-`companion_v01/store/core.py` 中 `chat_messages.prompt_envelope_text` 不再接受新写入。上线前可按 source id 一次性导入 `prompt_projections`，每条记录带 `provider_profile=legacy_akane` 与 migration version；导入器先执行与新 ledger 相同的安全校验，含绝对路径、base64/二进制、密钥形态或无法归属 source 的旧 envelope 记为 `skipped_unsafe` 并使用 canonical fallback，不把旧风险搬进新真相源。导入完成并通过 migrated/skipped/hash/count 报告后，读取权威切到 MemCore。
+`companion_v01/store/core.py` 只保留 `chat_messages.prompt_envelope_text` 数据库兼容列，
+不再接受运行时新写入，也没有 writer/reader/pruner 权威。数据库列可留到后续独立
+schema cleanup，不需要为了表面整洁立即做破坏性 DROP。运行时只有 MemCore
+projection 一个历史权威，不能恢复双写后再靠“优先取非空”决定。
 
-迁移窗口结束后删除 envelope 的 writer/reader/pruner；数据库列可留到后续独立 schema cleanup，不要求同一切片做破坏性 DROP。任何阶段都只能有一个新写权威，不能长期双写后再靠“优先取非空”决定。
+### 22.6 Akane 历史切换顺序
 
-### 22.6 Akane 切换顺序
-
-严格按以下顺序回填，每一步都可独立回滚到上一步：
+回填当时严格按以下顺序执行，每一步都可独立回滚到上一步：
 
 1. 升级 MemCore schema/runtime/types，但 Akane 仍走旧主链；
 2. 只 shadow 记录新 turn/projection，比较 source count、关系和 hash，不给 prompt 使用；
@@ -1597,9 +1605,9 @@ ChatJSONResult
 7. 删除 Akane prompt envelope 和重复渲染/检索权威；
 8. 再扩大到其他 bot 实例，配置差异只留在 profile/plugin/namespace。
 
-shadow 阶段不得双发消息、双执行工具或把 shadow summary 注入模型。每步失败返回结构化状态并保持旧可用链，不写 fake success。
+shadow 阶段没有双发消息、双执行工具或把 shadow summary 注入模型。迁移过程中每步失败均要求返回结构化状态并保持旧可用链，不写 fake success。
 
-## 23. 文件改动矩阵
+## 23. 已完成的文件改动矩阵
 
 ### 23.1 MemCore package
 
@@ -1634,11 +1642,11 @@ shadow 阶段不得双发消息、双执行工具或把 shadow summary 注入模
 
 金融插件、个人 bot、QQ 群聊和桌宠不各写一套 MemCore integration；它们只提交不同 kind/payload、加载不同插件/profile，并由同一生命周期处理。
 
-## 24. 测试、真实链路验收与实施切片
+## 24. 测试、真实链路验收与实施记录
 
-### 24.1 新增测试文件
+### 24.1 主要测试文件
 
-建议新增：
+当前主要覆盖文件：
 
 ```text
 tests/test_timeline_v2_migration.py
@@ -1646,9 +1654,9 @@ tests/test_timeline_v2_turns.py
 tests/test_projection_cache.py
 tests/test_retrieval_visibility.py
 tests/test_relation_expansion.py
-tests/test_compaction_turn_atomicity.py
-tests/test_native_tools_v2.py
-tests/test_runtime_scheduler.py
+tests/test_compaction_v2.py
+tests/test_slice_native_tools.py
+tests/test_slice_concurrency.py
 ```
 
 现有 slice tests 继续保留用于兼容回归；新语义不继续塞进一个越来越大的 slice 文件。
@@ -1732,9 +1740,9 @@ projection/full-prefix hash 变化原因
 
 Akane 最终验收必须分别走个人 bot 普通私聊、个人群聊、金融私聊主动推送和金融群聊对话真实入口；不能用本地直接调用 MemCore 的高命中替代真实链路。
 
-### 24.4 可执行实施切片
+### 24.4 已完成的实施切片
 
-每个切片只做一个可验证边界，并在通过后做聚焦 commit：
+各切片均按一个可验证边界推进，并在通过后形成聚焦 commit：
 
 1. **Schema foundation（已完成）**：migration runner、V2 columns、turn/projection tables、namespace-safe reads；
 2. **Turn lifecycle（已完成）**：begin/append/complete/abort、annotation status、并行 correlation 与原子终态，尚不切 Akane；
@@ -1742,12 +1750,12 @@ Akane 最终验收必须分别走个人 bot 普通私聊、个人群聊、金融
 4. **Compaction V2（已提交：`41d55b4`）**：shared runtime、terminal-turn/token planning、atomic summary/semantic commits；
 5. **Retrieval admission（已提交：`df09a50`）**：visibility、kind flags、新 index generation、hard-filter tests；
 6. **Relation expansion（已提交：`3523c26`）**：turn/correlation/lineage closure、structured results、atomic token budget；
-7. **Akane cutover primitives（已实现，待本切片提交）**：typed standalone entry、staged annotation；
-8. **Native tools V2**：policy、精简 schema、dispatcher 与模型决策验收；
-9. **Akane V2 write cutover**：普通输入、event、intermediate、并行工具和 final 切到同一 turn；
-10. **Akane read cutover**：普通对话 -> tools -> event/finance，逐条删除旧权威；
-11. **真实 provider acceptance**：缓存、失败降级和多 bot 同能力验收；
-12. **Cleanup**：删除 prompt envelope writer/private renderer/旧 dual-write，更新公开文档。
+7. **Akane cutover primitives（已完成）**：typed standalone entry、staged annotation；
+8. **Native tools V2（已完成）**：policy、精简 schema、dispatcher 与模型决策验收；
+9. **Akane V2 write cutover（已完成）**：普通输入、event、intermediate、并行工具和 final 切到同一 turn；
+10. **Akane read cutover（已完成）**：普通对话、tools、event/finance 使用同一权威，旧读取权威已删除或收薄；
+11. **真实 provider acceptance（已完成当前部署验收）**：缓存、失败降级和多 bot 同能力已走真实入口；provider 缓存仍按服务商规则持续观测；
+12. **Cleanup（已完成）**：删除 prompt envelope writer/private renderer/旧 dual-write，并更新公开文档。
 
 每个切片必须执行相关单测、全量测试、lint/format/build 和 `git diff --check`。Akane 回填切片还要说明用户实际会感觉到的变化，并验证 QQ 文本、图片、TTS/表情等表现层没有因主回复或工具错误被连带破坏。
 

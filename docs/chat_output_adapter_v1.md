@@ -78,9 +78,9 @@ adapter 只做保守解析:
 请只输出一个合法 JSON 对象,不要输出代码块或解释。
 字段固定为 speech, memory_metadata。
 speech 是给用户看的最终回复,必须是字符串。
-memory_metadata 用于本轮用户原始消息的记忆检索标注,字段为 keywords, subject_scopes, categories, mood_tags, importance, confidence。
+memory_metadata 用于宿主指定的本轮记忆标注目标,目标可能是用户消息或触发回复的外部事件,字段为 keywords, subject_scopes, categories, mood_tags, importance, confidence。
 keywords 最多 4 个可复用检索标签,按用户未来正常聊天里可能命中的问法选词;例如可乐可补饮料/偏好,但不要机械补太宽泛的上位词。不要写整句或短句。
-subject_scopes 标注本轮原始消息涉及的事实主体,只能从 user/assistant/other 中选择;群聊中不要把别人的事实归到 user。
+subject_scopes 标注本轮记忆目标涉及的事实主体,只能从 user/assistant/other 中选择;群聊中不要把别人的事实归到 user。
 categories 必须从当前配置枚举中选择;mood_tags 只在启用情感温度时填写。
 importance/confidence 必须是 0.0 到 1.0 的数字。
 不要把 memory_metadata 当作给用户看的内容。
@@ -88,7 +88,7 @@ importance/confidence 必须是 0.0 到 1.0 的数字。
 只有在所有工具调用完成、准备给用户最终回复时,才按本契约只输出一个合法 JSON 对象。
 把可用工具当作你的能力和结构化信息通道,不是摆设。凡是答案依赖当前 prompt 没有明确给出的旧记忆、精确时间线、人物归因、偏好、关系、承诺或平台事件时,请主动调用合适工具;一次结果不够时可以继续补查。
 如果用户提到“昨天/上周/上周二/最近”等相对时间,请结合 prompt 中的日期与星期锚点理解;需要精确日期范围时优先调用 read_timeline,需要模糊事实时调用 retrieve。
-如果用户追问图片、附件或 PDF 内容,先找到 material_trace 的 file_id,再调用宿主原生 load_material 工具读取当前可用内容或清理状态。
+如果用户追问历史图片、附件或 PDF 内容,先从可见上下文或时间线找 file_id;需要检索显式材料轨迹时,使用宿主授权的 retrieve_for_turn(include_explicit=true, kind_patterns=["material.*"]),再调用 load_material 读取当前可用内容或清理状态。
 多方/群聊场景请保留谁说的、谁的偏好、谁的计划。若有 actor/昵称/稳定ID 信息,稳定ID 相同才视为同一人。回答“谁说/谁戳/谁答应/谁负责”时必须依据可见原文或工具结果,没有明确记录就不要猜。
 若当前可见记忆没有明确证据,工具仍无证据时说没有看到明确记录,不要为了显得记得而编造。
 ```
@@ -109,7 +109,7 @@ Chat Output Adapter 只处理模型的最终回复输出,不接管宿主项目�
 1. 需要工具时,模型照常走宿主项目的原生 tool calling / tool result 流程。
 2. 工具结果回到模型后,由模型生成最终给用户看的回复。
 3. 只有这一步最终回复使用 `memcore_json` 契约。
-4. `speech` 用于展示/播放;`memory_metadata` 回写到本轮用户 raw turn。
+4. `speech` 用于展示/播放;`memory_metadata` 回写到宿主显式指定的 annotation target。
 
 不要把工具调用包装进 `speech` 或 `memory_metadata`,也不要要求中间工具调用步骤输出 memcore JSON。
 尽量保留工具调用的结构化边界,例如 tool id、tool name、arguments、result。不要把工具结果伪装成普通用户文本;legacy 文本 followup 只应作为兼容方案。
@@ -192,15 +192,11 @@ ChatOutputParseResult(
 - 开启 `memcore_json` 后缺少 `speech`,返回 `invalid_contract`。
 - 流式分段只是体验优化;最终入库以完整 `speech` 和归一化 metadata 为准。
 
-## 实现切片
+## 当前实现状态
 
-1. `chat_output.schema`:配置、结果对象、状态枚举。
-2. `chat_output.prompts`:标准 JSON 输出契约 prompt。
-3. `chat_output.parser`:JSON/plain text 解析 + metadata 归一化。
-4. `chat_output.segmenter`:中英文句末标点分段。
-5. `chat_output.streaming`:流式 `speech` 捕捉与 segment 事件。
-6. `MemorySystem.complete_turn`:原子提交 final 与目标 metadata；`update_turn_metadata` 仅服务 standalone/迁移维护。
-7. 测试:标准 JSON、plain text、invalid JSON、缺 speech、连续标点、小数/缩写/域名、metadata 枚举清洗、回写索引。
+Chat Output Adapter 已完整实现：schema、prompt、parser、segmenter、streaming、
+`MemorySystem.complete_turn()` 原子终态提交及对应测试均已落地。
+`update_turn_metadata()` 只服务 standalone/迁移维护，不是正常模型轮次的第二条提交路径。
 
 ## 当前代码地图
 
@@ -245,7 +241,7 @@ relation visibility。之后每个 entry 通过统一 outbox 索引，失败保�
   - `enable_flavor=False` 时清空 `mood_tags`。
   - importance/confidence clamp 到 0..1。
 
-Chat Output Parser 应复用这个函数,不要再写第二套校验。
+Chat Output Parser 直接复用这个函数,没有第二套 metadata 校验。
 
 ### store 回写接口
 
@@ -271,7 +267,7 @@ def update_message_memory_metadata(
 - 更新后重新 SELECT 该 message 并 `_row_to_record(..., "messages")` 返回。
 - 找不到时返回 None,不要假成功。
 
-后续如果第三方实现了 `MemoryStore`,也必须显式实现这个方法;这是接口层清晰边界。
+第三方 `MemoryStore` 也必须显式实现这个方法;这是接口层清晰边界。
 
 ### MemorySystem 回写门面
 
@@ -282,7 +278,7 @@ def update_turn_metadata(self, source_id: str, memory_metadata: dict[str, Any]) 
     ...
 ```
 
-建议返回结构:
+当前返回结构:
 
 ```python
 {
@@ -290,7 +286,7 @@ def update_turn_metadata(self, source_id: str, memory_metadata: dict[str, Any]) 
     "status": "updated" | "not_found" | "pending",
     "source_id": "...",
     "memory_metadata": {},
-    "index_status": "indexed" | "pending",
+    "index_status": "indexed" | "pending" | "skipped",
     "reason": ""
 }
 ```
@@ -305,11 +301,12 @@ def update_turn_metadata(self, source_id: str, memory_metadata: dict[str, Any]) 
 - upsert 失败: `set_index_status(source_id, "pending")`,返回 `ok=False,status="pending"` 和 reason。
 - 不要修改 `content`、`timestamp`、`date_label`、`seq_no`、`namespace`。
 
-这个方法解决 Akane 的关键行为:聊天模型 final JSON 里的 `memory_metadata` 可回写到本轮用户 raw message。
+这个方法保留 standalone/迁移场景的回写能力；正常模型轮次由 `complete_turn()` 把
+final JSON 里的 `memory_metadata` 原子提交到显式 annotation target。
 
 ### 公共导出
 
-新增包建议:
+当前包结构:
 
 ```text
 memcore/chat_output/
@@ -321,11 +318,13 @@ memcore/chat_output/
   streaming.py
 ```
 
-`memcore/__init__.py` 可导出:
+`memcore/__init__.py` 已导出:
 
 - `ChatOutputConfig`
 - `ChatOutputParseResult`
 - `ChatOutputMode`
+- `ChatOutputStatus`
+- `MemoryMetadataStatus`
 - `parse_chat_output`
 - `segment_speech`
 - `StreamingSpeechParser`
@@ -333,13 +332,13 @@ memcore/chat_output/
 
 保持导出名少而稳定,内部 helper 不导出。
 
-## 分步实现细案
+## 已实现 API 细节
 
-### Step 1: segmenter
+### `segment_speech`
 
-先做纯函数,不碰 JSON、不碰 store。
+这是纯函数,不碰 JSON、不碰 store。
 
-建议 API:
+当前 API:
 
 ```python
 def segment_speech(
@@ -362,9 +361,9 @@ def segment_speech(
 - 换行分段。
 - 太短孤立标点不自成段。
 
-### Step 2: parser
+### `parse_chat_output`
 
-建议 API:
+当前 API:
 
 ```python
 def parse_chat_output(
@@ -377,7 +376,7 @@ def parse_chat_output(
     ...
 ```
 
-模式建议:
+当前模式:
 
 - `"plain"`:强制把输入当普通文本。
 - `"memcore_json"`:必须 JSON object + `speech` string。
@@ -396,7 +395,7 @@ def parse_chat_output(
 - `presentation` 暂收 `emotion`, `reply_medium` 等不入库字段。
 - `extra` 可收未知字段,但文档强调不要写入 raw memory。
 
-### Step 3: prompts
+### `build_chat_output_contract_prompt`
 
 提供:
 
@@ -410,19 +409,19 @@ def build_chat_output_contract_prompt(
     ...
 ```
 
-要求:
+当前约束:
 
 - 写清 `speech` 必填。
 - 写清 `memory_metadata` 不给用户看。
 - categories 从当前配置枚举选择。
-- `enable_flavor=False` 时不提 `mood_tags` 或说明必须为空;为减少混乱,建议不提 mood。
+- `enable_flavor=False` 时要求 `mood_tags` 为空。
 - `enable_sentence_segments=True` 时追加句末标点规则。
 
-### Step 4: streaming
+### `StreamingSpeechParser`
 
-已新增 `memcore.chat_output.streaming.StreamingSpeechParser`,并保持和 parser/segmenter 解耦。
+`memcore.chat_output.streaming.StreamingSpeechParser` 与 parser/segmenter 解耦。
 
-建议类:
+当前类:
 
 ```python
 class StreamingSpeechParser:
@@ -439,12 +438,13 @@ class StreamingSpeechParser:
 - 连续标点簇一起发,避免 `哈啊？！` 拆成 `哈啊？` 和 `！`。
 - `finish()` 会返回最终 `parse_chat_output()` 结果;最终结果仍是入库依据。
 
-实现时注意 JSON string escape,不要把 `\"` 提前当字符串结束。
+实现会处理 JSON string escape,不会把 `\"` 提前当字符串结束。
 
-### Step 5: MemorySystem.update_turn_metadata
+### `MemorySystem.update_turn_metadata`
 
-已新增 `MemorySystem.update_turn_metadata()`,用于把聊天模型 final JSON 里的 `memory_metadata`
-回写到本轮用户 raw message,并重建 raw index。
+`MemorySystem.update_turn_metadata()` 用于 standalone/迁移场景回写指定 raw entry 的
+`memory_metadata` 并重建 raw index。正常模型轮次使用 `complete_turn()` 原子提交，
+不先关闭 turn 再调用这个维护门面。
 
 已同时补:
 
@@ -452,7 +452,7 @@ class StreamingSpeechParser:
 - `SQLiteMemoryStore.update_message_memory_metadata` 实现。
 - `MemorySystem.update_turn_metadata` 门面。
 
-测试重点:
+现有测试覆盖:
 
 - 回写后 `store.get_record_by_source_id(source_id)["memory_metadata"]` 更新。
 - 回写后 raw index 重新 upsert,关键词检索能命中新 metadata。

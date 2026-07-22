@@ -9,6 +9,7 @@ import unittest
 
 from memcore import (
     HashedEmbeddingProvider,
+    HuggingFaceEmbeddingProvider,
     HTTPEmbeddingProvider,
     InMemoryVectorIndex,
     MemorySystem,
@@ -51,6 +52,9 @@ class _GoodSemantic(EmbeddingProvider):
 
 
 class HTTPProvider(unittest.TestCase):
+    def test_huggingface_provider_is_public_without_loading_optional_dependency(self) -> None:
+        self.assertTrue(issubclass(HuggingFaceEmbeddingProvider, EmbeddingProvider))
+
     def test_config_validation(self) -> None:
         with self.assertRaises(ValueError):
             HTTPEmbeddingProvider(base_url="", api_key="k", model="m", dimension=3)

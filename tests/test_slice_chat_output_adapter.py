@@ -149,6 +149,8 @@ class ChatOutputPrompt(unittest.TestCase):
         self.assertIn("稳定ID", prompt)
         self.assertIn("不要猜名字", prompt)
         self.assertIn("不要为了显得记得而编造", prompt)
+        self.assertIn("宿主指定的本轮记忆标注目标", prompt)
+        self.assertIn('include_explicit=true, kind_patterns=["material.*"]', prompt)
         self.assertIn("confidence", prompt)
         self.assertIn("未来正常聊天", prompt)
         self.assertIn("不要机械补太宽泛的上位词", prompt)

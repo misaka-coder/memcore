@@ -1,7 +1,11 @@
 # Metadata Prefilter Design v1
 
-> 状态：V1 metadata flag/recursive where 基础已实现；当前运行权威已升级为 Unified Timeline Retrieval V2，详见 `unified_timeline_v2_design_v1.md` §20。
-> V2 中 Namespace、conversation、time、visibility、annotation、kind、source layer 与 index generation 均是不可放宽的 hard filter；只有 importance/categories/subject scopes 可有界放宽。旧 trace category 不再负责打开工具、事件或材料候选。
+> 状态：本文保留 metadata flag/recursive where 的 V1 设计依据；当前运行权威已经是
+> Unified Timeline Retrieval V2，详见 `unified_timeline_v2_design_v1.md` §20。
+> V2 中 Namespace、conversation、time、visibility、annotation、kind、source layer、
+> lineage 与 index generation 均是不可放宽的 hard filter；只有
+> importance/categories/subject scopes 可有界放宽。旧 trace category 不再负责打开
+> 工具、事件或材料候选。下文涉及 V1 改造过程的措辞属于历史实现记录，不是待办。
 
 ## 背景
 
@@ -119,11 +123,12 @@ def metadata_filter_key(prefix: str, value: str) -> str:
 - `InMemoryVectorIndex._match_where()` 改成递归匹配。
 - `ChromaVectorIndex._to_chroma_where()` 改成递归翻译,并继续处理 Chroma 对多条件 `$and` 和单字段多操作符的限制。
 
-## 前置降级策略
+## 当前前置放宽策略
 
-降级必须发生在前置 where 构造阶段。每一级都重新生成 index where,先过滤候选,再做语义/BM25。
+放宽必须发生在前置 where 构造阶段。每一级都重新生成 index where,先过滤候选,
+再做语义/BM25。当前 V2 阶段顺序是:
 
-建议阶段顺序:
+当前阶段顺序:
 
 ```text
 stage 1 strict:
@@ -137,36 +142,35 @@ stage 3 drop categories:
 
 stage 4 drop subject_scopes:
   hard filters + source_layers
-
-stage 5 drop source_layers:
-  hard filters only
 ```
 
 hard filters 永不放宽:
 
 ```text
-tenant_id / user_id / domain_id
+tenant_id / user_id / domain_id / conversation scope
 time_hint(date_label/time_of_day/start_ts/end_ts)
-exclude_source_ids
+retrieval visibility / annotation / kind / trust
+source_layers / exclude_source_ids / lineage closure
+index schema generation
 ```
 
 说明:
 
 - `importance_min` 最容易因模型估计过高导致搜空,所以优先放宽。
 - `categories` 可能比 `subject_scopes` 更领域化,模型可能猜错领域类目,所以在 scope 前放宽。
-- `source_layers` 最后放宽,因为用户明确要搜 raw/summary/semantic 时通常代表用途较清楚。
+- `source_layers` 表达调用方明确要求的记忆层,属于 `HardFilterPlan`,不会因候选不足而放宽。
 - 如果某阶段候选数达到 `relaxation_stop_candidate_count`,停止继续放宽。
 
-## ReadPipeline 改造点
+## ReadPipeline V1 实现记录
 
-`ReadPipeline._stage_index_where(stage)` 当前只下推:
+V1 的 `ReadPipeline._stage_index_where(stage)` 在改造前只下推:
 
 ```python
 entry_type
 memory_importance
 ```
 
-目标:
+V1 当时的改造目标如下；V2 在此基础上把 hard/semantic plan 正式拆开:
 
 ```python
 where = self._build_where(namespace, time_hint)
@@ -186,7 +190,7 @@ where = merge_where(where, self._stage_index_where(stage))
 - `VectorIndex.where` 是强制契约。内置 InMemory / Chroma 必须在相似度/BM25 计算前执行 where。
 - 第三方 index 后端如果忽略 where,属于后端实现错误,不由读侧用后置过滤兜底。
 
-## Index entry builder 改造点
+## Index entry builder V1 实现记录
 
 `memcore/index/entry_builder.py` 的 `_metadata_tags(record)` 增加布尔字段:
 

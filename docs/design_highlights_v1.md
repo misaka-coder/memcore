@@ -51,11 +51,15 @@ memcore 不每轮额外调用一个 router LLM 判断要不要搜。
 
 价值:先裁候选,再算向量/BM25。模型传入 `categories=["preference"]`、`subject_scopes=["user"]` 时,系统只和满足条件的记忆计算相似度,不是全量算完再后置过滤。
 
-### 7. 逐级放宽,兼顾准确率和召回
+### 7. 有界语义放宽,不突破调用方边界
 
-检索先严格使用模型传入的过滤参数。候选不足时按顺序放宽:先放 `importance`,再放 `categories`,再放 `subject_scopes`,最后放 `source_layers`。
+检索先严格使用模型传入的过滤参数。候选不足时只按顺序放宽
+`importance`、`categories`、`subject_scopes`。`source_layers` 与 Namespace、
+conversation、time、visibility、annotation、kind、lineage 和 index generation
+一起属于 `HardFilterPlan`,整个检索过程都不放宽。
 
-价值:有明确线索时精准;线索过窄时不至于直接空结果。
+价值:模型把语义标签估得过窄时仍有机会召回,但不会把“只查 raw/只查摘要”或
+安全、可见性边界悄悄扩大。
 
 ### 8. 向量数据库可选
 

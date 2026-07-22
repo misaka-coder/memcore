@@ -7,7 +7,7 @@
 > 压缩。对外能力地图见 [`docs/public_capabilities_v1.md`](docs/public_capabilities_v1.md)。
 
 - **写侧**:working(原始对话)→ episodic(阶段摘要)→ semantic(长期事实)三层压缩 + 强化合并。
-- **读侧**:显式 `retrieve` / `read_timeline` 核心读工具 + 可选原生 `load_material` 分发 + 向量/关键词混合检索 + RRF + verifier + 五级自动放宽。
+- **读侧**:显式 `retrieve` / `read_timeline` 核心读工具 + 可选原生 `load_material` 分发 + 向量/关键词混合检索 + RRF + verifier + 有界语义放宽。`source_layers`、Namespace、可见性、时间和 kind 等硬边界不放宽。
 - **贯穿**:时间锚点(带时区)、命名空间硬隔离、可选 flavor 层、提示词注入防线。
 
 实现说明按以下公开文档维护：[`usage_flow_v1.md`](docs/usage_flow_v1.md)、
@@ -28,7 +28,7 @@
 - **切片 4(写侧)✅**:`compaction` 三层压缩(raw→摘要→语义)+ 主题重叠强化合并(注入 LLMClient,
   按 namespace 加锁,outbox 索引);`MemorySystem` 写侧 record/compact 接通。压缩 LLM 失败时不会提交空摘要,
   会返回 `summary_retry_pending` / `semantic_retry_pending`,并保留原记录供下一轮后台压缩重试。
-- **切片 5(读侧)✅**:`retrieval` —— 显式 retrieve 工具 → 混合检索 + RRF + 五级放宽 + raw 扩窗 → verifier 门;
+- **切片 5(读侧)✅**:`retrieval` —— 显式 retrieve 工具 → 混合检索 + RRF + `importance/categories/subject_scopes` 有界放宽 + 关系扩窗 → verifier 门;
   `build_prompt_context` 只拼可见三层,是否检索交给聊天模型调用工具决定。**读写侧全闭环。**
 - **时间线工具 ✅**:`read_timeline(date_from, date_to, time_periods)` —— 按时间精确读原始对话(不走向量),
   与 `retrieve`(向量模糊检索)互补,构成核心读工具对。
@@ -64,8 +64,9 @@
 不会强迫纯事实型接入启用口吻或情绪字段。
 
 可运行的最小接入样板见 `examples/minimal_chat_integration.py`。它演示一轮聊天里
-`begin_turn` → 可见三层 → `retrieve_for_turn` / `read_timeline` 工具 → action/observation → final JSON 解析 →
-`complete_turn` 原子提交 metadata 与回复 → 后台压缩的完整闭环。
+`begin_turn` → 可见三层 → `retrieve_for_turn` / `read_timeline` 工具 → final JSON 解析 →
+`complete_turn` 原子提交 metadata 与回复 → 后台压缩的完整闭环。动作/结果时间线的
+独立可运行示例见 `examples/non_native_operation_timeline.py`。
 
 原生 tool calling 接入可用 `build_native_memory_tool_specs(...)` 生成工具 schema,再用
 `dispatch_native_memory_tool(...)` 分发 `retrieve_for_turn` / `read_timeline` / `load_material`。
@@ -136,6 +137,10 @@ tool_payload = dispatch_native_memory_tool(
     mem=mem,
     current=cur,
     material_loader=load_material_from_host_store,  # 宿主实现
+    policy=ToolDispatchPolicy(
+        allow_explicit_trace=True,
+        allowed_kind_prefixes=("material",),  # 只开放产品已授权的 kind 前缀
+    ),
 )
 
 # 把 tool_payload 作为 provider 原生 tool_result 回给聊天模型。
@@ -223,7 +228,7 @@ memcore 是**纯机制**:它不含任何具体人格、领域调教或模型权�
 
 `import memcore` 暴露:`MemorySystem`、`MemoryConfig`、`Namespace`/`Actor`、`PromptOverrides`、
 `LLMClient`/`LLMRequest`/`LLMResult`、`MemoryStore`/`VectorIndex`/`EmbeddingProvider`/`TokenCounter` 接口、
-默认实现 `SQLiteMemoryStore`/`InMemoryVectorIndex`/`HashedEmbeddingProvider`/`HTTPEmbeddingProvider`、
+默认实现 `SQLiteMemoryStore`/`InMemoryVectorIndex`/`HashedEmbeddingProvider`/`HuggingFaceEmbeddingProvider`/`HTTPEmbeddingProvider`、
 `verify_embedding`、`build_native_memory_tool_specs` / `dispatch_native_memory_tool`、
 `build_action_entry` / `build_observation_entry`、Timeline V2 与 projection 契约、
 `MemoryMetadata`/`SummaryRecord`/`SemanticRecord`、异常类。

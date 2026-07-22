@@ -83,7 +83,8 @@ V2 使用实际 provider projection 的 token 预算规划完整 turn。这是�
 - `retrieve_for_turn`：面向偏好、计划、关系、人物、主题和长期事实的模糊检索；
 - `read_timeline`：面向“某天/上周二/昨晚说过什么”的精确时间线读取；
 - `load_material`：只负责调用宿主提供的材料 loader，不保存文件本体；
-- 普通检索默认排除 `event_trace`、`tool_trace`、`material_trace`；
+- 普通检索只接纳 `retrieval_visibility=default` 的记录；没有有效 annotation 的
+  standalone 事件、operation 和 material 轨迹默认是 `explicit`，不会混入普通候选；
 - 这不是“事件永不检索”：V2 `event.*` 如果作为轮次 stimulus 并获得有效
   `accepted_model/accepted_host` annotation,默认准入规则与普通消息相同；
   关联的模型 final 会通过 stimulus/final relation 一起返回；
@@ -92,7 +93,8 @@ V2 使用实际 provider projection 的 token 预算规划完整 turn。这是�
 - 模型 final 不是一律独立成长期记忆 seed：V2 默认按它所属轮次和 stimulus
   成组返回；独立 `record_assistant_turn()` 写入的 standalone assistant raw 则按其显式
   retrieval policy 处理；
-- 需要工具/事件/材料时，模型必须显式声明类别或 kind pattern，并接受宿主
+- 需要工具/事件/材料轨迹时，模型必须设置 `include_explicit=true`、提供明确的
+  kind pattern，并接受宿主
   `ToolDispatchPolicy` 的授权；
 - namespace、conversation、visibility、kind 和 source lineage 等硬过滤在
   embedding/BM25 评分前完成；软放宽不会突破硬边界；
@@ -170,7 +172,8 @@ MemCore 不需要为每个 Bot 复制一套业务逻辑。
 
 - 旧数据可能没有完整 turn/correlation lineage；它们作为 standalone component
   进入唯一 V2 planner，不靠物理相邻位置猜造关系；
-- V2 宿主迁移完成前，宿主仍可能保留产品级 prompt assembly 和 provider transport；
+- 产品级 prompt assembly 和 provider transport 按架构边界继续由宿主负责，
+  这不是 V2 未完成或需要复制的第二套记忆实现；
 - `HashedEmbeddingProvider` 只用于测试，不代表生产语义检索质量；
 - MemCore 保证稳定前缀和可诊断审计，不保证 PinAI、DeepSeek 或其他 provider
   的缓存服务必然命中；

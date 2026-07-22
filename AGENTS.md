@@ -195,7 +195,7 @@ Recommended tool parameters:
 
 ### `load_material` optional
 
-If the host supports images/files, expose this as a provider-native tool backed by host file/derived storage. Use it after the model has found a `material_trace` anchor in visible raw context, `read_timeline`, or `retrieve_for_turn(categories=["material_trace"])`.
+If the host supports images/files, expose this as a provider-native tool backed by host file/derived storage. Use it after the model has found a material anchor in visible raw context, `read_timeline`, or an authorized explicit retrieval such as `retrieve_for_turn(include_explicit=True, kind_patterns=["material.*"])`.
 
 Recommended tool parameters:
 
@@ -212,6 +212,10 @@ Tell the chat model:
 
 For provider-native tool loops, prefer `build_native_memory_tool_specs(...)` and
 `dispatch_native_memory_tool(...)` over legacy text wrappers. The dispatcher strictly rejects invalid filters instead of broadening them.
+When a product allows explicit operation/event/material retrieval, pass a
+`ToolDispatchPolicy` with only the approved kind prefixes, for example
+`ToolDispatchPolicy(allow_explicit_trace=True, allowed_kind_prefixes=("material",))`.
+Do not enable broad prefixes merely to avoid an empty result.
 
 ## Prompt Requirements
 
@@ -239,7 +243,7 @@ Important model guidance:
 - In group chat, preserve who said what. Do not merge different speakers into "the user".
 - For attribution questions such as who said, poked, promised, or owns a task, answer only from visible raw text or tool results. If evidence is missing, call `read_timeline`/`retrieve_for_turn` or say there is no clear record; do not guess a name.
 - For memory questions about birthdays, preferences, relationships, past statements, promises, or old events, do not answer from persona confidence. If the answer is not clearly visible, call `retrieve_for_turn` or `read_timeline`; if still unsupported, say there is no clear record instead of inventing one.
-- `memory_metadata` describes the current raw user message, not the assistant reply.
+- `memory_metadata` describes the host-selected annotation target, which may be a user message or an external event that triggered the reply; it never describes the assistant reply.
 - `memory_metadata.keywords` should be reusable tags, not sentences. Choose terms likely to be used in a future natural chat query; add broader/field/intent tags only when they improve recall, such as `可乐 / 饮料 / 偏好`.
 - If unsure about metadata, use empty arrays and lower `confidence`; do not invent tags.
 - Tool calls are not wrapped in memcore JSON. Only the final user-facing reply uses the JSON contract.

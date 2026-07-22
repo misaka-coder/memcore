@@ -29,6 +29,7 @@ from .chat_output import (
 )
 from .embedding.base import EmbeddingProvider
 from .embedding.hashed import HashedEmbeddingProvider
+from .embedding.huggingface import HuggingFaceEmbeddingProvider
 from .embedding.http import HTTPEmbeddingProvider
 from .embedding.verify import verify_embedding
 from .errors import ConfigError, MemcoreError, NamespaceError, PromptError, SchemaError
@@ -163,6 +164,7 @@ __all__ = [
     "fuse_with_rrf",
     "EmbeddingProvider",
     "HashedEmbeddingProvider",
+    "HuggingFaceEmbeddingProvider",
     "HTTPEmbeddingProvider",
     "verify_embedding",
     "TokenCounter",
