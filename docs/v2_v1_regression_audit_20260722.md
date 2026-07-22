@@ -77,6 +77,57 @@ The flat V1 compatibility branch still performs `add_summary()` and
 legacy migration is closed, delete this branch instead of upgrading and
 maintaining a second compactor.
 
+### 4. Legacy count invariants still constrain V2 configuration
+
+`MemoryConfig.validate()` still unconditionally requires
+`summary_batch_size < raw_trigger_count`, even when the active V2 policy is
+`compaction_policy="projected_tokens"` and neither count field participates in
+planning.  The same compatibility surface also validates
+`raw_compaction_policy` and can require a `TokenCounter` for the flat V1 path
+while V2 itself explicitly supports an estimated token-count quality.
+
+This is migration leakage, not a V2 safety boundary.  When the flat writer is
+removed, remove these inactive constraints from the V2 construction path as
+well.  Do not replace them with new projected-token restrictions.
+
+### 5. Public configuration still contains fields with no V2 authority
+
+`raw_compaction_excluded_categories` belongs to the flat raw-message
+compactor.  `retrieval_default_excluded_categories` is retained in config, but
+Retrieval V2 admission is governed by retrieval policy/visibility, annotation
+status, kind and trust instead.  Keeping fields that appear configurable but
+do not control the active path makes the package look more flexible than it
+is and obscures which policy is authoritative.
+
+The eventual cleanup should delete or explicitly migrate these fields; it
+must not add another parallel interpretation of them.
+
+### 6. Token budgeting needs one explicit host contract
+
+V2 compaction deliberately labels its byte-based fallback as
+`token_count_quality=estimated` when no provider tokenizer is injected.
+Relation-aware retrieval, however, only applies the default result token
+budget when a `TokenCounter` exists.  A host that omits the counter therefore
+gets estimated compaction planning but unbudgeted retrieval relation groups.
+
+This is not a reason to make MemCore silently pretend it has an exact
+tokenizer.  The clean follow-up is one explicit host-provided counter (exact or
+clearly labelled estimated) shared by compaction and retrieval.  Akane
+currently does not inject one, so this remains a real integration gap.
+
+## Retrieval behavior checked during this audit
+
+- A V2 external event completed with accepted memory annotation can enter
+  default retrieval together with its related final model reply.
+- An unannotated standalone event remains explicit-only.
+- Tool and material relations remain explicit-only by default.
+- Relation expansion returns the annotation target and final reply as one
+  group, so intermediate tool rounds do not become the owner of final memory
+  metadata.
+
+These are deliberate V2 improvements and should not be weakened while the
+compatibility surface is removed.
+
 ## Not regressions
 
 - Estimated projected-token counting without a provider tokenizer is explicit
