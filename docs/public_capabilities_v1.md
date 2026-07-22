@@ -83,6 +83,14 @@ V2 使用实际 provider projection 的 token 预算规划完整 turn；旧 coun
 - `read_timeline`：面向“某天/上周二/昨晚说过什么”的精确时间线读取；
 - `load_material`：只负责调用宿主提供的材料 loader，不保存文件本体；
 - 普通检索默认排除 `event_trace`、`tool_trace`、`material_trace`；
+- 这不是“事件永不检索”：V2 `event.*` 如果作为轮次 stimulus 并获得有效
+  `accepted_model/accepted_host` annotation,默认准入规则与普通消息相同；
+  关联的模型 final 会通过 stimulus/final relation 一起返回；
+- V1 `record_external_event()` 或没有有效 annotation 的事件保持 explicit,
+  需要 `include_explicit=true`、明确 `kind_patterns` 和宿主授权才能检索；
+- 模型 final 不是一律独立成长期记忆 seed：V2 默认按它所属轮次和 stimulus
+  成组返回；兼容 `record_assistant_turn()` 写入的 assistant raw 则按其显式
+  retrieval policy 处理；
 - 需要工具/事件/材料时，模型必须显式声明类别或 kind pattern，并接受宿主
   `ToolDispatchPolicy` 的授权；
 - namespace、conversation、visibility、kind 和 source lineage 等硬过滤在
