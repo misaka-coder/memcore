@@ -97,6 +97,38 @@ memcore 不每轮额外调用一个 router LLM 判断要不要搜。
 
 价值:宁可显式失败或降级,不把坏数据悄悄写进长期记忆。
 
+### 14. 稳定 provider 投影,而不是每轮重渲染整段历史
+
+Timeline entry 通过 renderer registry 和 projection ledger 生成 canonical、OpenAI
+或 Anthropic provider message。每条旧投影有 renderer/version 和 projection hash,
+请求还有实际 history 的 audit。
+
+价值:普通消息、主动事件、工具结果交织时,旧前缀仍可做严格 prefix 验收;压缩或
+显式迁移之外不会偷偷改写历史。MemCore 保证前缀稳定和可诊断,不虚假承诺 provider
+缓存一定命中。
+
+### 15. 关系扩窗,不是物理相邻消息窗口
+
+V2 通过 turn、stimulus/final、correlation action/observation 和 summary lineage
+扩展上下文。普通命中只补完整用户轮次,显式工具命中才补完整 call/result branch。
+
+价值:并行工具乱序、事件回复和压缩后的 derived memory 不会因为 `seq_no ± N`
+猜错关系,也不会把已经在 prompt 可见的中间轨迹重复塞回模型。
+
+### 16. 开放 kind,稳定边界
+
+`event.finance`、`event.qq.poke`、`tool.web_search.result`、`skill.loaded` 都是
+合法的 namespaced kind。renderer 可以扩展可读性,但不会因为新增业务类型就复制
+一套 MemCore 逻辑,也不会借渲染器绕过 namespace、visibility 或工具授权。
+
+### 17. 后台维护有界,不拿稳定性换“清仓速度”
+
+一次 `compact_due` 只推进一个 raw batch 和一个 semantic batch。失败返回结构化
+retry/deferred,后续调度继续；历史 legacy 数据也不会通过一次长跑被静默删除。
+
+价值:高活跃群不会因为压缩欠账同时制造一串模型请求,模型调用、延迟和数据提交
+边界都能被观测和控制。
+
 ## 适合什么场景
 
 - 长期陪伴型 AI:用户偏好、关系、计划、相处时间、情绪余温。
@@ -110,4 +142,3 @@ memcore 不每轮额外调用一个 router LLM 判断要不要搜。
 - memcore 不替宿主做最终 prompt token 预算;它提供可见三层、检索工具和压缩策略。
 - memcore 不保证模型一定会聪明使用工具;接入方应参考 `docs/model_prompt_playbook_v1.md` 给模型明确说明。
 - `reindex_all()` 是补 upsert / 热加载,不是清空外部向量库的管理工具。
-

@@ -1,6 +1,6 @@
-# MemCore Unified Timeline V2 设计草案
+# MemCore Unified Timeline V2 设计与实现说明
 
-状态: implementation in progress；Schema foundation、Turn lifecycle、Projection ledger、Compaction V2、Retrieval admission 与 Relation expansion 已实现，Native Tools V2 待实现。
+状态: package implementation baseline complete；Schema foundation、Turn lifecycle、Projection ledger、Compaction V2、Retrieval admission、Relation expansion 以及 native memory tool schema/dispatch 已实现。宿主的 provider-native transport 与 Akane 旧 API 薄适配仍处于迁移窗口。
 
 当前实现检查点（2026-07-21）：
 
@@ -8,6 +8,7 @@
 - Slice 2 `Turn lifecycle` 已提交（`24f1c1b`）：`begin_turn -> append_entry -> complete_turn / abort_turn`、显式 annotation target、并行 action/observation correlation、原子终态提交、visibility 物化与索引 outbox；
 - Slice 3 `Projection ledger` 已提交（`38727e1`）：versioned renderer registry、canonical/OpenAI/Anthropic adapter、不可变 projection rows、请求 hash audit、final projection 原子提交和 strict-prefix 验收；
 - Slice 4 `Compaction V2` 已提交（`41d55b4`）：共享 `MemCoreRuntime`、terminal-turn/token planning、summary/semantic 两阶段原子提交、episode/operation lineage 分离，以及压缩后 summary/semantic projection；
+- 后续压缩可靠性修复已提交（`23213d9`、`006ead2`、`d97afbc`）：按实际 provider projection 做有界 source/episode pass；单次 `run_due()` 只推进一个 raw batch 和一个 semantic batch，重复调度继续处理欠账；
 - Slice 5 `Retrieval admission` 已提交（`df09a50`）：结构化 query/result、visibility/annotation/kind/conversation/index-generation 硬准入、开放 kind prefix flags、评分前过滤与有界 semantic relaxation；
 - Slice 6 `Relation expansion` 已提交（`3523c26`）：Namespace-safe lineage closure、stimulus/final 原子组、并行 correlation branch、派生层去重、visible lineage 排除与精确 token budget；
 - Akane cutover primitives 已实现：无模型回复的 typed standalone entry，以及不提前授予检索准入的 staged annotation；
@@ -16,7 +17,7 @@
 - final 继续保留真实 `provider_output_raw`；宿主提供的真实 final projection 会与 annotation/final/turn close 同事务保存，没有提供时可由标准 adapter 产生显式 `canonical_fallback`；
 - episode/semantic summary 已进入同一不可变 projection ledger；`before/after_projected_tokens` 按目标 provider payload 计数，不再只统计正文；
 - 旧 `add_summary() + mark_*()` 分事务压缩当前只供包内旧写入口过渡，不再承诺第三方兼容；Akane 切换新 Turn API 后直接删除，不保留长期双实现；
-- 本检查点没有切换 Akane，也没有改变 QQ、桌宠、金融或个人 Bot 的用户表现。旧 `record_*` API 暂时保持原行为，后续回填时只能变成薄适配或删除。
+- package 的 V2 能力已回填 Akane；Akane 仍保留产品级 prompt assembly、provider transport 和旧 `record_*` 薄适配。旧 API 不再作为 MemCore 内部新能力的扩展入口。
 
 本文定义 MemCore 从“通用三层记忆内核”演进为“统一时间线、稳定上下文投影与记忆读取内核”的目标形态。它不改变 MemCore 与宿主的基本边界：宿主仍负责渠道、权限、工具执行、文件本体、模型选择和最终请求；MemCore 负责把模型实际经历的输入、输出、工具与事件可靠地记录、投影、检索和压缩。
 
@@ -409,13 +410,10 @@ turn = mem.begin_turn(
 )
 
 mem.append_entry(..., turn_id=turn.turn_id)
-mem.record_tool_exchange(..., turn_id=turn.turn_id, correlation_id=call_id)
+# V2 工具 action/observation 使用 append_entry(..., correlation_id=call_id)
+# 兼容的 record_tool_exchange() 不接收 V2 turn 参数。
 
-projection = mem.build_context_projection(
-    turn_id=turn.turn_id,
-    token_budget=...,
-    provider_profile=...,
-)
+projection = mem.build_context_projection(provider_profile="openai_chat")
 
 # 宿主执行模型和工具循环。
 
@@ -435,7 +433,7 @@ mem.compact_due_background()
 
 ## 11. Schema migration 与兼容
 
-Timeline V2 前必须增加正式 schema version/migration runner。迁移应满足:
+Timeline V2 已有正式 schema version/migration runner。后续迁移应满足:
 
 - 原数据库原地升级，失败时事务回滚；
 - 旧 role 文本尽可能解析为 `kind`、call id 与 correlation；
@@ -529,17 +527,21 @@ Timeline V2 前必须增加正式 schema version/migration runner。迁移应满
 - invalid filter、empty、unavailable 均有明确状态，模型不会把失败当证据；
 - 普通回复、事件回复与工具后的终态回复都遵守唯一 final JSON contract。
 
-## 14. 当前实现与 V2 的主要差距
+## 14. 当前实现与 V2 的边界
 
-- SQLite raw 仍主要保存 role/content，事件和工具结构被提前编码进文本；
-- `record_assistant_turn(..., in_reply_to=...)` 尚未持久化回复关系；
-- 终态 metadata 当前只明确回写普通 user raw，external event 没有统一 annotation target；
-- trace category 与语义 category 共用枚举；
-- raw 扩窗仍是 question heuristic + `seq_no ± 1/2`；
-- prompt envelope 的精确重放仍部分依赖 Akane legacy store；
-- 模型工具结果仍需要从简单文本/list 逐步升级为稳定结构化 envelope。
+V2 核心能力已经在 package 中可用；下面是仍然真实存在的兼容边界,不是待
+实现的虚假占位:
 
-这些差距可以按 A-F 分片完成，不需要重写三层记忆、现有向量索引协议或聊天输出适配器。
+- 旧 V1 raw 记录仍以 role/content 兼容字段保存,没有完整 turn/correlation 的
+  历史数据会保留 `legacy_unlinked` 关系状态；
+- `record_assistant_turn(..., in_reply_to=...)` 仍是兼容入口,不会替旧数据凭物理
+  相邻关系伪造 V2 lineage；需要关系语义时使用 `complete_turn()`；
+- `record_external_event()` 等 V1 入口使用显式 trace visibility；V2 事件是否
+  进入普通检索由 annotation target/status 决定；
+- Akane 仍负责产品级 prompt assembly、provider transport、工具实际执行和权限；
+  MemCore 提供 projection ledger 与 native memory tool schema/dispatch,不是渠道网关；
+- 旧数据和旧宿主适配仍在迁移窗口,不会为了“完成 V2”静默重写 provider projection
+  或删除可追溯 lineage。
 
 ## 15. 代码审计后的实现修正
 
@@ -911,7 +913,17 @@ turn = mem.begin_turn(
 )
 
 mem.append_entry(..., turn_id=turn.turn_id)
-mem.record_tool_exchange(..., turn_id=turn.turn_id, correlation_id=call_id)
+mem.append_entry(
+    TimelineEntryInput(
+        kind="tool.web_search.call",
+        origin=EntryOrigin.ASSISTANT,
+        turn_role=TurnRole.ACTION,
+        semantic_text="搜索北京天气",
+        correlation_id=call_id,
+        trace_metadata={"tool_name": "web_search"},
+    ),
+    turn_id=turn.turn_id,
+)
 
 result = mem.complete_turn(
     turn_id=turn.turn_id,
@@ -923,7 +935,9 @@ result = mem.complete_turn(
 )
 ```
 
-上例是完整目标 API。Slice 2 已实现除 `provider_projection` 外的生命周期参数，并将真实 `provider_output_raw` 与 final 在同一事务中保存；`provider_projection` 参数和 projection ledger 写入将在 Slice 3 一起加入，避免先放一个没有真实 ledger 行为的占位参数。
+上例是当前 V2 API。`provider_projection` 会把实际 provider-visible final message 与
+annotation/final/turn close 一起写入 projection ledger；若宿主没有提供实际投影,
+应明确省略它或返回结构化不可用状态,不要伪造 provider history。
 
 Akane 当前仍调用 `record_user_turn/record_external_event/record_tool_exchange/record_assistant_turn`，因此这些公开名字在宿主切换前不能先删；但它们不再被视为可长期扩展的第二套权威。切换完成后只能删除或成为调用本节 V2 API 的薄适配。
 
@@ -1061,7 +1075,7 @@ mem.complete_turn(
 
 `system_prefix`、`tool_schema` 与 `model_route` 只参与 hash audit，不复制进数据库。source-attributed `system/developer` message 禁止持久化；base64/原生媒体、本地绝对路径与密钥形态会被稳定 omission marker 替代并产生 `media_omitted/skipped_unsafe` 状态。不同 provider profile 是不同 cache family，OpenAI tool calls 和 Anthropic tool use/result 不互相冒充。
 
-Slice 3 最初只冻结未摘要 V2 raw timeline 与安全 legacy-unlinked 单条记录；Slice 4 已补齐 episode/semantic summary 投影、provider payload token 预算与 compaction generation。当前仍没有切换 Akane 用户链路。
+Slice 3 最初只冻结未摘要 V2 raw timeline 与安全 legacy-unlinked 单条记录；Slice 4 已补齐 episode/semantic summary 投影、provider payload token 预算与 compaction generation。Akane 当前主链已读取 MemCore provider projection；产品级 system/persona/tool schema 仍由宿主在稳定历史之前组装。
 
 ## 19. Compaction V2 与共享 Runtime
 
@@ -1207,7 +1221,7 @@ reason
 - 普通 episode 与 operation digest 使用互不重叠的 source lineage 同批提交；operation digest 默认 explicit 且不进入长期语义压缩；
 - 压缩后的 summary/semantic 继续走统一 projection ledger，`after_projected_tokens` 与实际可见 provider payload 使用同一计数口径；
 - 索引失败保留 pending outbox 并在结果中返回 `index_status=pending`，不回滚已提交的 SQL 事实；
-- V1 `record_*` 数据在没有 V2 turn 时继续走 legacy compatibility 路径。本切片没有切换 Akane、QQ、桌宠、金融或个人 Bot，用户体验尚无变化；
+- V1 `record_*` 数据在没有 V2 turn 时继续走 legacy compatibility 路径。该切片提交时尚未切换 Akane、QQ、桌宠、金融或个人 Bot；当前状态见文档顶部检查点；
 - Retrieval admission 与 Relation expansion 已完成：visibility/kind/policy/index generation 在评分前硬过滤，随后按 turn/correlation/lineage 扩成受 token budget 约束的原子结果；下一切片是 Native Tools V2。
 
 ## 20. Retrieval V2 的具体实现
@@ -1376,7 +1390,7 @@ SQLite 保存当前 index generation 和每条 entry 的 indexed generation。ki
 - dense/BM25 的零分候选不会为了填满 top-k 被返回；配置阈值与 rejected counts 已进入结构化结果；
 - Store 回取使用 Namespace-safe raw/summary/semantic lookup。若第三方 index 忽略 hard where 并返回越界 source，整次查询返回 `unavailable/index_filter_unsupported`，不会靠后置删除伪装成功；
 - Retrieval admission 提交点仍以单记录 seed 为输入；实际返回原子组、lineage closure 和 result token budget 已由下节 Relation expansion 接管；
-- 本切片没有切换 Akane 或云端 Bot，用户表现尚无变化。
+- 该切片提交时没有切换 Akane 或云端 Bot；当前状态见文档顶部检查点。
 
 ### 20.10 Relation expansion 实现检查点（2026-07-21）
 
@@ -1386,30 +1400,31 @@ SQLite 保存当前 index generation 和每条 entry 的 indexed generation。ki
 - summary/semantic 使用 Store lineage closure；semantic 命中会压掉其 source summary/raw，断裂、循环或跨 Namespace lineage 会从 index 隔离并计入结构化 diagnostics；
 - `retrieve_for_turn` 的 visible exclusion 已扩为上下游 lineage closure，当前 prompt 已见 raw 不能通过 derived 层绕回；
 - token budget 对序列化后的完整 match 计数。可容纳时保留完整组，剩余预算不足时整体省略；单组自身超预算时只返回显式 truncated anchor，`semantic_text` 不保留未计费副本；
-- 没有 relations 的旧记录不会再做 `seq_no ± N` 推测，只返回自身；本切片仍未切换 Akane 或云端 Bot。
+- 没有 relations 的旧记录不会再做 `seq_no ± N` 推测，只返回自身；该切片提交时尚未切换 Akane 或云端 Bot，当前回填状态见文档顶部检查点。
 
-## 21. 给模型的 Native Tools V2
+## 21. 给模型的 Native Memory Tools
+
+本节能力已经落地在 `memcore/native_tools.py`。MemCore 生成 provider-specific
+schema 并做参数/权限边界检查，宿主仍负责把返回值送回模型 provider 的原生
+tool-result 通道。
 
 ### 21.1 宿主权限对象，而不是模型自授权
 
-在 `memcore/native_tools.py` 增加：
+当前实现的宿主授权对象是：
 
 ```python
 @dataclass(frozen=True)
 class ToolDispatchPolicy:
-    namespace: Namespace
-    allow_cross_conversation: bool = False
     allow_explicit_trace: bool = False
     allowed_kind_prefixes: tuple[str, ...] = ()
-    max_result_tokens: int = 2_000
-    max_matches: int = 8
 ```
 
-policy 由宿主基于当前 bot、用户、会话和权限构造，不进入模型参数。模型即使生成 `cross_conversation=true` 或任意 `tool.*` prefix，也只能得到 `status=invalid/forbidden`，不能扩大宿主授予的范围。
+模型即使生成任意 `kind_patterns`,也只能得到宿主授予的前缀范围；namespace、
+当前 turn 和结果预算由 `MemorySystem`/宿主上下文持有,不由模型参数自授权。
 
 ### 21.2 默认 schema 精简
 
-`retrieve_for_turn` 默认只暴露：
+`retrieve_for_turn` schema 当前暴露：
 
 ```text
 query
@@ -1421,19 +1436,20 @@ include_explicit
 kind_patterns
 ```
 
-`read_timeline` 默认只暴露：
+`read_timeline` schema 当前暴露：
 
 ```text
 date_from
 date_to
 time_periods
-include_explicit
-kind_patterns
+cross_conversation
 ```
 
-`source_layers`、importance 阈值、cross-conversation、index 细节和 result budget 不作为默认模型参数；它们由 dispatcher policy 和内部规划决定。这样 OpenAI strict schema 不需要把大量少用参数全部变成 required + nullable，模型也更容易知道何时调用。
+`retrieve_for_turn` 的 `source_layers`、`importance_min`、`include_explicit` 和
+`kind_patterns` 都是可选的显式过滤参数；`read_timeline` 只接受日期、时间段和
+`cross_conversation`。schema 由同一份实现生成,避免 prompt 手抄另一套参数列表。
 
-`load_material` 继续是可选宿主工具：MemCore 可以返回 material anchor/file id，但文件本体读取和权限仍由宿主执行。没有真实 loader 时不注册该工具，也不向 prompt 塞 future-only 说明。
+`load_material` 继续是可选宿主工具：MemCore 可以返回 material anchor/file id，但文件本体读取和权限仍由宿主执行。宿主可在 `build_native_memory_tool_specs(include_material_tool=False)` 时不注册它；若注册但未注入 loader,dispatcher 返回结构化 `unavailable`,不假装已读到文件。
 
 ### 21.3 清晰的工具说明
 
@@ -1545,7 +1561,9 @@ ChatJSONResult
 
 ### 22.5 `response_builder.py` 与 prompt envelope 删除窗口
 
-`companion_v01/engine_services/response_builder.py` 改为调用 MemCore `build_context_projection(profile, ...)`，然后再由 Akane 添加人格、当前动态上下文和本轮工具 schema。以下逻辑进入删除窗口：
+`companion_v01/engine_services/response_builder.py` 调用 MemCore
+`build_context_projection(provider_profile=...)`，然后再由 Akane 添加人格、当前动态
+上下文和本轮工具 schema。以下逻辑进入删除窗口：
 
 - `_attach_message_prompt_envelopes()`；
 - `_sync_current_message_prompt_envelope()`；

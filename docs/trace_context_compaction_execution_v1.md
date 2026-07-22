@@ -268,13 +268,16 @@ token policy 维持“所有 raw 都计入 token 压力”。原因:
 - 工具结果、OCR、文件片段可能很长,不应绕过容量控制。
 - `raw_token_boundary_role` 目前只接受 `assistant`,所以中间 trace 可以被压缩,但最后一条如果是 trace 不会立刻压缩,避免半轮工具事件被截断。
 
-后续如果工具事件长期堆积且没有 assistant 结尾,可再引入完整 turn 边界,本轮不做。
+对于仍走 V1 兼容入口、且没有 assistant 结尾的孤立工具事件,token policy 会继续
+等待合法 assistant 边界；需要完整 turn/correlation 语义时,宿主应迁移到 Timeline V2
+的 `begin_turn/append_entry/complete_turn`，而不是在 V1 渲染器里猜边界。
 
 ## Summary 生成要求
 
 ### Transcript 渲染
 
-summary prompt 必须保留 trace 结构。建议新增或复用公共渲染函数,不要在 `_render_transcript()` 里手写 `speaker: content`。
+summary prompt 必须保留 trace 结构。当前 `_render_transcript()` 已复用
+`render_raw_snippet()`，不要在宿主或新入口里重新手写 `speaker: content` 渲染。
 
 目标 transcript:
 

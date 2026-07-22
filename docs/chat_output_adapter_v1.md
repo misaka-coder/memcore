@@ -204,7 +204,8 @@ ChatOutputParseResult(
 
 ## 当前代码地图
 
-这部分是为了后续上下文压缩后能继续实现,记录现在应接入的真实位置。
+这部分记录当前实现的真实接入位置,用于让 metadata 回写与后续 raw/summary 压缩
+保持同一 source lineage,不是未来占位设计。
 
 ### raw 写入
 
