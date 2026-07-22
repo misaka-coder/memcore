@@ -40,8 +40,9 @@ Timeline V2 支持：
 - 外部事件既可以作为独立记录，也可以作为一个模型轮次的 stimulus；
 - `actor` 只表达群聊归因，`tenant/user/domain` 才是硬隔离边界。
 
-旧的 `record_user_turn`、`record_external_event`、`record_tool_exchange` 等 API
-仍作为兼容适配入口存在；新宿主应优先使用 V2 typed entry API。
+`record_user_turn`、`record_assistant_turn`、独立事件和材料便捷 API 只会生成
+V2 typed standalone entry，不再直写 flat V1 路径；有模型回复的请求必须使用
+完整 turn API。`record_tool_exchange` 需要开放的 `turn_id`。
 
 ### 2. 稳定的 provider-visible 投影
 
@@ -73,9 +74,9 @@ raw working memory → episodic summaries → semantic long-term facts
   继续，避免高活跃 namespace 在一次维护中连续调用模型清仓；
 - LLM 失败、索引失败或并发冲突都返回结构化状态，不提交空摘要、不伪造成功。
 
-V2 使用实际 provider projection 的 token 预算规划完整 turn；旧 count/token
-策略仍可按配置使用。token policy 必须由宿主注入真实 tokenizer，不会拿字符数
-冒充模型 token。
+V2 使用实际 provider projection 的 token 预算规划完整 turn。这是唯一 raw
+压缩策略，不存在 count/flat 备选路径。宿主可注入真实 tokenizer；没有 counter
+时仍可压缩，但结果明确标为 `token_count_quality=estimated`。
 
 ### 4. 两种互补的记忆读取工具
 
@@ -86,10 +87,10 @@ V2 使用实际 provider projection 的 token 预算规划完整 turn；旧 coun
 - 这不是“事件永不检索”：V2 `event.*` 如果作为轮次 stimulus 并获得有效
   `accepted_model/accepted_host` annotation,默认准入规则与普通消息相同；
   关联的模型 final 会通过 stimulus/final relation 一起返回；
-- V1 `record_external_event()` 或没有有效 annotation 的事件保持 explicit,
+- standalone `record_external_event()` 或没有有效 annotation 的事件保持 explicit,
   需要 `include_explicit=true`、明确 `kind_patterns` 和宿主授权才能检索；
 - 模型 final 不是一律独立成长期记忆 seed：V2 默认按它所属轮次和 stimulus
-  成组返回；兼容 `record_assistant_turn()` 写入的 assistant raw 则按其显式
+  成组返回；独立 `record_assistant_turn()` 写入的 standalone assistant raw 则按其显式
   retrieval policy 处理；
 - 需要工具/事件/材料时，模型必须显式声明类别或 kind pattern，并接受宿主
   `ToolDispatchPolicy` 的授权；
@@ -106,7 +107,7 @@ V2 使用实际 provider projection 的 token 预算规划完整 turn；旧 coun
   messages，不会被默认 native-tool fallback 改写；
 - operation entry 可逐条附带小型 `retention_anchor`，在 raw 压缩后保留资源 ID、
   版本、schema hash 或结果引用；无 anchor 的旧行为不变，完整结果仍留在宿主存储；
-- `record_tool_exchange()` 生成稳定的 `assistant.tool_call` + `tool.*` 线性块；
+- `record_tool_exchange(turn_id=...)` 生成关联到同一 turn 的 action/observation；
 - `record_external_event()` 生成 `event.*` 中性结构化块；
 - `record_material_reference()` / `record_material_cleanup()` 只保存 file_id、
   文件类型和状态，原图、OCR、视觉描述和文档 chunks 留在宿主存储；
@@ -167,12 +168,13 @@ MemCore 不需要为每个 Bot 复制一套业务逻辑。
 
 ## 仍然明确存在的兼容边界
 
-- 旧 V1 raw API 仍保留兼容窗口，旧数据可能没有完整 turn/correlation lineage；
+- 旧数据可能没有完整 turn/correlation lineage；它们作为 standalone component
+  进入唯一 V2 planner，不靠物理相邻位置猜造关系；
 - V2 宿主迁移完成前，宿主仍可能保留产品级 prompt assembly 和 provider transport；
 - `HashedEmbeddingProvider` 只用于测试，不代表生产语义检索质量；
 - MemCore 保证稳定前缀和可诊断审计，不保证 PinAI、DeepSeek 或其他 provider
   的缓存服务必然命中；
-- 历史 legacy 数据需要通过有界维护逐步迁移，不会被一次性清仓或静默丢弃。
+- 历史 standalone 数据通过有界维护逐步压缩，不会被一次性清仓或静默丢弃。
 
 ## 最小入口
 

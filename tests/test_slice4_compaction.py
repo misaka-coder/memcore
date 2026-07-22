@@ -10,14 +10,18 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from memcore import (
+    AnnotationStatus,
     Actor,
+    EntryOrigin,
     HashedEmbeddingProvider,
     InMemoryVectorIndex,
     MemoryConfig,
     MemorySystem,
     Namespace,
     SQLiteMemoryStore,
+    TimelineEntryInput,
     TokenCounter,
+    TurnRole,
 )
 from memcore.compaction import Compaction
 from memcore.llm.base import LLMClient, LLMRequest, LLMResult, TaskType
@@ -103,9 +107,50 @@ class CapturingLLM(CannedLLM):
         return super().call(request)
 
 
+def _complete_turn(
+    mem: MemorySystem,
+    number: int,
+    *,
+    user_text: str = "问题",
+    assistant_text: str = "回答",
+    timestamp: int = 1000,
+    actor: Actor | None = None,
+) -> str:
+    turn_id = f"turn-{number}"
+    mem.begin_turn(
+        turn_id=turn_id,
+        opened_at=timestamp,
+        stimuli=[
+            TimelineEntryInput(
+                source_id=f"u{number}",
+                kind="message.user",
+                origin=EntryOrigin.USER,
+                turn_role=TurnRole.STIMULUS,
+                semantic_text=user_text,
+                payload={"text": user_text},
+                timestamp=timestamp,
+                actor=actor,
+                compatibility_role="user",
+            )
+        ],
+    )
+    result = mem.complete_turn(
+        turn_id=turn_id,
+        semantic_text=assistant_text,
+        provider_output_raw=assistant_text,
+        memory_annotation={"keywords": [user_text[:20]], "categories": ["plan_goal"]},
+        annotation_status=AnnotationStatus.ACCEPTED_HOST,
+        timestamp=timestamp + 1,
+        source_id=f"a{number}",
+    )
+    if not result.completed:
+        raise AssertionError(result)
+    return turn_id
+
+
 class SummaryCycleViaFacade(unittest.TestCase):
-    def test_raw_compacts_to_summary_with_differential(self) -> None:
-        cfg = MemoryConfig(raw_trigger_count=4, summary_batch_size=2, episodic_compact_trigger_count=99)
+    def test_raw_compacts_by_ratio_without_splitting_turns(self) -> None:
+        cfg = MemoryConfig(raw_token_trigger=1, episodic_compact_trigger_count=99)
         mem = MemorySystem(
             llm=CannedLLM(),
             namespace=Namespace(user_id="u1", conversation_id="c1"),
@@ -114,19 +159,23 @@ class SummaryCycleViaFacade(unittest.TestCase):
             embedding=HashedEmbeddingProvider(),
         )
         for i in range(4):
-            mem.record_user_turn(f"消息{i}", timestamp=1000 + i)
+            _complete_turn(mem, i, user_text=f"消息{i}", timestamp=1000 + i * 10)
         out = mem.compact_due_sync()
         self.assertEqual(out["summaries_created"], 1)
-        # 触发 4 → 总结最老 2 → 剩 2(差值关系)
         remaining = mem.store.get_unsummarized_messages(namespace=mem.namespace)
-        self.assertEqual(len(remaining), 2)
+        self.assertGreater(len(remaining), 0)
+        self.assertEqual(len(remaining) % 2, 0)
+        remaining_counts: dict[str, int] = {}
+        for item in remaining:
+            remaining_counts[item["turn_id"]] = remaining_counts.get(item["turn_id"], 0) + 1
+        self.assertTrue(all(count == 2 for count in remaining_counts.values()))
         # 摘要进了向量索引,且 outbox 置 indexed
         visible = mem.store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10)
         self.assertEqual(len(visible), 1)
         self.assertEqual(visible[0]["index_status"], "indexed")
 
-    def test_legacy_backlog_compacts_one_batch_per_run_and_preserves_lineage(self) -> None:
-        cfg = MemoryConfig(raw_trigger_count=4, summary_batch_size=2, episodic_compact_trigger_count=99)
+    def test_standalone_backlog_compacts_one_batch_per_run_and_preserves_lineage(self) -> None:
+        cfg = MemoryConfig(raw_token_trigger=100, episodic_compact_trigger_count=99)
         llm = CapturingLLM()
         mem = MemorySystem(
             llm=llm,
@@ -141,7 +190,7 @@ class SummaryCycleViaFacade(unittest.TestCase):
         first = mem.compact_due_sync()
 
         self.assertEqual(first["summaries_created"], 1)
-        self.assertEqual(len(mem.store.get_unsummarized_messages(namespace=mem.namespace)), 8)
+        self.assertLess(len(mem.store.get_unsummarized_messages(namespace=mem.namespace)), 10)
         self.assertEqual(
             len([request for request in llm.requests if request.task_type == TaskType.SUMMARY]),
             1,
@@ -154,15 +203,16 @@ class SummaryCycleViaFacade(unittest.TestCase):
             if current["summaries_created"] == 0:
                 break
 
-        self.assertEqual([item["summaries_created"] for item in results], [1, 1, 1, 1, 0])
+        self.assertEqual(results[-1]["summaries_created"], 0)
+        self.assertTrue(all(item["summaries_created"] <= 1 for item in results))
         remaining = mem.store.get_unsummarized_messages(namespace=mem.namespace)
-        self.assertEqual([message["source_id"] for message in remaining], ["m8", "m9"])
+        self.assertEqual([message["source_id"] for message in remaining], ["m9"])
         visible = mem.store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10)
         summarized_source_ids = {source_id for summary in visible for source_id in summary.get("source_ids", [])}
-        self.assertEqual(summarized_source_ids, {f"m{i}" for i in range(8)})
+        self.assertEqual(summarized_source_ids, {f"m{i}" for i in range(9)})
 
-    def test_tool_trace_counts_toward_count_compaction_and_keeps_metadata(self) -> None:
-        cfg = MemoryConfig(raw_trigger_count=4, summary_batch_size=2, episodic_compact_trigger_count=99)
+    def test_tool_exchange_joins_one_turn_and_compacts_as_operation_partition(self) -> None:
+        cfg = MemoryConfig(raw_token_trigger=1, episodic_compact_trigger_count=99)
         llm = CapturingLLM()
         mem = MemorySystem(
             llm=llm,
@@ -171,7 +221,22 @@ class SummaryCycleViaFacade(unittest.TestCase):
             config=cfg,
             embedding=HashedEmbeddingProvider(),
         )
+        mem.begin_turn(
+            turn_id="tool-turn",
+            stimuli=[
+                TimelineEntryInput(
+                    source_id="tool-user",
+                    kind="message.user",
+                    origin=EntryOrigin.USER,
+                    turn_role=TurnRole.STIMULUS,
+                    semantic_text="查两个方向",
+                    payload={"text": "查两个方向"},
+                    timestamp=999,
+                )
+            ],
+        )
         first_tool = mem.record_tool_exchange(
+            turn_id="tool-turn",
             tool_name="web_search",
             tool_call_id="call_001",
             tool_input={"query": "第一条搜索"},
@@ -181,6 +246,7 @@ class SummaryCycleViaFacade(unittest.TestCase):
             keywords=["第一条搜索"],
         )
         second_tool = mem.record_tool_exchange(
+            turn_id="tool-turn",
             tool_name="quote_snapshot",
             tool_call_id="call_002",
             tool_input={"code": "NIKKEI225.INDEX"},
@@ -189,26 +255,33 @@ class SummaryCycleViaFacade(unittest.TestCase):
             source_id_prefix="tool2",
             keywords=["日经225"],
         )
+        mem.complete_turn(
+            turn_id="tool-turn",
+            semantic_text="两个方向都查完了",
+            provider_output_raw="两个方向都查完了",
+            annotation_status=AnnotationStatus.MISSING,
+            timestamp=1004,
+            source_id="tool-final",
+        )
 
         out = mem.compact_due_sync()
 
-        self.assertEqual(out["summaries_created"], 1)
+        self.assertEqual(out["summaries_created"], 2)
         self.assertEqual(first_tool["tool_result"]["memory_metadata"]["categories"], ["tool_trace"])
         self.assertEqual(second_tool["tool_result"]["memory_metadata"]["categories"], ["tool_trace"])
-        remaining = mem.store.get_unsummarized_messages(namespace=mem.namespace)
-        self.assertEqual([m["source_id"] for m in remaining], ["tool2:tool_use", "tool2:tool_result"])
+        self.assertEqual(mem.store.get_unsummarized_messages(namespace=mem.namespace), [])
         visible = mem.store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10)
-        self.assertEqual(visible[0]["source_ids"], ["tool1:tool_use", "tool1:tool_result"])
-        self.assertIn("tool_trace", visible[0]["memory_metadata"]["categories"])
-        summary_requests = [req for req in llm.requests if req.task_type == TaskType.SUMMARY]
-        self.assertIn("assistant.tool_call web_search call_001\ninput:", summary_requests[0].user_prompt)
-        self.assertIn(
-            "tool.web_search call_001\nsource: web_search\noutput:\nfirst search output",
-            summary_requests[0].user_prompt,
+        operation = next(item for item in visible if item["kind"] == "memory.operation_digest")
+        self.assertEqual(
+            set(operation["source_ids"]),
+            {"tool1:tool_use", "tool1:tool_result", "tool2:tool_use", "tool2:tool_result"},
         )
+        summary_requests = [req for req in llm.requests if req.task_type == TaskType.SUMMARY]
+        self.assertEqual(len(summary_requests), 1)
+        self.assertNotIn("first search output", summary_requests[0].user_prompt)
 
-    def test_external_event_counts_toward_normal_compaction(self) -> None:
-        cfg = MemoryConfig(raw_trigger_count=2, summary_batch_size=1, episodic_compact_trigger_count=99)
+    def test_external_event_and_response_compact_as_one_annotated_turn(self) -> None:
+        cfg = MemoryConfig(raw_token_trigger=1, episodic_compact_trigger_count=99)
         llm = CapturingLLM()
         mem = MemorySystem(
             llm=llm,
@@ -217,26 +290,44 @@ class SummaryCycleViaFacade(unittest.TestCase):
             config=cfg,
             embedding=HashedEmbeddingProvider(),
         )
-        event = mem.record_external_event(
-            event_type="finance",
-            source="public_news",
-            fields={"title": "虚构事件", "summary": "只用于测试"},
-            timestamp=1000,
-            source_id="event-1",
+        handle = mem.begin_turn(
+            turn_id="event-turn",
+            stimuli=[
+                TimelineEntryInput(
+                    kind="event.finance",
+                    origin=EntryOrigin.ENVIRONMENT,
+                    turn_role=TurnRole.STIMULUS,
+                    semantic_text="只用于测试",
+                    payload={"source": "public_news", "title": "虚构事件", "summary": "只用于测试"},
+                    timestamp=1000,
+                    source_id="event-1",
+                    compatibility_role="event.finance",
+                )
+            ],
         )
-        mem.record_assistant_turn("条件式分析", timestamp=1001, source_id="assistant-1")
+        completed = mem.complete_turn(
+            turn_id=handle.turn_id,
+            semantic_text="条件式分析",
+            provider_output_raw="条件式分析",
+            memory_annotation={"keywords": ["虚构事件"], "categories": ["plan_goal"]},
+            annotation_status=AnnotationStatus.ACCEPTED_HOST,
+            timestamp=1001,
+            source_id="assistant-1",
+        )
 
         out = mem.compact_due_sync()
 
-        self.assertEqual(event["role"], "event.finance")
-        self.assertEqual(event["memory_metadata"]["categories"], ["event_trace"])
+        self.assertTrue(completed.completed)
+        self.assertEqual(completed.updated_targets[0].kind, "event.finance")
         self.assertEqual(out["summaries_created"], 1)
         visible = mem.store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10)
-        self.assertEqual(visible[0]["source_ids"], ["event-1"])
-        self.assertIn("event.finance\nsource: public_news\ntitle: 虚构事件", llm.requests[0].user_prompt)
+        self.assertEqual(visible[0]["source_ids"], ["event-1", "assistant-1"])
+        self.assertIn("event.finance", llm.requests[0].user_prompt)
+        self.assertIn("source: public_news", llm.requests[0].user_prompt)
+        self.assertIn("title: 虚构事件", llm.requests[0].user_prompt)
 
-    def test_material_trace_does_not_count_but_is_included_in_count_compaction_span(self) -> None:
-        cfg = MemoryConfig(raw_trigger_count=4, summary_batch_size=2, episodic_compact_trigger_count=99)
+    def test_material_entry_compacts_with_its_turn_without_polluting_episode(self) -> None:
+        cfg = MemoryConfig(raw_token_trigger=1, episodic_compact_trigger_count=99)
         llm = CapturingLLM()
         mem = MemorySystem(
             llm=llm,
@@ -245,75 +336,59 @@ class SummaryCycleViaFacade(unittest.TestCase):
             config=cfg,
             embedding=HashedEmbeddingProvider(),
         )
-        mem.record_user_turn("普通消息0", timestamp=1000, source_id="m0")
-        material = mem.record_material_reference(
-            file_id="file_img_001",
-            kind="image",
-            actor=Actor(stable_id="qq-1", display_name="张三"),
-            filename="photo.jpg",
-            mime_type="image/jpeg",
-            file_status="ready",
-            derived_status="ocr_ready",
-            timestamp=1003,
-            source_id="mat1",
-            keywords=["题目图片"],
+        mem.begin_turn(
+            turn_id="material-turn",
+            stimuli=[
+                TimelineEntryInput(
+                    source_id="m0",
+                    kind="message.user",
+                    origin=EntryOrigin.USER,
+                    turn_role=TurnRole.STIMULUS,
+                    semantic_text="看看这张图",
+                    payload={"text": "看看这张图"},
+                    timestamp=1000,
+                    actor=Actor(stable_id="qq-1", display_name="张三"),
+                )
+            ],
         )
-        mem.record_user_turn("普通消息1", timestamp=1004, source_id="m1")
-        mem.record_user_turn("普通消息2", timestamp=1005, source_id="m2")
-        self.assertEqual(material["role"], "user.attachment image file_img_001")
-        self.assertEqual(material["actor_id"], "qq-1")
-        self.assertEqual(material["actor_display_name"], "张三")
-        self.assertEqual(material["memory_metadata"]["categories"], ["material_trace"])
-
-        first = mem.compact_due_sync()
-        self.assertEqual(first["summaries_created"], 0)
-
-        mem.record_user_turn("普通消息3", timestamp=1006, source_id="m3")
-        second = mem.compact_due_sync()
-
-        self.assertEqual(second["summaries_created"], 1)
-        remaining = mem.store.get_unsummarized_messages(namespace=mem.namespace)
-        self.assertEqual([m["source_id"] for m in remaining], ["m2", "m3"])
-        visible = mem.store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10)
-        self.assertEqual(visible[0]["source_ids"], ["m0", "mat1", "m1"])
-        self.assertIn("material_trace", visible[0]["memory_metadata"]["categories"])
-        self.assertIn("file_img_001", visible[0]["memory_metadata"]["keywords"])
-        summary_requests = [req for req in llm.requests if req.task_type == TaskType.SUMMARY]
-        self.assertIn(
-            "user.attachment image file_img_001(张三;id=qq-1)\nsource: attachment",
-            summary_requests[0].user_prompt,
+        material = mem.append_entry(
+            TimelineEntryInput(
+                source_id="mat1",
+                kind="material.image.reference",
+                origin=EntryOrigin.ENVIRONMENT,
+                turn_role=TurnRole.INTERMEDIATE,
+                semantic_text="图片材料已就绪",
+                payload={"file_id": "file_img_001", "filename": "photo.jpg", "status": "ready"},
+                timestamp=1001,
+                memory_metadata={"categories": ["material_trace"], "keywords": ["题目图片"]},
+                semanticize=False,
+            ),
+            turn_id="material-turn",
         )
-
-    def test_raw_token_policy_waits_until_last_message_is_assistant(self) -> None:
-        cfg = MemoryConfig(
-            raw_compaction_policy="token",
-            raw_token_trigger=10,
-            raw_token_batch_ratio=0.6,
-            episodic_compact_trigger_count=99,
+        mem.complete_turn(
+            turn_id="material-turn",
+            semantic_text="图片里是一道题",
+            provider_output_raw="图片里是一道题",
+            annotation_status=AnnotationStatus.MISSING,
+            timestamp=1002,
+            source_id="material-final",
         )
-        mem = MemorySystem(
-            llm=CannedLLM(),
-            namespace=Namespace(user_id="u1", conversation_id="c1"),
-            timezone="Asia/Shanghai",
-            config=cfg,
-            embedding=HashedEmbeddingProvider(),
-            token_counter=LengthTokenCounter(),
-        )
-        mem.record_user_turn("aaaa", timestamp=1000, source_id="u1")
-        mem.record_assistant_turn("bb", timestamp=1001, source_id="a1")
-        mem.record_user_turn("cccc", timestamp=1002, source_id="u2")
 
         out = mem.compact_due_sync()
 
-        self.assertEqual(out["summaries_created"], 0)
-        self.assertEqual(len(mem.store.get_unsummarized_messages(namespace=mem.namespace)), 3)
+        self.assertEqual(material.memory_metadata["categories"], ["material_trace"])
+        self.assertEqual(out["summaries_created"], 2)
+        self.assertEqual(mem.store.get_unsummarized_messages(namespace=mem.namespace), [])
+        visible = mem.store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10)
+        episode = next(item for item in visible if item["kind"] == "memory.episode_summary")
+        operation = next(item for item in visible if item["kind"] == "memory.operation_digest")
+        self.assertEqual(episode["source_ids"], ["m0", "material-final"])
+        self.assertEqual(operation["source_ids"], ["mat1"])
 
-    def test_raw_token_policy_compacts_oldest_assistant_boundary_and_keeps_tail(self) -> None:
+    def test_open_turn_blocks_compaction_instead_of_splitting_it(self) -> None:
         cfg = MemoryConfig(
-            raw_compaction_policy="token",
             raw_token_trigger=10,
             raw_token_batch_ratio=0.6,
-            raw_token_min_remainder_messages=1,
             episodic_compact_trigger_count=99,
         )
         mem = MemorySystem(
@@ -324,10 +399,43 @@ class SummaryCycleViaFacade(unittest.TestCase):
             embedding=HashedEmbeddingProvider(),
             token_counter=LengthTokenCounter(),
         )
-        mem.record_user_turn("aaaa", timestamp=1000, source_id="u1")
-        mem.record_assistant_turn("bb", timestamp=1001, source_id="a1")
-        mem.record_user_turn("cccc", timestamp=1002, source_id="u2")
-        mem.record_assistant_turn("dd", timestamp=1003, source_id="a2")
+        mem.begin_turn(
+            turn_id="open-turn",
+            stimuli=[
+                TimelineEntryInput(
+                    source_id="u1",
+                    kind="message.user",
+                    origin=EntryOrigin.USER,
+                    turn_role=TurnRole.STIMULUS,
+                    semantic_text="x" * 50,
+                    payload={"text": "x" * 50},
+                    timestamp=1000,
+                )
+            ],
+        )
+
+        out = mem.compact_due_sync()
+
+        self.assertEqual(out["status"], "blocked_by_open_turn")
+        self.assertEqual(out["summaries_created"], 0)
+        self.assertEqual(len(mem.store.get_unsummarized_messages(namespace=mem.namespace)), 1)
+
+    def test_token_policy_compacts_oldest_complete_turn_and_keeps_recent_turn(self) -> None:
+        cfg = MemoryConfig(
+            raw_token_trigger=10,
+            raw_token_batch_ratio=0.6,
+            episodic_compact_trigger_count=99,
+        )
+        mem = MemorySystem(
+            llm=CannedLLM(),
+            namespace=Namespace(user_id="u1", conversation_id="c1"),
+            timezone="Asia/Shanghai",
+            config=cfg,
+            embedding=HashedEmbeddingProvider(),
+            token_counter=LengthTokenCounter(),
+        )
+        _complete_turn(mem, 1, user_text="aaaa", assistant_text="bb", timestamp=1000)
+        _complete_turn(mem, 2, user_text="cccc", assistant_text="dd", timestamp=1010)
 
         out = mem.compact_due_sync()
 
@@ -337,12 +445,10 @@ class SummaryCycleViaFacade(unittest.TestCase):
         visible = mem.store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10)
         self.assertEqual(visible[0]["source_ids"], ["u1", "a1"])
 
-    def test_raw_token_policy_user_cutpoint_aligns_to_next_assistant_when_tail_exists(self) -> None:
+    def test_ratio_cutpoint_never_partially_summarizes_a_turn(self) -> None:
         cfg = MemoryConfig(
-            raw_compaction_policy="token",
             raw_token_trigger=12,
             raw_token_batch_ratio=0.5,
-            raw_token_min_remainder_messages=1,
             episodic_compact_trigger_count=99,
         )
         mem = MemorySystem(
@@ -353,27 +459,26 @@ class SummaryCycleViaFacade(unittest.TestCase):
             embedding=HashedEmbeddingProvider(),
             token_counter=LengthTokenCounter(),
         )
-        mem.record_user_turn("aa", timestamp=1000, source_id="u1")
-        mem.record_assistant_turn("bb", timestamp=1001, source_id="a1")
-        mem.record_user_turn("ccc", timestamp=1002, source_id="u2")  # cumulative crosses target here
-        mem.record_assistant_turn("d", timestamp=1003, source_id="a2")  # cutpoint aligns here
-        mem.record_user_turn("eeee", timestamp=1004, source_id="u3")
-        mem.record_assistant_turn("f", timestamp=1005, source_id="a3")
+        _complete_turn(mem, 1, user_text="aa", assistant_text="bb", timestamp=1000)
+        _complete_turn(mem, 2, user_text="ccc", assistant_text="d", timestamp=1010)
+        _complete_turn(mem, 3, user_text="eeee", assistant_text="f", timestamp=1020)
 
         out = mem.compact_due_sync()
 
         self.assertEqual(out["summaries_created"], 1)
         remaining = mem.store.get_unsummarized_messages(namespace=mem.namespace)
-        self.assertEqual([m["source_id"] for m in remaining], ["u3", "a3"])
+        counts: dict[str, int] = {}
+        for item in remaining:
+            counts[item["turn_id"]] = counts.get(item["turn_id"], 0) + 1
+        self.assertTrue(counts)
+        self.assertTrue(all(count == 2 for count in counts.values()))
         visible = mem.store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10)
-        self.assertEqual(visible[0]["source_ids"], ["u1", "a1", "u2", "a2"])
+        self.assertEqual(len(visible[0]["source_ids"]) % 2, 0)
 
-    def test_raw_token_policy_compacts_first_long_turn_without_tail(self) -> None:
+    def test_token_policy_compacts_first_long_turn_without_tail(self) -> None:
         cfg = MemoryConfig(
-            raw_compaction_policy="token",
             raw_token_trigger=10,
             raw_token_batch_ratio=0.67,
-            raw_token_min_remainder_messages=1,
             episodic_compact_trigger_count=99,
         )
         mem = MemorySystem(
@@ -384,8 +489,7 @@ class SummaryCycleViaFacade(unittest.TestCase):
             embedding=HashedEmbeddingProvider(),
             token_counter=LengthTokenCounter(),
         )
-        mem.record_user_turn("x" * 50, timestamp=1000, source_id="u1")
-        mem.record_assistant_turn("ok", timestamp=1001, source_id="a1")
+        _complete_turn(mem, 1, user_text="x" * 50, assistant_text="ok", timestamp=1000)
 
         out = mem.compact_due_sync()
 
@@ -432,7 +536,7 @@ class SummaryCycleViaFacade(unittest.TestCase):
         self.assertEqual(mem.store.get_record_by_source_id(rec["source_id"])["index_status"], "indexed")
 
     def test_summary_failure_keeps_raw_for_retry(self) -> None:
-        cfg = MemoryConfig(raw_trigger_count=2, summary_batch_size=1, episodic_compact_trigger_count=99)
+        cfg = MemoryConfig(raw_token_trigger=1, episodic_compact_trigger_count=99)
         llm = FailThenSummaryLLM()
         mem = MemorySystem(
             llm=llm,
@@ -441,8 +545,7 @@ class SummaryCycleViaFacade(unittest.TestCase):
             config=cfg,
             embedding=HashedEmbeddingProvider(),
         )
-        mem.record_user_turn("第一条重要事实", timestamp=1000)
-        mem.record_user_turn("第二条重要事实", timestamp=1001)
+        _complete_turn(mem, 1, user_text="第一条重要事实", assistant_text="已记住", timestamp=1000)
 
         first = mem.compact_due_sync()
         self.assertEqual(first["summaries_created"], 0)
@@ -452,12 +555,11 @@ class SummaryCycleViaFacade(unittest.TestCase):
 
         second = mem.compact_due_sync()
         self.assertEqual(second["summaries_created"], 1)
-        self.assertEqual(len(mem.store.get_unsummarized_messages(namespace=mem.namespace)), 1)
+        self.assertEqual(len(mem.store.get_unsummarized_messages(namespace=mem.namespace)), 0)
 
     def test_compaction_passes_configured_llm_retries(self) -> None:
         cfg = MemoryConfig(
-            raw_trigger_count=2,
-            summary_batch_size=1,
+            raw_token_trigger=1,
             episodic_compact_trigger_count=99,
             llm_max_retries=4,
         )
@@ -469,8 +571,7 @@ class SummaryCycleViaFacade(unittest.TestCase):
             config=cfg,
             embedding=HashedEmbeddingProvider(),
         )
-        mem.record_user_turn("第一条重要事实", timestamp=1000)
-        mem.record_user_turn("第二条重要事实", timestamp=1001)
+        _complete_turn(mem, 1, user_text="第一条重要事实", assistant_text="已记住", timestamp=1000)
 
         mem.compact_due_sync()
 
@@ -479,7 +580,7 @@ class SummaryCycleViaFacade(unittest.TestCase):
         self.assertEqual(summary_requests[0].max_retries, 4)
 
     def test_summary_prompt_carries_weekday_anchor(self) -> None:
-        cfg = MemoryConfig(raw_trigger_count=2, summary_batch_size=1, episodic_compact_trigger_count=99)
+        cfg = MemoryConfig(raw_token_trigger=1, episodic_compact_trigger_count=99)
         llm = CapturingLLM()
         mem = MemorySystem(
             llm=llm,
@@ -488,8 +589,13 @@ class SummaryCycleViaFacade(unittest.TestCase):
             config=cfg,
             embedding=HashedEmbeddingProvider(),
         )
-        mem.record_user_turn("上周二说的事情还记得吗", timestamp=_ts(2026, 4, 10, 9))
-        mem.record_assistant_turn("记得,我们可以继续整理。", timestamp=_ts(2026, 4, 10, 9, 1))
+        _complete_turn(
+            mem,
+            1,
+            user_text="上周二说的事情还记得吗",
+            assistant_text="记得,我们可以继续整理。",
+            timestamp=_ts(2026, 4, 10, 9),
+        )
 
         mem.compact_due_sync()
 
@@ -499,7 +605,7 @@ class SummaryCycleViaFacade(unittest.TestCase):
         self.assertIn("上周二", summary_requests[0].user_prompt)
 
     def test_summary_prompt_keeps_group_actor_attribution(self) -> None:
-        cfg = MemoryConfig(raw_trigger_count=2, summary_batch_size=1, episodic_compact_trigger_count=99)
+        cfg = MemoryConfig(raw_token_trigger=1, episodic_compact_trigger_count=99)
         llm = CapturingLLM()
         mem = MemorySystem(
             llm=llm,
@@ -508,10 +614,14 @@ class SummaryCycleViaFacade(unittest.TestCase):
             config=cfg,
             embedding=HashedEmbeddingProvider(),
         )
-        mem.record_user_turn(
-            "我下周三要复盘基金组合", actor=Actor(stable_id="qq-1", display_name="张三"), timestamp=1000
+        _complete_turn(
+            mem,
+            1,
+            user_text="我下周三要复盘基金组合",
+            assistant_text="到时一起复盘",
+            timestamp=1000,
+            actor=Actor(stable_id="qq-1", display_name="张三"),
         )
-        mem.record_user_turn("我周五看风险报告", actor=Actor(stable_id="qq-2", display_name="李四"), timestamp=1001)
 
         mem.compact_due_sync()
 

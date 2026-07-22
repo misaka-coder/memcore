@@ -176,11 +176,11 @@ ChatOutputParseResult(
 
 推荐流程:
 
-1. `record_user_turn(user_text)` 先安全落 raw。
+1. `begin_turn(stimuli=[...])` 原子写入当前 stimulus 并返回 `turn_id`。
 2. 接入方调用聊天模型,可拼接 memcore 的输出契约 prompt。
 3. adapter 解析模型输出,得到 `speech` 与 `memory_metadata`。
-4. 用 `update_turn_metadata(source_id, memory_metadata)` 回写用户 raw metadata 并重建 raw 索引。
-5. 用 `record_assistant_turn(speech, memory_metadata=assistant_timeline_metadata)` 记录助手可见回复。
+4. 用 `complete_turn(...)` 在一个事务中提交最终回复、目标 stimulus 的 metadata、relation visibility 和 turn close。
+5. 只有确实不期待模型回复的独立消息才使用 standalone 便捷 API。
 
 这样能保留 Akane 的优势:聊天模型本人决定这一轮该怎么记,memcore 负责归一化、校验、回写和索引。
 
@@ -199,7 +199,7 @@ ChatOutputParseResult(
 3. `chat_output.parser`:JSON/plain text 解析 + metadata 归一化。
 4. `chat_output.segmenter`:中英文句末标点分段。
 5. `chat_output.streaming`:流式 `speech` 捕捉与 segment 事件。
-6. `MemorySystem.update_turn_metadata`:回写 raw metadata 并重建 raw 索引。
+6. `MemorySystem.complete_turn`:原子提交 final 与目标 metadata；`update_turn_metadata` 仅服务 standalone/迁移维护。
 7. 测试:标准 JSON、plain text、invalid JSON、缺 speech、连续标点、小数/缩写/域名、metadata 枚举清洗、回写索引。
 
 ## 当前代码地图
@@ -209,18 +209,14 @@ ChatOutputParseResult(
 
 ### raw 写入
 
-`MemorySystem.record_user_turn()` / `record_assistant_turn()` 都走 `MemorySystem._record()`。
+正常请求使用 `begin_turn()` 写入 typed stimulus；工具/事件/材料通过
+`append_entry()` / `append_action()` / `append_observation()` 关联同一 `turn_id`；
+`complete_turn()` 在 SQLite 单事务中写 final、应用 annotation、关闭 turn 并更新
+relation visibility。之后每个 entry 通过统一 outbox 索引，失败保留 `pending`。
 
-当前 `_record()` 行为:
-
-- 生成时间锚点:`timestamp_to_date_label()`、`infer_time_of_day()`。
-- 调 `coerce_memory_metadata(..., categories=self.config.categories, enable_flavor=self.config.enable_flavor)` 清洗传入 metadata。
-- 调 `store.add_message(...)` 写 SQLite,初始 `index_status=pending`。
-- 调 `index.upsert([build_raw_entry(rec)])`。
-- upsert 成功后 `store.set_index_status(source_id, "indexed")`,并同步修改返回值 `rec["index_status"]="indexed"`。
-- upsert 失败时不抛错,返回 `index_status="pending"` 交给 `reindex_pending()`。
-
-这说明 Chat Output Adapter 不需要改变第一步 raw 落库。推荐流程仍然是先 `record_user_turn(user_text)`,等聊天模型输出后再回写 metadata。
+`record_user_turn()` / `record_assistant_turn()` 等便捷入口只调用
+`append_standalone_entry()`，不再存在 `_record() → add_message()` 的第二条 facade
+写路径。它们不应被串起来模拟一个正常对话轮次。
 
 ### raw metadata 入索引
 

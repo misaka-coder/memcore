@@ -94,22 +94,8 @@ class FailSecondSummaryStore(SQLiteMemoryStore):
 
 def _projected_config(**overrides: Any) -> MemoryConfig:
     values: dict[str, Any] = {
-        "compaction_policy": "projected_tokens",
         "raw_token_trigger": 260,
         "raw_token_batch_ratio": 0.67,
-        "compaction_min_recent_turns": 1,
-        "episodic_compact_trigger_count": 99,
-        "projection_profile": OPENAI_PROFILE,
-    }
-    values.update(overrides)
-    return MemoryConfig(**values)
-
-
-def _count_config(**overrides: Any) -> MemoryConfig:
-    values: dict[str, Any] = {
-        "compaction_policy": "count_compat",
-        "raw_trigger_count": 4,
-        "summary_batch_size": 2,
         "compaction_min_recent_turns": 1,
         "episodic_compact_trigger_count": 99,
         "projection_profile": OPENAI_PROFILE,
@@ -278,11 +264,10 @@ class CompactionV2Base(unittest.TestCase):
 
 
 class ClosedTurnPlanningTests(CompactionV2Base):
-    def test_projected_compaction_is_not_truncated_by_legacy_entry_batch_size(self) -> None:
+    def test_ratio_planner_selects_enough_complete_components_in_one_pass(self) -> None:
         config = _projected_config(
-            raw_token_trigger=260,
+            raw_token_trigger=900,
             raw_token_batch_ratio=0.75,
-            summary_batch_size=3,
             episodic_visible_max=1,
         )
         mem, store, _ = self.make_mem(config=config)
@@ -293,7 +278,8 @@ class ClosedTurnPlanningTests(CompactionV2Base):
             result = mem.compact_due_sync(provider_profile=OPENAI_PROFILE)
 
             self.assertEqual(result["status"], "compacted")
-            self.assertGreater(result["source_entry_count"], config.summary_batch_size)
+            self.assertGreater(result["source_turn_count"], 1)
+            self.assertEqual(result["source_entry_count"], result["source_turn_count"] * 2)
             self.assertGreaterEqual(result["selected_projected_tokens"], result["planned_source_tokens"])
             self.assertLess(result["after_raw_projected_tokens"], result["before_raw_projected_tokens"])
         finally:
@@ -527,7 +513,7 @@ class ClosedTurnPlanningTests(CompactionV2Base):
 
 class ToolPartitionAndAtomicityTests(CompactionV2Base):
     def test_parallel_tool_turn_commits_episode_and_operation_partitions_together(self) -> None:
-        mem, store, _ = self.make_mem(config=_count_config(raw_trigger_count=6, summary_batch_size=4))
+        mem, store, _ = self.make_mem(config=_projected_config(raw_token_trigger=100))
         try:
             _append_tool_turn(mem)
             _complete_simple_turn(mem, 9)
@@ -559,7 +545,7 @@ class ToolPartitionAndAtomicityTests(CompactionV2Base):
             store.close()
 
     def test_operation_compaction_retains_only_opted_in_sanitized_anchors(self) -> None:
-        mem, store, _ = self.make_mem(config=_count_config(raw_trigger_count=6, summary_batch_size=4))
+        mem, store, _ = self.make_mem(config=_projected_config(raw_token_trigger=100))
         try:
             _append_tool_turn(mem, retain_anchors=True)
             stored_action = store.get_entry(namespace=mem.namespace, source_id="tool-turn-action-a")
@@ -599,7 +585,7 @@ class ToolPartitionAndAtomicityTests(CompactionV2Base):
     def test_second_summary_write_failure_rolls_back_both_partitions_and_source_marks(self) -> None:
         store = FailSecondSummaryStore()
         mem, _, _ = self.make_mem(
-            config=_count_config(raw_trigger_count=6, summary_batch_size=4),
+            config=_projected_config(raw_token_trigger=100),
             store=store,
         )
         try:
@@ -618,7 +604,7 @@ class ToolPartitionAndAtomicityTests(CompactionV2Base):
             store.close()
 
     def test_stale_snapshot_cannot_commit_a_second_summary(self) -> None:
-        mem, store, _ = self.make_mem(config=_count_config())
+        mem, store, _ = self.make_mem(config=_projected_config())
         try:
             _complete_simple_turn(mem, 0)
             snapshot, bundle = _snapshot_for_first_bundle(mem, store)
@@ -650,7 +636,7 @@ class ToolPartitionAndAtomicityTests(CompactionV2Base):
             store.close()
 
     def test_idempotent_retry_reports_missing_summary_row_as_stale(self) -> None:
-        mem, store, _ = self.make_mem(config=_count_config())
+        mem, store, _ = self.make_mem(config=_projected_config())
         try:
             _complete_simple_turn(mem, 0)
             snapshot, bundle = _snapshot_for_first_bundle(mem, store)
@@ -690,7 +676,7 @@ class SharedRuntimeTests(CompactionV2Base):
         runtime = MemCoreRuntime(compaction_workers=2)
         store = SQLiteMemoryStore(":memory:")
         llm = CountingLLM()
-        config = _count_config()
+        config = _projected_config(raw_token_trigger=100)
         embedding = HashedEmbeddingProvider()
         index = InMemoryVectorIndex(embedding=embedding)
         namespace = Namespace(user_id="user", conversation_id="conversation")

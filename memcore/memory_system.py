@@ -1,10 +1,8 @@
-"""MemorySystem —— 对外唯一门面。
+"""MemorySystem —— 统一时间线、投影、检索和压缩的对外门面。
 
-写侧(切片 4)已接通:record_user_turn / record_assistant_turn / compact_due_background / compact_due_sync / embedding_status。
-读侧(切片 5)已接通:build_prompt_context / retrieve。遗忘会同步清 store 与 VectorIndex。
-
-生命周期(见设计文档 §3.3),使用方按顺序接:
-    record_user_turn → build_prompt_context → record_assistant_turn → compact_due_background
+新宿主的写侧生命周期是 ``begin_turn → append_* → complete_turn``。少量
+``record_*`` 便捷方法只负责把独立记录投影为 typed standalone entry，不再直写
+旧 flat-message 路径。
 """
 
 from __future__ import annotations
@@ -20,7 +18,7 @@ from zoneinfo import ZoneInfo
 from .compaction import Compaction
 from .config import MemoryConfig
 from .embedding.base import EmbeddingProvider
-from .errors import ConfigError, NamespaceError, SchemaError
+from .errors import NamespaceError, SchemaError
 from .index.base import VectorIndex
 from .index.entry_builder import build_raw_entry, build_semantic_entry, build_summary_entry
 from .index.memory_index import InMemoryVectorIndex
@@ -55,8 +53,10 @@ from .time_anchor import infer_time_of_day, timestamp_to_date_label
 from .timeline import (
     AnnotationStatus,
     CompletionCommitResult,
+    EntryOrigin,
     EntryTrust,
     MemoryAnnotation,
+    RetrievalPolicy,
     RetrievalVisibility,
     TimelineEntry,
     TimelineEntryInput,
@@ -113,8 +113,6 @@ class MemorySystem:
             self.config.enable_flavor = bool(enable_flavor)
         if token_counter is not None and not isinstance(token_counter, TokenCounter):
             raise TypeError("token_counter must be a TokenCounter instance or None")
-        if self.config.raw_compaction_policy == "token" and token_counter is None:
-            raise ConfigError("token_counter is required when raw_compaction_policy='token'")
         self.persona_text = str(persona_text or "")
         # 提示词治理:persona_text 便捷参数填进 overrides 的对应插槽(显式 overrides 优先)。
         self.prompt_overrides = self._resolve_overrides(prompt_overrides, self.persona_text)
@@ -715,12 +713,36 @@ class MemorySystem:
             raise SchemaError("memory_annotation_invalid_status") from exc
 
     def record_user_turn(self, content: str, *, actor: Actor | None = None, **fields: Any) -> dict[str, Any]:
-        return self._record(role="user", content=content, actor=actor, **fields)
+        """Append one independent user message through the V2 typed writer.
+
+        A request that expects a model response should use :meth:`begin_turn` so
+        the stimulus, intermediate operations and final response share lineage.
+        """
+
+        return self._append_standalone_message(
+            kind="message.user",
+            origin=EntryOrigin.USER,
+            compatibility_role="user",
+            content=content,
+            actor=actor,
+            **fields,
+        )
 
     def record_assistant_turn(
         self, reply: str, *, in_reply_to: dict[str, Any] | None = None, **fields: Any
     ) -> dict[str, Any]:
-        return self._record(role="assistant", content=reply, actor=None, **fields)
+        """Append one independent assistant message through the V2 typed writer."""
+
+        reply_to_source_id = str((in_reply_to or {}).get("source_id") or "")
+        return self._append_standalone_message(
+            kind="message.assistant",
+            origin=EntryOrigin.ASSISTANT,
+            compatibility_role="assistant",
+            content=reply,
+            actor=None,
+            reply_to_source_id=reply_to_source_id,
+            **fields,
+        )
 
     def record_external_event(
         self,
@@ -734,7 +756,12 @@ class MemorySystem:
         importance: float = 0.4,
         confidence: float = 1.0,
     ) -> dict[str, Any]:
-        """Append one typed external event to the same linear raw timeline."""
+        """Append one independent typed external event.
+
+        If the event starts a model-response turn, pass an equivalent
+        ``TimelineEntryInput`` to :meth:`begin_turn` instead so its final reply
+        receives explicit turn lineage and memory annotation.
+        """
 
         from .rendering import render_external_event_text
 
@@ -747,30 +774,36 @@ class MemorySystem:
             "importance": importance,
             "confidence": confidence,
         }
-        record_fields: dict[str, Any] = {
-            "annotation_status": "unannotated",
-            "memory_metadata": metadata,
-            "retrieval_policy": "explicit",
-            "retrieval_visibility": "explicit",
-        }
-        if timestamp is not None:
-            record_fields["timestamp"] = timestamp
-        if str(source_id or "").strip():
-            record_fields["source_id"] = str(source_id).strip()
-        return self._record(
-            role=f"event.{label}",
-            content=render_external_event_text(
-                event_type=label,
-                fields=dict(fields or {}),
-                source=source,
-            ),
-            actor=None,
-            **record_fields,
+        event_fields = dict(fields or {})
+        semantic_text = render_external_event_text(
+            event_type=label,
+            fields=event_fields,
+            source=source,
         )
+        payload = {"source": str(source or "").strip(), **event_fields}
+        entry = self.append_standalone_entry(
+            TimelineEntryInput(
+                source_id=str(source_id or "").strip(),
+                kind=f"event.{label}",
+                origin=EntryOrigin.ENVIRONMENT,
+                turn_role=None,
+                semantic_text=semantic_text,
+                payload=payload,
+                timestamp=int(timestamp or 0),
+                memory_metadata=metadata,
+                annotation_status=AnnotationStatus.UNANNOTATED,
+                retrieval_policy=RetrievalPolicy.EXPLICIT,
+                retrieval_visibility=RetrievalVisibility.EXPLICIT,
+                semanticize=False,
+                compatibility_role=f"event.{label}",
+            )
+        )
+        return entry.to_record()
 
     def record_tool_exchange(
         self,
         *,
+        turn_id: str,
         tool_name: str,
         result: Any,
         tool_input: Any = None,
@@ -782,52 +815,48 @@ class MemorySystem:
         importance: float = 0.2,
         confidence: float = 1.0,
     ) -> dict[str, dict[str, Any]]:
-        """按线性消息序列追加一次工具调用:assistant.tool_call + tool.<name>。"""
+        """Append one correlated action/observation pair to an open V2 turn.
+
+        ``keywords``/``importance``/``confidence`` remain accepted so an old
+        caller can migrate without rewriting its argument builder, but operation
+        retrieval and compaction are governed by typed roles and correlation
+        lineage rather than trace categories.
+        """
+
+        del keywords, importance, confidence
         from .rendering import render_tool_result_text, render_tool_use_text
 
+        resolved_turn_id = str(turn_id or "").strip()
+        if not resolved_turn_id:
+            raise SchemaError("tool_exchange_turn_id_required")
         tool = str(tool_name or "").strip()
         prefix = str(source_id_prefix or "").strip()
         call_id = self._tool_event_part(tool_call_id or prefix or f"call_{uuid.uuid4().hex[:8]}", fallback="call")
         tool_label = self._tool_event_part(tool, fallback="tool")
         result_source = str(source or "").strip() or self._default_tool_source(tool)
-        tags = [tool, *[str(item or "").strip() for item in (keywords or [])]]
-        tags = [item for item in tags if item]
-        metadata = {
-            "categories": ["tool_trace"],
-            "keywords": tags[:4],
-            "subject_scopes": ["assistant"],
-            "importance": importance,
-            "confidence": confidence,
-        }
-        ts = timestamp
-        trace_fields = {
-            "annotation_status": "unannotated",
-            "memory_metadata": metadata,
-            "retrieval_policy": "explicit",
-            "retrieval_visibility": "explicit",
-        }
-        use_fields: dict[str, Any] = dict(trace_fields)
-        result_fields: dict[str, Any] = dict(trace_fields)
-        if ts is not None:
-            use_fields["timestamp"] = ts
-            result_fields["timestamp"] = ts + 1
-        if prefix:
-            use_fields["source_id"] = f"{prefix}:tool_use"
-            result_fields["source_id"] = f"{prefix}:tool_result"
-
-        tool_use = self._record(
-            role=f"assistant.tool_call {tool_label} {call_id}",
-            content=render_tool_use_text(tool_input=tool_input),
-            actor=None,
-            **use_fields,
+        ts = int(timestamp or time.time())
+        tool_use = self.append_action(
+            turn_id=resolved_turn_id,
+            kind=f"tool.{tool_label}.call",
+            correlation_id=call_id,
+            semantic_text=render_tool_use_text(tool_input=tool_input),
+            payload={"input": tool_input if tool_input is not None else {}},
+            source_id=f"{prefix}:tool_use" if prefix else "",
+            timestamp=ts,
+            trace_metadata={"tool_name": tool_label, "status": "running"},
         )
-        tool_result = self._record(
-            role=f"tool.{tool_label} {call_id}",
-            content=render_tool_result_text(result=result, source=result_source),
-            actor=None,
-            **result_fields,
+        tool_result = self.append_observation(
+            turn_id=resolved_turn_id,
+            kind=f"tool.{tool_label}.result",
+            correlation_id=call_id,
+            semantic_text=render_tool_result_text(result=result, source=result_source),
+            payload={"source": result_source, "output": result},
+            source_id=f"{prefix}:tool_result" if prefix else "",
+            timestamp=ts + 1,
+            status="success",
+            trace_metadata={"tool_name": tool_label},
         )
-        return {"tool_use": tool_use, "tool_result": tool_result}
+        return {"tool_use": tool_use.to_record(), "tool_result": tool_result.to_record()}
 
     def record_material_reference(
         self,
@@ -873,8 +902,10 @@ class MemorySystem:
             fields["timestamp"] = timestamp
         if source_id:
             fields["source_id"] = source_id
-        return self._record(
-            role=f"user.attachment {kind_label} {file_key}",
+        return self._append_standalone_message(
+            kind=f"material.{kind_label}.reference",
+            origin=EntryOrigin.USER,
+            compatibility_role=f"user.attachment {kind_label} {file_key}",
             content=render_material_reference_text(
                 file_id=file_id,
                 kind=kind,
@@ -930,8 +961,10 @@ class MemorySystem:
             fields["timestamp"] = timestamp
         if source_id:
             fields["source_id"] = source_id
-        return self._record(
-            role=f"system.material_cleanup {kind_label} {file_key}",
+        return self._append_standalone_message(
+            kind=f"material.{kind_label}.cleanup",
+            origin=EntryOrigin.ENVIRONMENT,
+            compatibility_role=f"system.material_cleanup {kind_label} {file_key}",
             content=render_material_cleanup_text(
                 file_id=file_id,
                 kind=kind,
@@ -974,56 +1007,74 @@ class MemorySystem:
             return "timeline"
         return tool or "tool"
 
-    def _record(self, *, role: str, content: str, actor: Actor | None, **fields: Any) -> dict[str, Any]:
+    def _append_standalone_message(
+        self,
+        *,
+        kind: str,
+        origin: EntryOrigin,
+        compatibility_role: str,
+        content: str,
+        actor: Actor | None,
+        reply_to_source_id: str = "",
+        **fields: Any,
+    ) -> dict[str, Any]:
+        """Thin convenience adapter over the single typed standalone writer."""
+
         ts = int(fields.pop("timestamp", None) or time.time())
-        # ``index_in_vector`` is a retrieval-routing decision, not a write
-        # decision.  Even when a caller opts this turn out of vector search,
-        # the SQLite raw record remains the truth source and must be kept.
         index_in_vector = bool(fields.pop("index_in_vector", True))
-        source_id = fields.pop("source_id", None) or uuid.uuid4().hex
+        source_id = str(fields.pop("source_id", None) or uuid.uuid4().hex)
         metadata = coerce_memory_metadata(
             fields.pop("memory_metadata", None),
             categories=self.config.categories,
             enable_flavor=self.config.enable_flavor,
         ).to_dict()
-        if role in {"assistant", "user"}:
-            fields.setdefault("annotation_status", "accepted_host")
+        if compatibility_role in {"assistant", "user"}:
+            fields.setdefault("annotation_status", AnnotationStatus.ACCEPTED_HOST)
             fields.setdefault("annotation_source", "host_adapter")
-            fields.setdefault("retrieval_policy", "always")
-            fields.setdefault("retrieval_visibility", "default")
-        ns = self.namespace if actor is None else self._with_actor(actor)
-        rec = self.store.add_message(
-            namespace=ns,
-            role=role,
-            content=content,
-            timestamp=ts,
-            source_id=source_id,
-            date_label=timestamp_to_date_label(ts, self.timezone),
-            time_of_day=infer_time_of_day(ts, self.timezone),
-            memory_metadata=metadata,
-            **fields,
-        )
-        if not index_in_vector:
-            # Keep the opt-out durable and out of the repair outbox.  This is
-            # intentionally distinct from ``pending``: no vector upsert is
-            # expected for this record.
-            self.store.set_index_status(rec["source_id"], "skipped")
-            rec["index_status"] = "skipped"
-            return rec
-        # outbox:写库已成功(pending);向量 upsert 失败就留 pending,交给 reindex_pending 自愈,不阻断记录。
-        try:
-            self.index.upsert([build_raw_entry(rec)])
-            self.store.set_index_state(
-                rec["source_id"],
-                "indexed",
-                index_schema_version=INDEX_SCHEMA_VERSION,
-                index_key=INDEX_SCHEMA_KEY,
+            fields.setdefault("retrieval_policy", RetrievalPolicy.ALWAYS)
+            fields.setdefault("retrieval_visibility", RetrievalVisibility.DEFAULT)
+        allowed = {
+            "annotation_status",
+            "annotation_source",
+            "retrieval_policy",
+            "retrieval_visibility",
+            "semanticize",
+            "prompt_visible",
+            "trust",
+            "trace_metadata",
+            "payload",
+        }
+        unknown = sorted(set(fields) - allowed)
+        if unknown:
+            raise TypeError(f"unsupported standalone entry fields: {', '.join(unknown)}")
+        entry = self.append_standalone_entry(
+            TimelineEntryInput(
+                source_id=source_id,
+                kind=kind,
+                origin=origin,
+                turn_role=None,
+                semantic_text=content,
+                payload=fields.pop("payload", {"text": content}),
+                timestamp=ts,
+                actor=actor,
+                reply_to_source_id=reply_to_source_id,
+                trace_metadata=fields.pop("trace_metadata", {}),
+                memory_metadata=metadata,
+                annotation_status=fields.pop("annotation_status", AnnotationStatus.UNANNOTATED),
+                annotation_source=str(fields.pop("annotation_source", "")),
+                retrieval_policy=fields.pop("retrieval_policy", RetrievalPolicy.AUTO),
+                retrieval_visibility=fields.pop("retrieval_visibility", RetrievalVisibility.EXPLICIT),
+                semanticize=bool(fields.pop("semanticize", True)),
+                prompt_visible=bool(fields.pop("prompt_visible", True)),
+                trust=fields.pop("trust", EntryTrust.UNTRUSTED_DATA),
+                compatibility_role=compatibility_role,
             )
-            rec["index_status"] = "indexed"  # 返回值与 store 同步,别让调用方误判
-            rec["index_schema_version"] = INDEX_SCHEMA_VERSION
-            rec["index_key"] = INDEX_SCHEMA_KEY
-        except Exception:
-            rec["index_status"] = "pending"
+        )
+        rec = entry.to_record()
+        if not index_in_vector:
+            self.index.delete([source_id])
+            self.store.set_index_status(source_id, "skipped")
+            rec["index_status"] = "skipped"
         return rec
 
     def _with_actor(self, actor: Actor) -> Namespace:

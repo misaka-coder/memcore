@@ -15,7 +15,7 @@ Read these files in order before coding:
 5. `docs/design_highlights_v1.md` — why the system is designed this way.
 6. `docs/chat_output_adapter_v1.md` — optional final-output JSON contract and streaming speech parsing.
 7. `docs/metadata_prefilter_design_v1.md` — metadata prefilter semantics for retrieval.
-8. `docs/raw_token_compaction_policy_v1.md` — optional token-based raw compaction.
+8. `docs/raw_token_compaction_policy_v1.md` — the single token/ratio raw compaction policy.
 
 If you are changing memcore itself, inspect nearby tests first and run the validation commands at the end of this file.
 
@@ -24,7 +24,18 @@ If you are changing memcore itself, inspect nearby tests first and run the valid
 Use `MemorySystem` as the only facade. A normal chat turn should look like this:
 
 ```python
-cur = mem.record_user_turn(user_text, actor=actor_or_none, timestamp=now_ts)
+handle = mem.begin_turn(
+    stimuli=[TimelineEntryInput(
+        kind="message.user",
+        origin=EntryOrigin.USER,
+        turn_role=TurnRole.STIMULUS,
+        semantic_text=user_text,
+        payload={"text": user_text},
+        actor=actor_or_none,
+        timestamp=now_ts,
+    )]
+)
+cur = handle.stimuli[0].to_record()
 
 ctx = mem.build_prompt_context(current=cur)
 ctx_text = mem.render_prompt_context(ctx)
@@ -46,8 +57,17 @@ if not parsed.ok:
     handle_model_output_error(parsed)  # retry or surface a structured failure; do not store empty speech
     return
 
-mem.update_turn_metadata(cur["source_id"], parsed.memory_metadata)
-mem.record_assistant_turn(parsed.speech, in_reply_to=cur, timestamp=now_ts2)
+completed = mem.complete_turn(
+    turn_id=handle.turn_id,
+    semantic_text=parsed.speech,
+    provider_output_raw=result,
+    memory_annotation=parsed.memory_metadata,
+    annotation_status="accepted_model",
+    timestamp=now_ts2,
+)
+if not completed.completed:
+    handle_memory_commit_error(completed)
+    return
 
 mem.compact_due_background()
 ```
@@ -62,7 +82,8 @@ Implement or choose these pieces in the host project:
 - `EmbeddingProvider`: production embedding model. Do not use `HashedEmbeddingProvider` in production.
 - `Namespace`: decide `tenant_id`, `user_id`, `domain_id`, `conversation_id`.
 - Optional `Actor`: use for group/multi-speaker messages.
-- Optional `TokenCounter`: required only when `raw_compaction_policy="token"`.
+- Optional `TokenCounter`: inject an exact tokenizer when available. Without it,
+  compaction remains available and reports `token_count_quality=estimated`.
 
 Do not put API keys, local absolute paths, `.env`, runtime logs, databases, or cached model files into prompts, docs, snapshots, or commits.
 
@@ -119,7 +140,11 @@ cfg = MemoryConfig(
 ```
 
 Never let the model invent category names. memcore will drop values outside the enum.
-If the host records tool calls/results into raw memory, prefer `record_tool_exchange(...)` so the trace is stored as linear `assistant.tool_call <tool> <call_id>` and `tool.<tool> <call_id>` blocks with `categories=["tool_trace"]`. The default count policy includes `tool_trace` in raw compaction triggers, so tool-heavy timelines enter the normal summary lifecycle even without ordinary chat messages. Normal retrieval still excludes it unless `categories=["tool_trace"]` is explicitly requested. If you override `categories`, keep `tool_trace` in the enum if you need this behavior.
+Record tool calls/results with `append_action(...)` and `append_observation(...)`
+inside the same open turn. `record_tool_exchange(turn_id=...)` is only a thin
+convenience adapter. Operation lineage depends on typed roles and
+`correlation_id`, not category strings. It participates in the one token
+compaction lifecycle and remains explicit-only in normal retrieval.
 
 For Timeline V2 or non-native model protocols, use `append_action(...)` and
 `append_observation(...)` with an open namespaced `kind` and stable
@@ -130,8 +155,12 @@ the standard adapter fallback. Use the optional `retention_anchor` only for a
 small resource ID/version/hash/result reference that must survive operation
 compaction, never for a full result, credential, local path, or file.
 
-If the host records images/files into raw memory, prefer `record_material_reference(...)` and `record_material_cleanup(...)`. These store only file/material anchors as `user.attachment <kind> <file_id>` and `system.material_cleanup <kind> <file_id>` blocks with `categories=["material_trace"]`; original files and OCR/vision/document chunks stay in host storage. The default config excludes `material_trace` from count-based raw compaction triggers and from normal retrieval unless `categories=["material_trace"]` is explicitly requested. If you override `categories`, keep `material_trace` in the enum if you need this behavior.
-For group or multi-speaker uploads, pass `actor=Actor(stable_id=..., display_name=...)` to `record_material_reference(...)` so the attachment keeps uploader attribution.
+Record images/files as `material.*` intermediate entries in the current turn,
+or use the material standalone convenience methods when no model response is
+expected. Store only file/material anchors; originals and OCR/vision/document
+chunks stay in host storage. Materials compact into the operation partition and
+remain explicit-only in normal retrieval. Preserve group uploader attribution
+with `Actor(stable_id=..., display_name=...)`.
 
 ## Retrieval Tools To Expose
 
@@ -237,8 +266,15 @@ if not parsed.ok:
     handle_model_output_error(parsed)  # retry or surface a structured failure
     return
 
-mem.update_turn_metadata(cur["source_id"], parsed.memory_metadata)
-mem.record_assistant_turn(parsed.speech, in_reply_to=cur)
+completed = mem.complete_turn(
+    turn_id=handle.turn_id,
+    semantic_text=parsed.speech,
+    provider_output_raw=raw_model_output,
+    memory_annotation=parsed.memory_metadata,
+    annotation_status="accepted_model",
+)
+if not completed.completed:
+    handle_memory_commit_error(completed)
 ```
 
 For streaming UI/TTS, use `StreamingSpeechParser` so `speech` can appear before `memory_metadata` is complete.

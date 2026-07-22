@@ -61,7 +61,7 @@ class ReferenceSummaryContext(unittest.TestCase):
             },
         )
         llm = CapturingSummaryLLM()
-        cfg = MemoryConfig(raw_trigger_count=2, summary_batch_size=1)
+        cfg = MemoryConfig(raw_token_trigger=1)
         comp = Compaction(store=store, index=index, llm=llm, config=cfg, timezone="Asia/Shanghai")
         for i in range(2):
             store.add_message(namespace=ns, role="user", content=f"m{i}", timestamp=200 + i, source_id=f"m{i}")

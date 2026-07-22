@@ -20,6 +20,8 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from memcore import (
+    AnnotationStatus,
+    EntryOrigin,
     HashedEmbeddingProvider,
     InMemoryVectorIndex,
     LLMClient,
@@ -30,6 +32,8 @@ from memcore import (
     Namespace,
     SQLiteMemoryStore,
     TaskType,
+    TimelineEntryInput,
+    TurnRole,
     build_chat_output_contract_prompt,
     parse_chat_output,
 )
@@ -132,8 +136,8 @@ def main() -> None:
         store = SQLiteMemoryStore(str(Path(tmp) / "memcore.sqlite3"))
         index = InMemoryVectorIndex(embedding=embedding)
         config = MemoryConfig(
-            raw_trigger_count=4,
-            summary_batch_size=2,
+            raw_token_trigger=1200,
+            raw_token_batch_ratio=0.67,
             episodic_compact_trigger_count=99,
             enable_verifier=True,
             enable_flavor=False,
@@ -160,24 +164,67 @@ def main() -> None:
         )
 
         try:
-            old_mem.record_user_turn(
-                "我平常喜欢喝无糖可乐,别太甜。",
-                timestamp=ts(2026, 4, 10, 9, 0),
-                memory_metadata={
+            old_handle = old_mem.begin_turn(
+                stimuli=[
+                    TimelineEntryInput(
+                        kind="message.user",
+                        origin=EntryOrigin.USER,
+                        turn_role=TurnRole.STIMULUS,
+                        semantic_text="我平常喜欢喝无糖可乐,别太甜。",
+                        payload={"text": "我平常喜欢喝无糖可乐,别太甜。"},
+                        timestamp=ts(2026, 4, 10, 9, 0),
+                    )
+                ]
+            )
+            old_mem.complete_turn(
+                turn_id=old_handle.turn_id,
+                semantic_text="记住了,你偏好无糖可乐。",
+                provider_output_raw="记住了,你偏好无糖可乐。",
+                memory_annotation={
                     "keywords": ["可乐", "饮料", "无糖"],
                     "subject_scopes": ["user"],
                     "categories": ["preference"],
                     "importance": 0.8,
                     "confidence": 0.95,
                 },
+                annotation_status=AnnotationStatus.ACCEPTED_HOST,
+                timestamp=ts(2026, 4, 10, 9, 1),
             )
-            old_mem.record_assistant_turn("记住了,你偏好无糖可乐。", timestamp=ts(2026, 4, 10, 9, 1))
 
-            mem.record_user_turn("上午提醒我看一下持仓风险。", timestamp=ts(2026, 4, 10, 10, 0))
-            mem.record_assistant_turn("好,我会按上午来理解这个提醒。", timestamp=ts(2026, 4, 10, 10, 1))
+            reminder = mem.begin_turn(
+                stimuli=[
+                    TimelineEntryInput(
+                        kind="message.user",
+                        origin=EntryOrigin.USER,
+                        turn_role=TurnRole.STIMULUS,
+                        semantic_text="上午提醒我看一下持仓风险。",
+                        payload={"text": "上午提醒我看一下持仓风险。"},
+                        timestamp=ts(2026, 4, 10, 10, 0),
+                    )
+                ]
+            )
+            mem.complete_turn(
+                turn_id=reminder.turn_id,
+                semantic_text="好,我会按上午来理解这个提醒。",
+                provider_output_raw="好,我会按上午来理解这个提醒。",
+                annotation_status=AnnotationStatus.MISSING,
+                timestamp=ts(2026, 4, 10, 10, 1),
+            )
 
             user_text = "我之前说过自己喜欢喝什么吗?"
-            cur = mem.record_user_turn(user_text, timestamp=ts(2026, 4, 10, 22, 0))
+            handle = mem.begin_turn(
+                stimuli=[
+                    TimelineEntryInput(
+                        kind="message.user",
+                        origin=EntryOrigin.USER,
+                        turn_role=TurnRole.STIMULUS,
+                        semantic_text=user_text,
+                        payload={"text": user_text},
+                        timestamp=ts(2026, 4, 10, 22, 0),
+                    )
+                ]
+            )
+            cur = handle.stimuli[0].to_record()
 
             context = mem.build_prompt_context(current=cur)
             visible_memory = mem.render_prompt_context(context)
@@ -219,12 +266,18 @@ def main() -> None:
                 print({"status": parsed.status, "reason": parsed.reason})
                 return
 
-            metadata_update = mem.update_turn_metadata(cur["source_id"], parsed.memory_metadata)
-            if not metadata_update["ok"]:
-                print({"status": metadata_update["status"], "reason": metadata_update["reason"]})
+            completed = mem.complete_turn(
+                turn_id=handle.turn_id,
+                semantic_text=parsed.speech,
+                provider_output_raw=raw_output,
+                memory_annotation=parsed.memory_metadata,
+                annotation_status=AnnotationStatus.ACCEPTED_MODEL,
+                timestamp=ts(2026, 4, 10, 22, 1),
+            )
+            if not completed.completed:
+                print({"status": completed.status, "reason": completed.reason})
                 return
 
-            mem.record_assistant_turn(parsed.speech, in_reply_to=cur, timestamp=ts(2026, 4, 10, 22, 1))
             compact_stats = mem.compact_due_background().result(timeout=10)
 
             print("visible memory prompt:")
@@ -237,8 +290,8 @@ def main() -> None:
             print(parsed.speech)
             print("\nspeech segments:")
             print(parsed.segments)
-            print("\nmetadata update:")
-            print(metadata_update)
+            print("\nturn completion:")
+            print(completed)
             print("\nbackground compaction:")
             print(compact_stats)
         finally:

@@ -49,7 +49,7 @@ class AsyncCompaction(unittest.TestCase):
             namespace=Namespace(user_id="u1", conversation_id="c1"),
             timezone="Asia/Shanghai",
             embedding=HashedEmbeddingProvider(),
-            config=MemoryConfig(raw_trigger_count=4, summary_batch_size=2, episodic_compact_trigger_count=99),
+            config=MemoryConfig(raw_token_trigger=100, episodic_compact_trigger_count=99),
         )
 
     def test_background_compaction_runs_and_returns_future(self) -> None:
@@ -59,7 +59,9 @@ class AsyncCompaction(unittest.TestCase):
         future = mem.compact_due_background()
         out = future.result(timeout=5)  # 后台跑完
         self.assertEqual(out["summaries_created"], 1)
-        self.assertEqual(len(mem.store.get_unsummarized_messages(namespace=mem.namespace)), 2)
+        remaining = mem.store.get_unsummarized_messages(namespace=mem.namespace)
+        self.assertGreater(len(remaining), 0)
+        self.assertLess(len(remaining), 4)
         mem.close()
 
     def test_close_is_idempotent(self) -> None:

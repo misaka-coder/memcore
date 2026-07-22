@@ -110,8 +110,8 @@ load_material(file_id, kind?, preferred_source?, purpose?)
 推荐分层:
 
 1. `tool_use/tool_result`:当前轮工具调用的结构化通道。模型能区分工具结果和用户文本,也能关联结果属于哪次调用。
-2. `tool_trace` raw:宿主可选地把工具调用/工具结果追加进 memcore raw,用于“刚才那个搜索结果/上次读的文件”这类追问。默认配置下,`tool_trace` 参与 count-based raw 压缩触发并进入正常摘要生命周期;普通检索仍默认排除它,只有显式 `categories=["tool_trace"]` 时才检索工具轨迹。
-3. `material_trace` raw:宿主可选地把图片/文件上传、解析状态、清理状态追加进 memcore raw,用于“刚才那张图/之前那个 PDF”这类追问。事件只记录 file_id、文件名、类型、file_status、derived_status;文件本体和 OCR/视觉描述/文档 chunks 应由宿主 file_store/derived_store 保存。默认配置下,`material_trace` 也不计入 count-based raw 压缩触发数量,普通检索默认排除;只有显式 `categories=["material_trace"]` 时才检索材料轨迹。
+2. operation entries:宿主把工具调用/结果作为同一开放 turn 的 action/observation，用 `correlation_id` 关联，用于“刚才那个搜索结果/上次读的文件”类追问。它们参与统一 token 生命周期并压缩为 operation digest；普通检索默认排除，只有显式授权与 kind pattern 才检索。
+3. material entries:宿主可把图片/文件上传、解析状态、清理状态追加为当前 turn intermediate 或 typed standalone entry。只记录 file_id、文件名、类型和状态；文件本体与 OCR/视觉描述/文档 chunks 留在宿主存储。材料进入 operation 分区，普通检索默认排除。
 4. `render_prompt_context(ctx)`:memcore 的可见 raw/summary/semantic 记忆,用于长期连续性和可见上下文。
 5. `retrieve_for_turn/read_timeline/load_material`:需要更多记忆证据或材料内容时由模型主动调用。
 
@@ -120,10 +120,12 @@ load_material(file_id, kind?, preferred_source?, purpose?)
 `record_request_projection(...)` 冻结，避免下一轮被默认投影换成另一种表示。协议选择
 由宿主和模型能力决定，MemCore 不据此改变存储、检索或缓存边界。
 
-工具结果写入 raw 时,优先使用 `record_tool_exchange(...)`,不要让最终聊天模型猜 metadata 或手写边界。它会按线性消息序列写入两条 raw:一条 `assistant.tool_call` 事件,一条 `tool.<name>` 结果事件。
+工具结果写入 raw 时，优先使用 `append_action()` / `append_observation()`；
+`record_tool_exchange(turn_id=...)` 是等价薄适配。不要创建无 turn_id 的 flat 工具行。
 
 ```python
 mem.record_tool_exchange(
+    turn_id=handle.turn_id,
     tool_name="web_search",
     tool_call_id="call_001",
     tool_input={"query": "北京天气"},
@@ -133,7 +135,8 @@ mem.record_tool_exchange(
 )
 ```
 
-它会写入 `categories=["tool_trace"]`,并在可见 raw 中渲染成稳定块:
+它会写入带同一 `turn_id` 与 `correlation_id` 的 action/observation，并按 provider
+profile 渲染成稳定 tool call/result；并行结果乱序也不会串线。
 
 ```text
 [20:31 | 晚上] assistant.tool_call web_search call_001
@@ -146,9 +149,8 @@ output:
 北京今天 25°C,晴天。
 ```
 
-这样工具使用与工具返回仍在同一条线性事件流里,但有明确事件角色和调用 ID;模型不会把工具结果误认成普通用户原话。
-
-如果接入方自定义 `MemoryConfig.categories`,仍想使用这套工具轨迹机制,需要把 `tool_trace` 保留在枚举里。否则 memcore 会按枚举规则丢弃这个 category。
+这样工具使用与工具返回仍在同一条线性事件流里，但边界由 typed role 和调用 ID
+确定；它不依赖 `MemoryConfig.categories` 才能维持关系正确性。
 
 材料引用写入 raw 时,优先使用 `record_material_reference(...)`;材料被容量策略或用户操作清理时,使用 `record_material_cleanup(...)`。这两个事件不会保存文件本体:
 

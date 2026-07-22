@@ -38,21 +38,19 @@
   `reindex_all()` 可从 SQLite 真相源补建/热加载当前 hard namespace 的三层索引,记录/压缩都不被向量故障阻断。
 - **提示词治理 ✅**:焊死骨架 + 校验插槽(`PromptOverrides`);插槽只能补充、不可移除契约/时间锚点。
 - **importance 衰减 ✅**:`enable_importance_decay` 开启后,长期记忆可见窗口按"随时间衰减的重要度"排序(久未强化的记忆淡出),衰减对**全部**候选生效、不静默截断。
-- **raw token 压缩 ✅**:默认仍按条数压缩;长文本/金融/研报场景可显式开启 `raw_compaction_policy="token"`,并注入 `TokenCounter`。
+- **raw token 差值压缩 ✅**:唯一 raw 压缩策略按目标 provider 的完整投影 token 触发，按比例选择最旧的完整 turn/relation component；可注入精确或明确标记为 `estimated` 的 `TokenCounter`。
 - **星期感知时间锚点 ✅**:raw、摘要、语义与时间线渲染会由 `timestamp + timezone` 自动派生 `周一..周日`,
   让“上周二/下周三”这类相对表达在压缩与检索回填时有明确参照。
 - **内存索引加速 ✅**:默认不强制向量数据库;`InMemoryVectorIndex` 会先按 namespace/time/exclude 与可前置 metadata 过滤候选,
   再计算分数。安装 `memcore[speed]` 后向量以 float32 存储,语义 cosine 自动走可选 NumPy 批量计算。
 - **模型协作提示词 ✅**:标准输出契约与压缩链提示词已补充时间锚点、工具选择、群聊归因、metadata 标注规则。
   接入方提示词指南见 `docs/model_prompt_playbook_v1.md`。
-- **工具轨迹类别 ✅**:`record_tool_exchange(...)` 可把工具调用/结果以 `assistant.tool_call ...` +
-  `tool.<name> ...` 的线性事件块追加进 raw。
-  默认参与 count-based raw 压缩触发并进入正常摘要生命周期;普通检索仍默认排除,显式 `categories=["tool_trace"]` 时可检索工具轨迹。
-- **材料轨迹类别 ✅**:`record_material_reference(...)` / `record_material_cleanup(...)` 可把图片、文件、解析物状态以
-  `user.attachment ...` / `system.material_cleanup ...` 事件块追加进 raw。事件只保存 file_id、文件名、类型和状态;
-  原始文件与 OCR/视觉描述/文档 chunks 由宿主 file_store/derived_store 管理。默认不计入 count-based raw 压缩触发数量,
-  普通检索也默认排除;显式 `categories=["material_trace"]` 时可检索材料锚点。
-- 可配置:`visible_memory_scope`(conversation/user)、`enable_verifier`、`enable_flavor`、`enable_importance_decay`、`raw_compaction_policy`。
+- **工具轨迹类别 ✅**:`append_action(...)` / `append_observation(...)` 把调用与结果追加到同一开放 turn，
+  通过 `correlation_id` 支持并行和乱序返回；`record_tool_exchange(turn_id=...)` 只是这两个 V2 API 的薄适配。
+  工具轨迹参与同一 token 生命周期，但压缩为独立 operation digest；普通检索仍默认排除，显式授权后可检索。
+- **材料轨迹类别 ✅**:材料引用/清理使用 typed standalone entry，或作为当前 turn 的 `material.*` intermediate。
+  只保存 file_id、文件名、类型和状态；原始文件与 OCR/视觉描述/文档 chunks 由宿主存储。压缩时材料进入 operation 分区，不污染对话摘要；普通检索默认排除。
+- 可配置:`raw_token_trigger`、`raw_token_batch_ratio`、`retrieval_result_token_budget`、`visible_memory_scope`、`enable_verifier`、`enable_flavor`、`enable_importance_decay`。
 - 压缩重试:`llm_max_retries` 会传给注入的 `LLMClient`;最终仍失败时压缩层不标记已完成,下一轮继续重试。
 - **Chat Output Adapter ✅**:标准 JSON 输出契约、`speech` 流式解析、普通文本尽力分段、raw metadata 回写流程见 `docs/chat_output_adapter_v1.md`;工具调用阶段不套该 JSON,只在最终回复阶段输出 memcore JSON。
 - **稳定投影与缓存审计 ✅**:canonical/OpenAI/Anthropic provider projection、renderer/version、strict-prefix 验收、projection hash 与真实请求 audit;MemCore 保证前缀稳定,不替 provider 承诺缓存必命中。
@@ -60,14 +58,14 @@
 - **有界后台维护 ✅**:每次 `compact_due` 只提交一个 raw compaction generation 和一个 semantic batch；
   token 模式按配置比例一次选足最旧的完整 turn/component，不再被旧条目批次或独立 source 上限提前截断。
 
-核心 + 评测台 + Timeline V2 基础 + provider projection + embedding 三路 + outbox 自愈
-+ Chat Output Adapter + importance 衰减均已完成;V1 兼容迁移和宿主切换仍保留明确窗口。
+核心 + 评测台 + Timeline V2 + provider projection + embedding 三路 + outbox 自愈
++ Chat Output Adapter + importance 衰减均已完成。flat V1 compactor 已删除；无 turn_id 的历史记录由 V2 规划器包装为 closed standalone component 后原子压缩。
 可选扩展(按需):更大语料的 BM25/向量后端；`enable_flavor` 已作为可配置能力落地,
 不会强迫纯事实型接入启用口吻或情绪字段。
 
 可运行的最小接入样板见 `examples/minimal_chat_integration.py`。它演示一轮聊天里
-`record_user_turn` → 可见三层 → `retrieve_for_turn` / `read_timeline` 工具 → final JSON 解析 →
-metadata 回写 → `record_assistant_turn` → 后台压缩的完整闭环。
+`begin_turn` → 可见三层 → `retrieve_for_turn` / `read_timeline` 工具 → action/observation → final JSON 解析 →
+`complete_turn` 原子提交 metadata 与回复 → 后台压缩的完整闭环。
 
 原生 tool calling 接入可用 `build_native_memory_tool_specs(...)` 生成工具 schema,再用
 `dispatch_native_memory_tool(...)` 分发 `retrieve_for_turn` / `read_timeline` / `load_material`。
@@ -89,27 +87,40 @@ OCR、视觉描述、文档 chunks 或当前清理状态;memcore 不保存文件
 ```python
 mem = MemorySystem(llm=MyLLMClient(), namespace=Namespace(user_id="u1", conversation_id="c1"),
                    timezone="Asia/Shanghai", embedding="BAAI/bge-m3")
-cur = mem.record_user_turn("我之前说过爱喝什么")
+handle = mem.begin_turn(stimuli=[TimelineEntryInput(
+    kind="message.user",
+    origin=EntryOrigin.USER,
+    turn_role=TurnRole.STIMULUS,
+    semantic_text="我之前说过爱喝什么",
+    payload={"text": "我之前说过爱喝什么"},
+)])
+cur = handle.stimuli[0].to_record()
 ctx = mem.build_prompt_context(current=cur)   # 可见三层;是否检索由聊天模型自行调用 retrieve/read_timeline
 ctx_text = mem.render_prompt_context(ctx)     # 推荐文本渲染:近期 raw 按日期分组,自带星期/时间段
 # ...用 ctx + memcore 的原生记忆工具拼你自己的最终聊天 prompt、调你自己的聊天模型...
 # 当前轮工具包装推荐用 retrieve_for_turn(current=cur, ...),避免把 prompt 已可见三层重复检索回来。
 mem.record_tool_exchange(
+    turn_id=handle.turn_id,
     tool_name="web_search",
     tool_call_id="call_001",
     tool_input={"query": "北京天气"},
     result="北京今天 25°C,晴天",
 )
-mem.record_material_reference(
-    file_id="file_img_001",
-    kind="image",
-    actor=actor_or_none,  # 群聊/多人上传时传 Actor,保留上传者归因
-    filename="photo.jpg",
-    mime_type="image/jpeg",
-    file_status="ready",
-    derived_status="ocr_ready",  # 多模态可直接看当前图片;非多模态可读取宿主保存的 OCR/描述
+mem.append_entry(TimelineEntryInput(
+    kind="material.image.reference",
+    origin=EntryOrigin.ENVIRONMENT,
+    turn_role=TurnRole.INTERMEDIATE,
+    semantic_text="图片材料已就绪",
+    payload={"file_id": "file_img_001", "filename": "photo.jpg", "status": "ocr_ready"},
+    semanticize=False,
+), turn_id=handle.turn_id)
+mem.complete_turn(
+    turn_id=handle.turn_id,
+    semantic_text=reply,
+    provider_output_raw=raw_model_output,
+    memory_annotation=parsed.memory_metadata,
+    annotation_status="accepted_model",
 )
-mem.record_assistant_turn(reply, in_reply_to=cur)
 future = mem.compact_due_background()          # 聊天链路推荐后台沉淀,不阻塞用户可见回复
 # 可忽略 future 做 fire-and-forget;测试/脚本可 future.result() 读取压缩统计
 ```
@@ -128,7 +139,7 @@ tool_payload = dispatch_native_memory_tool(
 )
 
 # 把 tool_payload 作为 provider 原生 tool_result 回给聊天模型。
-# 如需跨轮追问该工具结果,再用 record_tool_exchange(...) 写入 tool_trace。
+# 如需跨轮追问该工具结果，把本轮 action/observation 写进同一 turn。
 ```
 
 宿主不使用原生 tool calling 时也不需要另建历史系统。宿主解析模型自己的
@@ -172,22 +183,21 @@ stats = mem.reindex_all()  # 默认 upsert 当前 tenant/user/domain 下全部�
 `mem.compact_due_background(provider_profile="openai_chat")`。这样 `projected_tokens` 预算按模型真正收到的
 provider history 计算；不传时继续使用 `MemoryConfig.projection_profile`,兼容固定 provider 的宿主。
 
-raw token 压缩只影响 raw → episodic 的触发/批次选择,不会改变检索条目结构。开启时必须提供与模型 tokenizer 对齐的
-`TokenCounter`;memcore 不会静默用字符估算冒充 token:
+raw token 压缩只影响 raw → episodic 的触发/批次选择，不改变检索条目结构。若宿主能提供与模型对齐的 tokenizer，
+注入 `TokenCounter` 可得到 exact 口径；没有 counter 时 MemCore 使用内置保守估算，并在结果中明确返回
+`token_count_quality="estimated"`，不会伪装成精确 tokenizer：
 
 ```python
 class MyTokenCounter(TokenCounter):
     def count_text(self, text: str) -> int:
         return count_with_your_model_tokenizer(text)
 
-cfg = MemoryConfig(raw_compaction_policy="token", raw_token_trigger=12000, raw_token_batch_ratio=0.67)
+cfg = MemoryConfig(raw_token_trigger=12000, raw_token_batch_ratio=0.67)
 mem = MemorySystem(..., config=cfg, token_counter=MyTokenCounter())
 ```
 
-Timeline V2 的 `projected_tokens` 同样复用 `raw_token_trigger` 与
-`raw_token_batch_ratio`，但统计目标 provider 的完整 raw projection，并以完整
-terminal turn/relation component 为切点。`summary_batch_size` 只属于 count policy，
-不会在 projected-token 模式下提前终止批次。
+压缩统计目标 provider 的完整 raw projection，并以完整 terminal turn/relation
+component 为切点。系统中不存在 count policy、独立消息 batch cap 或第二套 flat compactor。
 
 ## 公开边界:本库提供什么 / 接入方自备什么
 

@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import math
-import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -23,7 +22,7 @@ from .compaction_v2 import (
     TurnBundle,
 )
 from .config import MemoryConfig
-from .errors import ConfigError, SchemaError
+from .errors import SchemaError
 from .index.base import VectorIndex
 from .index.entry_builder import build_semantic_entry, build_summary_entry
 from .index.metadata_filters import INDEX_SCHEMA_KEY, INDEX_SCHEMA_VERSION
@@ -91,8 +90,6 @@ class Compaction:
         self.overrides = overrides or PromptOverrides()
         if token_counter is not None and not isinstance(token_counter, TokenCounter):
             raise TypeError("token_counter must be a TokenCounter instance or None")
-        if self.config.raw_compaction_policy == "token" and token_counter is None:
-            raise ConfigError("token_counter is required when raw_compaction_policy='token'")
         self.token_counter = token_counter
         self.projection_adapter = projection_adapter or ProjectionAdapter(
             renderer_registry=default_renderer_registry(),
@@ -121,15 +118,8 @@ class Compaction:
                 bundles = self.store.list_compaction_bundles(namespace=namespace)
             except NotImplementedError:
                 bundles = []
-            if any(not bundle.legacy for bundle in bundles):
-                self._summarize_timeline_v2(namespace, bundles, result, provider_profile=profile)
-            else:
-                self._summarize_raw(namespace, result)
-                if result["summaries_created"]:
-                    result["status"] = "compacted"
-                elif result["summary_retry_pending"]:
-                    result["status"] = "failed"
-                    result["reason"] = "summary_retry_pending"
+            if bundles:
+                self._summarize_timeline(namespace, bundles, result, provider_profile=profile)
             self._semanticize_episodic(namespace, result)
             return result
         except SchemaError as exc:
@@ -141,7 +131,7 @@ class Compaction:
 
     # --- raw → 阶段摘要 ---
 
-    def _summarize_timeline_v2(
+    def _summarize_timeline(
         self,
         namespace: Namespace,
         bundles: list[TurnBundle],
@@ -173,9 +163,7 @@ class Compaction:
             bundles=bundles,
             raw_projected_tokens=raw_projected_tokens,
         )
-        result["planned_source_tokens"] = (
-            removal_target if due and self.config.compaction_policy == "projected_tokens" else 0
-        )
+        result["planned_source_tokens"] = removal_target if due else 0
         if not due:
             result["status"] = "not_due"
             result["after_projected_tokens"] = before_tokens
@@ -195,10 +183,7 @@ class Compaction:
                 break
             selected.extend(component)
             selected_tokens += sum(bundle_tokens[bundle.turn_id] for bundle in component)
-            if self.config.compaction_policy == "count_compat":
-                if sum(len(bundle.entries) for bundle in selected) >= removal_target:
-                    break
-            elif selected_tokens >= removal_target:
+            if selected_tokens >= removal_target:
                 break
 
         # V1's oversized-first-turn escape hatch, upgraded to V2 terminal
@@ -394,9 +379,6 @@ class Compaction:
         bundles: list[TurnBundle],
         raw_projected_tokens: int,
     ) -> tuple[bool, int]:
-        if self.config.compaction_policy == "count_compat":
-            entry_count = sum(len(bundle.entries) for bundle in bundles)
-            return (entry_count >= self.config.raw_trigger_count, self.config.summary_batch_size)
         trigger = self.config.raw_token_trigger
         planned = max(1, math.ceil(trigger * float(self.config.raw_token_batch_ratio)))
         return (raw_projected_tokens >= trigger, planned)
@@ -595,168 +577,6 @@ class Compaction:
                 "compaction_schema_version": self.config.compaction_schema_version,
                 "summary_profile": f"{self.config.summary_profile}:{profile}",
             }
-        )
-
-    def _summarize_raw(self, namespace: Namespace, result: dict[str, Any]) -> None:
-        msgs = self.store.get_unsummarized_messages(namespace=namespace)
-        batch = self._select_raw_summary_batch(msgs)
-        if not batch:
-            return
-        call = self._call_json(
-            TaskType.SUMMARY,
-            *build_summary_prompts(
-                transcript=self._render_transcript(batch),
-                batch_size=len(batch),
-                overrides=self.overrides,
-                enable_flavor=self.config.enable_flavor,
-                reference_summary_text=self._render_reference_summaries(namespace),
-            ),
-            fallback={"diary_summary": "", "importance": 0.3, "key_events": [], "core_facts": []},
-        )
-        if not call.ok or not _has_summary_content(call.data):
-            result["summary_retry_pending"] += 1
-            return
-        payload = call.data
-        memory_metadata = self._summary_memory_metadata(payload.get("memory_metadata"), batch)
-        start_ts = min(int(m["timestamp"]) for m in batch)
-        end_ts = max(int(m["timestamp"]) for m in batch)
-        record = {
-            "summary_id": uuid.uuid4().hex,
-            "timestamp": end_ts,
-            "period_start_ts": start_ts,
-            "period_end_ts": end_ts,
-            "date_label": timestamp_to_date_label(end_ts, self.timezone),
-            "time_of_day": infer_time_of_day(end_ts, self.timezone),
-            "period_label": str(payload.get("period_label") or ""),
-            "event_type": str(payload.get("event_type") or ""),
-            "importance": _clamp01(payload.get("importance")),
-            "diary_summary": str(payload.get("diary_summary") or ""),
-            "key_events": _str_list(payload.get("key_events")),
-            "core_facts": _str_list(payload.get("core_facts")),
-            "memory_metadata": memory_metadata,
-            "semantic_tags": list(memory_metadata.get("keywords") or []),
-            "source_ids": [str(m["source_id"]) for m in batch],
-        }
-        saved = self.store.add_summary(namespace=namespace, record=record)
-        self.store.mark_messages_summarized([str(m["source_id"]) for m in batch], saved["summary_id"])
-        self._record_index_result(
-            result,
-            self._index(build_summary_entry(saved), saved["summary_id"]),
-        )
-        result["summaries_created"] += 1
-
-    def _select_raw_summary_batch(self, msgs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        cfg = self.config
-        if cfg.raw_compaction_policy == "count":
-            eligible_indexes = [idx for idx, m in enumerate(msgs) if not self._is_raw_compaction_excluded(m)]
-            if len(eligible_indexes) < cfg.raw_trigger_count:
-                return []
-            start = eligible_indexes[0]
-            end = eligible_indexes[cfg.summary_batch_size - 1]
-            return msgs[start : end + 1]
-        return self._select_raw_summary_batch_by_tokens(msgs)
-
-    def _is_raw_compaction_excluded(self, message: dict[str, Any]) -> bool:
-        excluded = {str(item) for item in self.config.raw_compaction_excluded_categories}
-        if not excluded:
-            return False
-        metadata = message.get("memory_metadata") if isinstance(message.get("memory_metadata"), dict) else {}
-        categories = metadata.get("categories") if isinstance(metadata, dict) else []
-        return any(str(category) in excluded for category in (categories or []))
-
-    def _select_raw_summary_batch_by_tokens(self, msgs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        cfg = self.config
-        if self.token_counter is None:
-            raise ValueError("token_counter is required when raw_compaction_policy='token'")
-        if not msgs:
-            return []
-        boundary_role = cfg.raw_token_boundary_role
-        if str(msgs[-1].get("role") or "") != boundary_role:
-            return []
-
-        token_counts = [self._count_raw_content_tokens(m) for m in msgs]
-        if sum(token_counts) < cfg.raw_token_trigger:
-            return []
-
-        def full_boundary_batch() -> list[dict[str, Any]]:
-            return msgs if str(msgs[-1].get("role") or "") == boundary_role else []
-
-        max_cut = len(msgs) - cfg.raw_token_min_remainder_messages - 1
-        if max_cut < 0:
-            return full_boundary_batch()
-
-        target = cfg.raw_token_trigger * float(cfg.raw_token_batch_ratio)
-        running = 0
-        initial_cut = 0
-        for idx, count in enumerate(token_counts):
-            running += count
-            if running >= target:
-                initial_cut = idx
-                break
-
-        for idx in range(initial_cut, max_cut + 1):
-            if str(msgs[idx].get("role") or "") == boundary_role:
-                return msgs[: idx + 1]
-
-        for idx in range(min(initial_cut, max_cut), -1, -1):
-            if str(msgs[idx].get("role") or "") == boundary_role:
-                return msgs[: idx + 1]
-
-        # First-turn / remaining-tail extreme: a single long user turn plus its assistant
-        # reply can exceed the token trigger while having no legal remainder. Once the
-        # batch ends on the configured boundary role, compress the whole complete chunk
-        # rather than leaving oversized raw visible forever.
-        return full_boundary_batch()
-
-    def _count_raw_content_tokens(self, message: dict[str, Any]) -> int:
-        assert self.token_counter is not None
-        try:
-            count = int(self.token_counter.count_text(str(message.get("content") or "")))
-        except (TypeError, ValueError) as exc:
-            raise ValueError("TokenCounter.count_text() must return a non-negative int") from exc
-        if count < 0:
-            raise ValueError("TokenCounter.count_text() must return a non-negative int")
-        return count
-
-    def _summary_memory_metadata(self, payload_metadata: Any, batch: list[dict[str, Any]]) -> dict[str, Any]:
-        cfg = self.config
-        meta = coerce_memory_metadata(
-            payload_metadata,
-            categories=cfg.categories,
-            enable_flavor=cfg.enable_flavor,
-        ).to_dict()
-        trace_categories, trace_keywords, trace_scopes = self._trace_metadata_from_batch(batch)
-        if trace_categories:
-            meta["categories"] = _merge_unique(meta.get("categories"), trace_categories)
-            meta["keywords"] = _merge_unique(meta.get("keywords"), trace_keywords, limit=4)
-            meta["subject_scopes"] = _merge_unique(meta.get("subject_scopes"), trace_scopes)
-            meta["confidence"] = max(_clamp01(meta.get("confidence")), 0.8)
-        return coerce_memory_metadata(
-            meta,
-            categories=cfg.categories,
-            enable_flavor=cfg.enable_flavor,
-        ).to_dict()
-
-    def _trace_metadata_from_batch(self, batch: list[dict[str, Any]]) -> tuple[list[str], list[str], list[str]]:
-        trace_set = set(TRACE_CATEGORIES)
-        allowed = set(self.config.categories)
-        categories: list[str] = []
-        keywords: list[str] = []
-        scopes: list[str] = []
-        for message in batch:
-            metadata = message.get("memory_metadata") if isinstance(message.get("memory_metadata"), dict) else {}
-            message_categories = [str(category) for category in (metadata.get("categories") or [])]
-            if not (set(message_categories) & trace_set):
-                continue
-            categories.extend(
-                category for category in message_categories if category in trace_set and category in allowed
-            )
-            keywords.extend(str(keyword) for keyword in (metadata.get("keywords") or []))
-            scopes.extend(str(scope) for scope in (metadata.get("subject_scopes") or []))
-        return (
-            _merge_unique(categories),
-            _merge_unique(keywords, limit=4),
-            _merge_unique(scopes),
         )
 
     # --- 阶段摘要 → 长期语义记忆(含强化合并) ---
@@ -981,7 +801,17 @@ class Compaction:
         return "\n".join(lines)
 
     def _render_transcript(self, batch: list[dict[str, Any]]) -> str:
-        return render_raw_snippet(batch, tz=self.timezone)
+        rendered: list[str] = []
+        for record in batch:
+            entry = TimelineEntry.from_record(record)
+            if entry.kind.startswith("message.") or entry.turn_role is TurnRole.FINAL:
+                rendered.append(render_raw_snippet([record], tz=self.timezone))
+                continue
+            # Typed event/skill/intermediate entries may keep their structured
+            # facts in payload.  Summarize the same deterministic renderer view
+            # used by provider projection instead of silently dropping payload.
+            rendered.append(self.projection_adapter.renderer_registry.render(entry, timezone=self.timezone).text)
+        return "\n".join(item for item in rendered if item)
 
     def _render_episodes(self, batch: list[dict[str, Any]]) -> str:
         lines: list[str] = []

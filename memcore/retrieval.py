@@ -387,7 +387,7 @@ class ReadPipeline:
         if result_token_budget < 0:
             raise ValueError("invalid_result_token_budget")
         if result_token_budget == 0 and self.token_counter is not None:
-            result_token_budget = int(self.config.reserved_retrieval_tokens)
+            result_token_budget = int(self.config.retrieval_result_token_budget)
         normalized_request = RetrievalRequest(
             query=query,
             keywords=keywords,

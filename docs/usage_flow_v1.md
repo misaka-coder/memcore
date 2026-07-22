@@ -10,7 +10,7 @@ implementation modules for normal integration work.
 
 `memcore` is a reusable layered memory kernel. It owns:
 
-- raw user/assistant turn recording;
+- typed turn recording for messages, events, actions, observations, materials, and finals;
 - visible prompt context construction;
 - fuzzy memory retrieval and exact timeline reading;
 - raw -> episodic -> semantic compaction;
@@ -38,8 +38,7 @@ For normal host integration, read these files in order:
 5. `docs/chat_output_adapter_v1.md` - optional final JSON contract and
    streaming speech parsing.
 6. `docs/metadata_prefilter_design_v1.md` - retrieval filter semantics.
-7. `docs/raw_token_compaction_policy_v1.md` - optional token-triggered raw
-   compaction.
+7. `docs/raw_token_compaction_policy_v1.md` - token/ratio raw compaction.
 
 If you are changing `memcore` itself, also inspect nearby tests before editing.
 
@@ -48,7 +47,18 @@ If you are changing `memcore` itself, also inspect nearby tests before editing.
 Use `MemorySystem` as the facade:
 
 ```python
-cur = mem.record_user_turn(user_text, actor=actor_or_none, timestamp=now_ts)
+handle = mem.begin_turn(
+    stimuli=[TimelineEntryInput(
+        kind="message.user",
+        origin=EntryOrigin.USER,
+        turn_role=TurnRole.STIMULUS,
+        semantic_text=user_text,
+        payload={"text": user_text},
+        actor=actor_or_none,
+        timestamp=now_ts,
+    )]
+)
+cur = handle.stimuli[0].to_record()
 
 ctx = mem.build_prompt_context(current=cur)
 ctx_text = mem.render_prompt_context(ctx)
@@ -70,8 +80,17 @@ if not parsed.ok:
     handle_model_output_error(parsed)
     return
 
-mem.update_turn_metadata(cur["source_id"], parsed.memory_metadata)
-mem.record_assistant_turn(parsed.speech, in_reply_to=cur, timestamp=now_ts2)
+completed = mem.complete_turn(
+    turn_id=handle.turn_id,
+    semantic_text=parsed.speech,
+    provider_output_raw=raw_model_output,
+    memory_annotation=parsed.memory_metadata,
+    annotation_status="accepted_model",
+    timestamp=now_ts2,
+)
+if not completed.completed:
+    handle_memory_commit_error(completed)
+    return
 
 mem.compact_due_background()
 ```
@@ -94,7 +113,8 @@ A production host must provide or choose:
   `HashedEmbeddingProvider` in production.
 - `Namespace` values for tenant/user/domain/conversation isolation.
 - Optional `Actor` for group or multi-speaker messages.
-- Optional `TokenCounter` when `raw_compaction_policy="token"`.
+- Optional exact `TokenCounter`; without one, compaction uses an explicitly
+  labelled estimated count instead of disabling the memory lifecycle.
 - Store/index lifecycle. SQLite is the source of truth; vector indexes are
   search acceleration.
 

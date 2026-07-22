@@ -4,10 +4,10 @@
 非法值直接报错,而不是让它在运行时悄悄把记忆系统拖垮。
 
 焊死的承重不变量(不可绕过):
-- 差值关系:`summary_batch_size < raw_trigger_count`(防层间记忆重叠 / no blind window)。
-- 同理:`episodic_compact_batch_size < episodic_compact_trigger_count`。
+- raw 压缩只按 provider projection token 触发，并按完整 terminal turn/component 落切点。
+- `episodic_compact_batch_size < episodic_compact_trigger_count`。
 - 所有窗口/阈值为正;重叠阈值 >= 1;categories 为非空固定枚举。
-- raw token policy 只改变 raw->episodic 批次选择;token 参数必须合法,TokenCounter 由门面注入校验。
+- TokenCounter 可由宿主显式注入；缺失时 raw 规划使用带 quality 标记的估算，不伪装成精确 tokenizer。
 """
 
 from __future__ import annotations
@@ -21,28 +21,17 @@ from .schema import DEFAULT_CATEGORIES
 
 @dataclass
 class MemoryConfig:
-    # --- 写侧:三层窗口与差值 ---
-    raw_trigger_count: int = 30  # raw 达到多少条触发摘要
-    summary_batch_size: int = 20  # 每次总结最老多少条(必须 < raw_trigger_count)
-    raw_compaction_policy: str = "count"  # "count" | "token"
-    raw_token_trigger: int = 12000  # token policy:未摘要 raw content token 总量达到多少触发摘要
-    raw_token_batch_ratio: float = 0.67  # token policy:触发后压缩 trigger 的多少比例,默认约等于 20/30
-    raw_token_min_remainder_messages: int = 1  # token policy:压缩后至少保留多少条 raw 近期上下文
-    raw_token_boundary_role: str = "assistant"  # token policy:批次边界对齐到 assistant 回复
-    raw_compaction_excluded_categories: tuple[str, ...] = (
-        "material_trace",
-    )  # count policy:材料锚点不计数;工具轨迹参与正常 raw 生命周期
+    # --- 写侧:统一时间线与三层窗口 ---
+    raw_token_trigger: int = 12000  # 未摘要 raw provider projection 达到多少 tokens 后触发摘要
+    raw_token_batch_ratio: float = 0.67  # 触发后计划压缩的最旧 raw token 比例
     episodic_visible_max: int = 8  # 可见阶段摘要数
     episodic_compact_trigger_count: int = 10  # 阶段摘要达到多少条触发语义压缩
     episodic_compact_batch_size: int = 5  # 每次压缩多少条阶段摘要(必须 < trigger)
     semantic_visible_limit: int = 5  # 可见长期记忆数
 
-    # --- Unified Timeline V2 压缩预算 ---
-    # V2 复用上面的 raw_token_trigger/raw_token_batch_ratio：token 决定
-    # 何时压缩和大致压缩多少，完整 terminal turn/component 决定实际边界。
-    compaction_policy: str = "projected_tokens"  # "projected_tokens" | "count_compat"
-    reserved_current_turn_tokens: int = 2000
-    reserved_retrieval_tokens: int = 2000
+    # --- provider projection 与检索预算 ---
+    # token 决定何时压缩和大致压缩多少，完整 terminal turn/component 决定实际边界。
+    retrieval_result_token_budget: int = 2000
     projection_profile: str = "canonical_user_assistant"
     compaction_min_recent_turns: int = 1
     compaction_schema_version: int = 2
@@ -58,11 +47,6 @@ class MemoryConfig:
     retrieval_min_dense_score: float = 0.0
     retrieval_min_bm25_score: float = 0.0
     retrieval_min_fused_score: float = 0.0
-    retrieval_default_excluded_categories: tuple[str, ...] = (
-        "event_trace",
-        "tool_trace",
-        "material_trace",
-    )  # 普通检索默认不捞外部事件/工具/材料轨迹
     enable_verifier: bool = True  # verifier 门:片段进 prompt 前先校验筛选
     llm_max_retries: int = 2  # 结构化 LLM 调用建议重试次数;失败仍不提交空记忆
 
@@ -85,10 +69,7 @@ class MemoryConfig:
 
     def validate(self) -> None:
         positives = {
-            "raw_trigger_count": self.raw_trigger_count,
-            "summary_batch_size": self.summary_batch_size,
             "raw_token_trigger": self.raw_token_trigger,
-            "raw_token_min_remainder_messages": self.raw_token_min_remainder_messages,
             "episodic_visible_max": self.episodic_visible_max,
             "episodic_compact_trigger_count": self.episodic_compact_trigger_count,
             "episodic_compact_batch_size": self.episodic_compact_batch_size,
@@ -118,41 +99,18 @@ class MemoryConfig:
             if not isinstance(value, (int, float)) or float(value) < 0.0 or not math.isfinite(float(value)):
                 raise ConfigError(f"{name} must be a non-negative finite number, got {value!r}")
 
-        if self.raw_compaction_policy not in ("count", "token"):
-            raise ConfigError(f"raw_compaction_policy must be 'count' or 'token', got {self.raw_compaction_policy!r}")
         if not isinstance(self.raw_token_batch_ratio, (int, float)) or not (0 < self.raw_token_batch_ratio < 1):
             raise ConfigError(f"raw_token_batch_ratio must be > 0 and < 1, got {self.raw_token_batch_ratio!r}")
-        if self.raw_token_boundary_role != "assistant":
+        if not isinstance(self.retrieval_result_token_budget, int) or self.retrieval_result_token_budget < 0:
             raise ConfigError(
-                f"raw_token_boundary_role currently supports only 'assistant', got {self.raw_token_boundary_role!r}"
+                f"retrieval_result_token_budget must be a non-negative int, got {self.retrieval_result_token_budget!r}"
             )
-        if self.compaction_policy not in ("projected_tokens", "count_compat"):
-            raise ConfigError(
-                f"compaction_policy must be 'projected_tokens' or 'count_compat', got {self.compaction_policy!r}"
-            )
-        for name in ("reserved_current_turn_tokens", "reserved_retrieval_tokens"):
-            value = getattr(self, name)
-            if not isinstance(value, int) or value < 0:
-                raise ConfigError(f"{name} must be a non-negative int, got {value!r}")
         self.projection_profile = str(self.projection_profile or "").strip().lower()
         if not self.projection_profile:
             raise ConfigError("projection_profile must be non-empty")
         self.summary_profile = str(self.summary_profile or "").strip()
         if not self.summary_profile:
             raise ConfigError("summary_profile must be non-empty")
-        self.raw_compaction_excluded_categories = self._clean_tuple(
-            self.raw_compaction_excluded_categories, "raw_compaction_excluded_categories"
-        )
-        self.retrieval_default_excluded_categories = self._clean_tuple(
-            self.retrieval_default_excluded_categories, "retrieval_default_excluded_categories"
-        )
-
-        # 焊死的差值关系:批量必须严格小于触发数,否则层间记忆会重叠 / 出现空窗。
-        if self.summary_batch_size >= self.raw_trigger_count:
-            raise ConfigError(
-                "summary_batch_size must be < raw_trigger_count "
-                f"(got {self.summary_batch_size} >= {self.raw_trigger_count}) —— 差值关系是防层间重叠的承重约束"
-            )
         if self.episodic_compact_batch_size >= self.episodic_compact_trigger_count:
             raise ConfigError(
                 "episodic_compact_batch_size must be < episodic_compact_trigger_count "
@@ -176,16 +134,3 @@ class MemoryConfig:
         if len(set(cats)) != len(cats):
             raise ConfigError(f"categories must not contain duplicates: {self.categories!r}")
         self.categories = cats
-
-    @staticmethod
-    def _clean_tuple(value: tuple[str, ...], name: str) -> tuple[str, ...]:
-        if not isinstance(value, tuple):
-            raise ConfigError(f"{name} must be a tuple[str, ...], got {type(value).__name__}")
-        out: list[str] = []
-        seen: set[str] = set()
-        for item in value:
-            text = str(item or "").strip()
-            if text and text not in seen:
-                seen.add(text)
-                out.append(text)
-        return tuple(out)

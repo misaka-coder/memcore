@@ -18,11 +18,11 @@ memcore 把记忆分成:
 
 价值:近期细节不丢,长期画像不靠无限堆 raw,上下文窗口压力可控。
 
-### 2. 差值窗口,避免层间重叠和空窗
+### 2. Token 差值窗口 + 完整关系边界
 
-配置里强制 `summary_batch_size < raw_trigger_count`、`episodic_compact_batch_size < episodic_compact_trigger_count`。
+raw 达到 `raw_token_trigger` 后按 `raw_token_batch_ratio` 规划旧前缀，实际切点只能落在完整 terminal turn/relation component；episodic → semantic 仍保持批次小于触发线。
 
-价值:压缩后仍保留一段近期 raw,模型不会突然失去刚聊过的上下文;同时摘要层不会和 raw 层长期重复。
+价值:压缩后仍保留近期完整 raw，用户输入、并行工具和最终回复不会被截成半轮；同时摘要层不会和 raw 层长期重复。
 
 ### 3. 时间锚点和星期感知
 

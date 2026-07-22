@@ -38,21 +38,17 @@ class _StubTokenCounter(TokenCounter):
 class ConfigInvariants(unittest.TestCase):
     def test_default_config_valid(self) -> None:
         cfg = MemoryConfig()
-        self.assertLess(cfg.summary_batch_size, cfg.raw_trigger_count)
+        self.assertGreater(cfg.raw_token_trigger, 0)
+        self.assertGreater(cfg.raw_token_batch_ratio, 0)
+        self.assertLess(cfg.raw_token_batch_ratio, 1)
         self.assertIn("event_trace", cfg.categories)
         self.assertIn("tool_trace", cfg.categories)
         self.assertIn("material_trace", cfg.categories)
-        self.assertEqual(cfg.raw_compaction_excluded_categories, ("material_trace",))
         self.assertEqual(TRACE_CATEGORIES, ("event_trace", "tool_trace", "material_trace"))
-        self.assertNotIn("event_trace", cfg.raw_compaction_excluded_categories)
-        self.assertIn("event_trace", cfg.retrieval_default_excluded_categories)
-        self.assertIn("tool_trace", cfg.retrieval_default_excluded_categories)
-        self.assertIn("material_trace", cfg.retrieval_default_excluded_categories)
 
-    def test_differential_relationship_enforced(self) -> None:
-        # 批量 >= 触发数 必须被拒绝(防层间记忆重叠的承重约束)。
+    def test_retrieval_result_budget_rejects_negative_values(self) -> None:
         with self.assertRaises(ConfigError):
-            MemoryConfig(raw_trigger_count=20, summary_batch_size=20)
+            MemoryConfig(retrieval_result_token_budget=-1)
 
     def test_episodic_differential_enforced(self) -> None:
         with self.assertRaises(ConfigError):
@@ -66,21 +62,11 @@ class ConfigInvariants(unittest.TestCase):
         with self.assertRaises(ConfigError):
             MemoryConfig(categories=())
 
-    def test_raw_compaction_policy_enum(self) -> None:
-        with self.assertRaises(ConfigError):
-            MemoryConfig(raw_compaction_policy="magic")
-
     def test_raw_token_batch_ratio_bounds(self) -> None:
         with self.assertRaises(ConfigError):
             MemoryConfig(raw_token_batch_ratio=1)
         with self.assertRaises(ConfigError):
             MemoryConfig(raw_token_batch_ratio=0)
-
-    def test_excluded_category_configs_must_be_tuples(self) -> None:
-        with self.assertRaises(ConfigError):
-            MemoryConfig(raw_compaction_excluded_categories=["tool_trace"])  # type: ignore[arg-type]
-        with self.assertRaises(ConfigError):
-            MemoryConfig(retrieval_default_excluded_categories=["tool_trace"])  # type: ignore[arg-type]
 
 
 class MetadataCoercion(unittest.TestCase):
@@ -160,15 +146,14 @@ class FacadeShell(unittest.TestCase):
         self.assertIsNotNone(mem.store)
         self.assertIsNotNone(mem.index)
 
-    def test_token_policy_requires_token_counter(self) -> None:
-        with self.assertRaises(ConfigError):
-            MemorySystem(
-                llm=_StubLLM(),
-                namespace=Namespace(user_id="u1"),
-                timezone="Asia/Shanghai",
-                embedding=HashedEmbeddingProvider(),
-                config=MemoryConfig(raw_compaction_policy="token"),
-            )
+    def test_missing_token_counter_uses_explicit_estimated_mode(self) -> None:
+        mem = MemorySystem(
+            llm=_StubLLM(),
+            namespace=Namespace(user_id="u1"),
+            timezone="Asia/Shanghai",
+            embedding=HashedEmbeddingProvider(),
+        )
+        self.assertIsNone(mem.token_counter)
 
     def test_token_counter_must_match_interface(self) -> None:
         with self.assertRaises(TypeError):
@@ -177,7 +162,6 @@ class FacadeShell(unittest.TestCase):
                 namespace=Namespace(user_id="u1"),
                 timezone="Asia/Shanghai",
                 embedding=HashedEmbeddingProvider(),
-                config=MemoryConfig(raw_compaction_policy="token"),
                 token_counter=object(),
             )
 
@@ -187,7 +171,6 @@ class FacadeShell(unittest.TestCase):
             namespace=Namespace(user_id="u1"),
             timezone="Asia/Shanghai",
             embedding=HashedEmbeddingProvider(),
-            config=MemoryConfig(raw_compaction_policy="token"),
             token_counter=_StubTokenCounter(),
         )
         self.assertIsInstance(mem.token_counter, TokenCounter)

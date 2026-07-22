@@ -433,7 +433,8 @@ completed = mem.complete_turn(
 mem.compact_due_background()
 ```
 
-现有 `record_user_turn`、`record_external_event`、`record_tool_exchange` 和 `record_assistant_turn` 可以作为薄适配保留一个迁移窗口，但权威实现必须落到统一 TimelineEntry/Turn API。
+独立消息、事件和材料便捷 API 已是 `append_standalone_entry()` 的薄适配；
+`record_tool_exchange` 必须提供开放 `turn_id` 并委托 action/observation。权威实现只有统一 TimelineEntry/Turn API。
 
 ## 11. Schema migration 与兼容
 
@@ -531,21 +532,20 @@ Timeline V2 已有正式 schema version/migration runner。后续迁移应满足
 - invalid filter、empty、unavailable 均有明确状态，模型不会把失败当证据；
 - 普通回复、事件回复与工具后的终态回复都遵守唯一 final JSON contract。
 
-## 14. 当前实现与 V2 的边界
+## 14. 当前实现边界
 
 V2 核心能力已经在 package 中可用；下面是仍然真实存在的兼容边界,不是待
 实现的虚假占位:
 
 - 旧 V1 raw 记录仍以 role/content 兼容字段保存,没有完整 turn/correlation 的
   历史数据会保留 `legacy_unlinked` 关系状态；
-- `record_assistant_turn(..., in_reply_to=...)` 仍是兼容入口,不会替旧数据凭物理
-  相邻关系伪造 V2 lineage；需要关系语义时使用 `complete_turn()`；
-- `record_external_event()` 等 V1 入口使用显式 trace visibility；V2 事件是否
+- `record_assistant_turn(..., in_reply_to=...)` 只生成 standalone entry，不会替旧数据凭物理相邻关系伪造 lineage；需要关系语义时使用 `complete_turn()`；
+- standalone `record_external_event()` 使用显式 trace visibility；turn event 是否
   进入普通检索由 annotation target/status 决定；
 - Akane 仍负责产品级 prompt assembly、provider transport、工具实际执行和权限；
   MemCore 提供 projection ledger 与 native memory tool schema/dispatch,不是渠道网关；
-- 旧数据和旧宿主适配仍在迁移窗口,不会为了“完成 V2”静默重写 provider projection
-  或删除可追溯 lineage。
+- 旧数据不会被静默重写 provider projection 或删除可追溯 lineage；没有 turn_id
+  的记录作为 closed standalone component 进入同一个 V2 planner。
 
 ## 15. 代码审计后的实现修正
 
@@ -580,7 +580,7 @@ V2 核心能力已经在 package 中可用；下面是仍然真实存在的兼�
 - `StreamingSpeechParser` 只流式展示、最终完成才提交 metadata；
 - `load_material` 的宿主 loader 与 `file_id` 一致性检查。
 
-### 15.3 当前实现中必须停止沿用的机制
+### 15.3 已从当前实现移除的旧机制
 
 1. `role` 拼接 `event/tool/call_id` 作为权威结构。
 2. `memory_metadata.categories` 同时表达语义类别和 trace 身份。
@@ -943,7 +943,9 @@ result = mem.complete_turn(
 annotation/final/turn close 一起写入 projection ledger；若宿主没有提供实际投影,
 应明确省略它或返回结构化不可用状态,不要伪造 provider history。
 
-Akane 当前仍调用 `record_user_turn/record_external_event/record_tool_exchange/record_assistant_turn`，因此这些公开名字在宿主切换前不能先删；但它们不再被视为可长期扩展的第二套权威。切换完成后只能删除或成为调用本节 V2 API 的薄适配。
+Akane 的 live model turn 已切到本节 V2 API。package 内仍保留的独立消息/事件/
+材料便捷名字只调用 typed standalone writer；它们不是第二套权威。工具便捷入口
+必须关联开放 turn。
 
 ### 17.6 Standalone entry 与 staged annotation
 
@@ -1108,17 +1110,16 @@ TurnBundle
 
 ### 19.2 Token 预算按实际投影计算
 
-`MemoryConfig` 增加投影预算配置：
+`MemoryConfig` 的 raw 投影预算配置：
 
 ```text
-compaction_policy: projected_tokens / count_compat
 raw_token_trigger
 raw_token_batch_ratio
 compaction_min_recent_turns
 projection_profile
 ```
 
-默认 `projected_tokens` 使用目标 provider profile 的 tokenizer 计算下列完整内容：
+唯一的 raw planner 使用目标 provider profile 的 tokenizer 计算下列完整内容：
 
 - role/header；
 - canonical/provider content；
@@ -1127,14 +1128,13 @@ projection_profile
 - 终态 raw JSON；
 - message framing 的固定开销。
 
-不能只统计 `entry.content`。没有 provider tokenizer 时使用 `TokenCounter` 的明确 fallback，并在结果中返回 `token_count_quality=estimated`；`count_compat` 只用于旧部署过渡，不作为 V2 验收模式。
+不能只统计 `entry.content`。没有 provider tokenizer 时使用明确的保守估算，并在结果中返回 `token_count_quality=estimated`；不存在 count compatibility planner。
 
 当未摘要 raw projection 达到 `raw_token_trigger` 时，压缩从最老的连续
 terminal-turn 前缀（`closed` 或 `aborted`）开始，累计到
 `raw_token_trigger * raw_token_batch_ratio`，并以完整 relation component 为实际
 切点。token 只负责规划，条目/turn/component 负责原子边界；
-`summary_batch_size` 与独立 source token 上限不得在 projected-token 模式下提前
-截断本轮目标。通常保留至少一个可配置的近期完整 turn；若单个完整 terminal
+任何独立消息 batch cap 都不得提前截断本轮目标。通常保留至少一个可配置的近期完整 turn；若单个完整 terminal
 history 自身已经超线且不存在合法尾部，允许整块压缩，避免永久超预算。
 `aborted` 只总结真实已提交条目，不补造 assistant final；若第一个 `open` turn
 已导致超预算，返回结构化 `status=blocked_by_open_turn`，不得切断该 turn 来伪装成功。

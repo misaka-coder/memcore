@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 from memcore import (
     Actor,
+    EntryOrigin,
     HashedEmbeddingProvider,
     InMemoryVectorIndex,
     MemoryConfig,
@@ -18,6 +19,8 @@ from memcore import (
     Namespace,
     NamespaceError,
     SQLiteMemoryStore,
+    TimelineEntryInput,
+    TurnRole,
     VectorIndex,
 )
 from memcore.index.entry_builder import build_raw_entry, build_semantic_entry, build_summary_entry
@@ -111,7 +114,22 @@ class ExplicitRetrieve(unittest.TestCase):
     def test_tool_trace_is_excluded_from_default_retrieve_but_explicitly_searchable(self) -> None:
         store, index, emb = _shared_backends()
         mem = _mem(store, index, emb, conversation="c1", config=MemoryConfig(enable_verifier=False))
+        mem.begin_turn(
+            turn_id="tool-turn",
+            stimuli=[
+                TimelineEntryInput(
+                    source_id="tool-turn-user",
+                    kind="message.user",
+                    origin=EntryOrigin.USER,
+                    turn_role=TurnRole.STIMULUS,
+                    semantic_text="帮我查北京天气",
+                    payload={"text": "帮我查北京天气"},
+                    timestamp=999,
+                )
+            ],
+        )
         mem.record_tool_exchange(
+            turn_id="tool-turn",
             tool_name="web_search",
             tool_input={"query": "北京天气"},
             result="北京今天 25 度晴天",
@@ -119,6 +137,7 @@ class ExplicitRetrieve(unittest.TestCase):
             source_id_prefix="tool1",
             keywords=["北京天气"],
         )
+        mem.abort_turn("tool-turn", reason="retrieval_fixture", closed_at=1002)
 
         self.assertEqual(mem.retrieve("北京天气", keywords=["北京天气"]), [])
         hits = mem.retrieve(
