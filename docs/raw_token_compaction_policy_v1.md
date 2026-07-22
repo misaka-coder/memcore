@@ -207,20 +207,16 @@ token_counter: TokenCounter | None = None
 
 ### `memcore/compaction.py`
 
-`_summarize_raw()` 已从固定 count 循环改为策略选择:
+`_summarize_raw()` 已从固定 count 循环改为策略选择。一次
+`Compaction.run_due()` 只推进一个可用 raw batch；如果仍有更多欠账,
+由下一次后台调度继续推进。这样可以限制单次维护的模型调用和执行时间,
+但不改变阈值、批次选择、失败重试或 raw→summary 的数据语义:
 
 ```python
-while len(msgs) >= cfg.raw_trigger_count:
-    batch = msgs[: cfg.summary_batch_size]
-```
-
-```python
-while True:
-    batch = self._select_raw_summary_batch(msgs)
-    if not batch:
-        break
-    ...
-    msgs = self.store.get_unsummarized_messages(namespace=namespace)
+msgs = self.store.get_unsummarized_messages(namespace=namespace)
+batch = self._select_raw_summary_batch(msgs)
+if batch:
+    ...  # 创建一个 summary 并标记这一批 source_ids
 ```
 
 已新增:
@@ -240,6 +236,11 @@ return msgs[: cfg.summary_batch_size] if len(msgs) >= cfg.raw_trigger_count else
 ```
 
 token 分支执行上文批次选择算法。
+
+阶段摘要到长期语义记忆同样采用单批推进:一次 `run_due()` 最多处理一个
+`episodic_compact_batch_size` 批次(包括一次必要的 semantic reinforcement),
+后续批次由下一次调度处理。压缩欠账因此是渐进清理,不会在一次请求内连续
+调用模型直到 namespace 被清空。
 
 ### 新模块
 

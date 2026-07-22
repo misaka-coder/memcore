@@ -22,7 +22,10 @@
 - raw 到 summary 的主逻辑在 `memcore/compaction.py`:
   - `_summarize_raw()` 读取 `store.get_unsummarized_messages(...)`。
   - `_select_raw_summary_batch(...)` 决定是否压缩、压缩哪批 raw。
-  - `_render_transcript(batch)` 把 batch 渲染给 summary LLM。
+- `_render_transcript(batch)` 把 batch 渲染给 summary LLM。
+- 每次 `Compaction.run_due()` 只推进一个 raw batch；若 namespace 仍有欠账,
+  下一次调度继续。episodic → semantic 也只推进一个 batch,避免高活跃
+  namespace 在单次维护中连续调用模型清仓。
   - summary 成功后写 `summaries`,再 `mark_messages_summarized(source_ids, summary_id)`。
 - 当前 count policy 的行为:
   - `raw_compaction_excluded_categories` 只影响触发计数和 batch 边界;默认值只有 `material_trace`。
