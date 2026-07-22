@@ -35,6 +35,7 @@ from .projection import (
     ProjectionMessage,
     canonical_json_bytes,
     default_renderer_registry,
+    sanitize_projection_payload,
     stable_projection_hash,
 )
 from .rendering import render_raw_snippet
@@ -48,7 +49,13 @@ from .time_anchor import (
     infer_time_of_day,
     timestamp_to_date_label,
 )
-from .timeline import TimelineEntry, TurnRole
+from .timeline import (
+    MAX_OPERATION_RETENTION_ANCHOR_BYTES,
+    OPERATION_RETENTION_ANCHOR_KEY,
+    OPERATION_RETENTION_ANCHOR_STATUS_KEY,
+    TimelineEntry,
+    TurnRole,
+)
 from .token_counter import TokenCounter
 
 
@@ -56,6 +63,9 @@ from .token_counter import TokenCounter
 class JsonCallResult:
     ok: bool
     data: dict[str, Any]
+
+
+_MAX_OPERATION_RETENTION_TOTAL_BYTES = 16_384
 
 
 class Compaction:
@@ -460,13 +470,38 @@ class Compaction:
         summary_id = self._stable_summary_id(namespace, source_ids, profile="operation")
         timestamps = [int(entry.timestamp) for entry in entries]
         facts: list[str] = []
+        retained_anchors: list[dict[str, Any]] = []
+        retained_bytes = 0
         for entry in entries:
             tool_name = str(entry.trace_metadata.get("tool_name") or entry.kind)
             status = str(entry.trace_metadata.get("status") or "")
             fact = f"{tool_name}" + (f" status={status}" if status else "")
             if entry.correlation_id:
                 fact += f" correlation={entry.correlation_id}"
+            retained = self._operation_retention_record(entry)
+            if retained is not None:
+                encoded = canonical_json_bytes(retained)
+                if retained_bytes + len(encoded) <= _MAX_OPERATION_RETENTION_TOTAL_BYTES:
+                    retained_anchors.append(retained)
+                    retained_bytes += len(encoded)
+                    fact += f" retention_anchor={canonical_json_bytes(retained['anchor']).decode('utf-8')}"
+                else:
+                    omitted = {
+                        "source_id": entry.source_id,
+                        "kind": entry.kind,
+                        "correlation_id": entry.correlation_id,
+                        "anchor": {
+                            "status": "omitted_total_budget",
+                            "sha256": stable_projection_hash(retained["anchor"]),
+                            "bytes": len(canonical_json_bytes(retained["anchor"])),
+                        },
+                    }
+                    retained_anchors.append(omitted)
+                    fact += f" retention_anchor={canonical_json_bytes(omitted['anchor']).decode('utf-8')}"
             facts.append(fact)
+        summary_trace: dict[str, Any] = {"source_kinds": sorted({entry.kind for entry in entries})}
+        if retained_anchors:
+            summary_trace["retention_anchors"] = retained_anchors
         record = {
             "summary_id": summary_id,
             "kind": "memory.operation_digest",
@@ -479,7 +514,7 @@ class Compaction:
             "diary_summary": "；".join(facts),
             "core_facts": facts,
             "memory_metadata": {},
-            "trace_metadata": {"source_kinds": sorted({entry.kind for entry in entries})},
+            "trace_metadata": summary_trace,
             "retrieval_visibility": "explicit",
             "semanticize": False,
             "compaction_schema_version": self.config.compaction_schema_version,
@@ -490,6 +525,38 @@ class Compaction:
             source_ids=source_ids,
             record=record,
         )
+
+    @staticmethod
+    def _operation_retention_record(entry: TimelineEntry) -> dict[str, Any] | None:
+        raw = entry.trace_metadata.get(OPERATION_RETENTION_ANCHOR_KEY)
+        if raw is None:
+            return None
+        if not isinstance(raw, dict):
+            anchor: dict[str, Any] = {"status": "invalid", "reason": "anchor_must_be_object"}
+            sanitization_status = "skipped_unsafe"
+        else:
+            safe_payload, projection_status = sanitize_projection_payload({"role": "user", "content": raw})
+            clean = safe_payload.get("content")
+            anchor = dict(clean) if isinstance(clean, dict) else {"value": clean}
+            sanitization_status = str(
+                entry.trace_metadata.get(OPERATION_RETENTION_ANCHOR_STATUS_KEY) or projection_status.value
+            )
+            encoded = canonical_json_bytes(anchor)
+            if len(encoded) > MAX_OPERATION_RETENTION_ANCHOR_BYTES:
+                anchor = {
+                    "status": "omitted_entry_budget",
+                    "sha256": stable_projection_hash(anchor),
+                    "bytes": len(encoded),
+                }
+        record = {
+            "source_id": entry.source_id,
+            "kind": entry.kind,
+            "correlation_id": entry.correlation_id,
+            "anchor": anchor,
+        }
+        if sanitization_status != "complete":
+            record["sanitization_status"] = sanitization_status
+        return record
 
     def _stable_summary_id(
         self,

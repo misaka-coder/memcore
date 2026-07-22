@@ -102,7 +102,10 @@ from .timeline import (
     CompletionCommitResult,
     EntryOrigin,
     EntryTrust,
+    MAX_OPERATION_RETENTION_ANCHOR_BYTES,
     MemoryAnnotation,
+    OPERATION_RETENTION_ANCHOR_KEY,
+    OPERATION_RETENTION_ANCHOR_STATUS_KEY,
     RetrievalPolicy,
     RetrievalVisibility,
     TimelineEntry,
@@ -112,6 +115,8 @@ from .timeline import (
     TurnHandle,
     TurnRole,
     TurnStatus,
+    build_action_entry,
+    build_observation_entry,
 )
 
 __version__ = "0.1.0"
@@ -166,7 +171,10 @@ __all__ = [
     "CompletionCommitResult",
     "EntryOrigin",
     "EntryTrust",
+    "MAX_OPERATION_RETENTION_ANCHOR_BYTES",
     "MemoryAnnotation",
+    "OPERATION_RETENTION_ANCHOR_KEY",
+    "OPERATION_RETENTION_ANCHOR_STATUS_KEY",
     "RetrievalPolicy",
     "RetrievalVisibility",
     "TimelineEntry",
@@ -176,6 +184,8 @@ __all__ = [
     "TurnHandle",
     "TurnRole",
     "TurnStatus",
+    "build_action_entry",
+    "build_observation_entry",
     # Retrieval V2
     "HardFilterPlan",
     "RetrievalMatch",

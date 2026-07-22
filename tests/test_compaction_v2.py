@@ -165,13 +165,21 @@ def _complete_simple_turn(mem: MemorySystem, number: int, *, payload: dict[str, 
     return turn_id
 
 
-def _append_tool_turn(mem: MemorySystem, *, turn_id: str = "tool-turn") -> None:
+def _append_tool_turn(mem: MemorySystem, *, turn_id: str = "tool-turn", retain_anchors: bool = False) -> None:
     mem.begin_turn(
         stimuli=[_stimulus("查两个方向", source_id=f"{turn_id}-user", timestamp=2000)],
         turn_id=turn_id,
         opened_at=2000,
     )
     for call_id in ("a", "b"):
+        trace_metadata: dict[str, Any] = {"tool_name": "web_search", "status": "running"}
+        if retain_anchors and call_id == "a":
+            trace_metadata["retention_anchor"] = {
+                "capability_id": "web_search",
+                "capability_version": "v3",
+                "schema_hash": "sha256:abc",
+                "api_key": "must-not-survive",
+            }
         mem.append_entry(
             TimelineEntryInput(
                 source_id=f"{turn_id}-action-{call_id}",
@@ -181,12 +189,18 @@ def _append_tool_turn(mem: MemorySystem, *, turn_id: str = "tool-turn") -> None:
                 semantic_text=f"call {call_id}",
                 payload={"query": call_id},
                 correlation_id=call_id,
-                trace_metadata={"tool_name": "web_search", "status": "running"},
+                trace_metadata=trace_metadata,
                 timestamp=2001,
             ),
             turn_id=turn_id,
         )
     for call_id in ("b", "a"):
+        trace_metadata = {"tool_name": "web_search", "status": "success"}
+        if retain_anchors and call_id == "a":
+            trace_metadata["retention_anchor"] = {
+                "result_ref": "search-result-a",
+                "cached_path": "C:\\private\\must-not-survive.json",
+            }
         mem.append_entry(
             TimelineEntryInput(
                 source_id=f"{turn_id}-result-{call_id}",
@@ -196,7 +210,7 @@ def _append_tool_turn(mem: MemorySystem, *, turn_id: str = "tool-turn") -> None:
                 semantic_text=f"result {call_id}",
                 payload={"output": call_id},
                 correlation_id=call_id,
-                trace_metadata={"tool_name": "web_search", "status": "success"},
+                trace_metadata=trace_metadata,
                 timestamp=2002,
             ),
             turn_id=turn_id,
@@ -552,6 +566,44 @@ class ToolPartitionAndAtomicityTests(CompactionV2Base):
             self.assertEqual(by_kind["memory.operation_digest"]["semanticize"], 0)
             uncompacted = store.get_uncompacted_episodic_summaries(namespace=mem.namespace)
             self.assertTrue(all(item["kind"] != "memory.operation_digest" for item in uncompacted))
+        finally:
+            mem.close()
+            store.close()
+
+    def test_operation_compaction_retains_only_opted_in_sanitized_anchors(self) -> None:
+        mem, store, _ = self.make_mem(config=_count_config(raw_trigger_count=6, summary_batch_size=4))
+        try:
+            _append_tool_turn(mem, retain_anchors=True)
+            stored_action = store.get_entry(namespace=mem.namespace, source_id="tool-turn-action-a")
+            stored_result = store.get_entry(namespace=mem.namespace, source_id="tool-turn-result-a")
+            self.assertNotIn("must-not-survive", str(stored_action.trace_metadata))
+            self.assertNotIn("C:\\private", str(stored_result.trace_metadata))
+            _complete_simple_turn(mem, 9)
+            result = mem.compact_due_sync()
+            self.assertEqual(result["status"], "compacted")
+            summaries = store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10)
+            operation = next(item for item in summaries if item["kind"] == "memory.operation_digest")
+            retained = operation["trace_metadata"]["retention_anchors"]
+            by_source = {item["source_id"]: item for item in retained}
+
+            self.assertEqual(by_source["tool-turn-action-a"]["anchor"]["capability_id"], "web_search")
+            self.assertEqual(by_source["tool-turn-action-a"]["anchor"]["schema_hash"], "sha256:abc")
+            self.assertEqual(by_source["tool-turn-result-a"]["anchor"]["result_ref"], "search-result-a")
+            rendered = str(operation)
+            self.assertNotIn("must-not-survive", rendered)
+            self.assertNotIn("C:\\private", rendered)
+            self.assertIn("omitted", rendered)
+            self.assertNotIn(
+                "retention_anchors", str(next(item for item in summaries if item["kind"] == "memory.episode_summary"))
+            )
+            retrieved = mem.retrieve_structured(
+                "web_search schema_hash sha256:abc",
+                source_layers=["summary"],
+                include_explicit=True,
+                kind_patterns=["memory.operation_digest"],
+            )
+            self.assertEqual(retrieved.status, "found")
+            self.assertIn("sha256:abc", retrieved.matches[0].rendered_text)
         finally:
             mem.close()
             store.close()

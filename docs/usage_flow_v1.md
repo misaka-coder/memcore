@@ -144,6 +144,21 @@ default count policy lets these records contribute to raw compaction triggers,
 so tool-only timelines enter the normal summary lifecycle. Normal retrieval
 still excludes them unless the model explicitly asks for `tool_trace`.
 
+For new Timeline V2 hosts, `append_action(...)` and
+`append_observation(...)` are the protocol-neutral primitives. Their `kind` and
+payload are host-defined, so they also cover model-emitted JSON/XML/tags, Skill
+steps, catalog loading, or other request/result flows. MemCore does not parse or
+execute those protocols. If the host did not use provider-native tool messages,
+freeze the actual messages with `record_request_projection(...)`; see
+`docs/operation_timeline_v1.md` and
+`examples/non_native_operation_timeline.py`.
+
+An operation may opt in to a small structured `retention_anchor` when later
+turns need a resource ID, version, schema hash, or result reference after raw
+compaction. Do not copy complete results, credentials, local paths, or files into
+that anchor. Entries without an anchor keep the existing lossy operation-digest
+behavior.
+
 If the host app handles images or files, record only material references with
 `record_material_reference(...)` and cleanup events with
 `record_material_cleanup(...)`. These write `user.attachment <kind> <file_id>`

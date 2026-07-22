@@ -56,6 +56,7 @@
 - 压缩重试:`llm_max_retries` 会传给注入的 `LLMClient`;最终仍失败时压缩层不标记已完成,下一轮继续重试。
 - **Chat Output Adapter ✅**:标准 JSON 输出契约、`speech` 流式解析、普通文本尽力分段、raw metadata 回写流程见 `docs/chat_output_adapter_v1.md`;工具调用阶段不套该 JSON,只在最终回复阶段输出 memcore JSON。
 - **稳定投影与缓存审计 ✅**:canonical/OpenAI/Anthropic provider projection、renderer/version、strict-prefix 验收、projection hash 与真实请求 audit;MemCore 保证前缀稳定,不替 provider 承诺缓存必命中。
+- **开放动作/结果时间线 ✅**:`append_action(...)` / `append_observation(...)` 可记录原生工具、JSON、XML、标签或宿主自定义协议；实际 provider 消息可冻结回 projection ledger。可选小型 `retention_anchor` 在 operation 压缩后保留资源 ID、版本、hash 等重载锚点，不复制完整结果。
 - **有界后台维护 ✅**:每次 `compact_due` 只推进一个 raw batch 和一个 semantic batch;积压由后续调度渐进处理,不在单次维护里连续清仓。
 
 核心 + 评测台 + Timeline V2 基础 + provider projection + embedding 三路 + outbox 自愈
@@ -78,6 +79,9 @@ OCR、视觉描述、文档 chunks 或当前清理状态;memcore 不保存文件
 如果让 AI 编码助手接入本库,请先把根目录 `AGENTS.md` 交给它读;独立接入流程见
 `docs/usage_flow_v1.md`。
 模型服务前缀缓存友好的 prompt 拼接顺序见 `docs/model_prompt_playbook_v1.md` 的“缓存友好 Prompt 布局”。
+宿主中立的动作/结果接入、非原生协议真实投影与可选压缩锚点见
+[`docs/operation_timeline_v1.md`](docs/operation_timeline_v1.md)，可运行示例见
+[`examples/non_native_operation_timeline.py`](examples/non_native_operation_timeline.py)。
 
 ## 端到端用法
 
@@ -125,6 +129,30 @@ tool_payload = dispatch_native_memory_tool(
 # 把 tool_payload 作为 provider 原生 tool_result 回给聊天模型。
 # 如需跨轮追问该工具结果,再用 record_tool_exchange(...) 写入 tool_trace。
 ```
+
+宿主不使用原生 tool calling 时也不需要另建历史系统。宿主解析模型自己的
+JSON/标签后，可将请求和结果追加到同一轮：
+
+```python
+mem.append_action(
+    turn_id=turn_id,
+    kind="operation.catalog.request",
+    correlation_id="catalog-1",
+    payload={"action": "list_capabilities"},
+)
+mem.append_observation(
+    turn_id=turn_id,
+    kind="operation.catalog.response",
+    correlation_id="catalog-1",
+    payload={"items": ["search", "weather"]},
+    status="success",
+    retention_anchor={"catalog_ref": "catalog:v3", "schema_hash": "sha256:abc"},
+)
+```
+
+`kind` 和 payload 均由宿主定义；MemCore 不解析协议、不决定权限、不执行工具。
+若实际 provider history 使用普通 JSON/XML/标签消息，用 `record_request_projection(...)`
+冻结真实消息即可，后续严格前缀不会被默认原生工具投影改写。
 
 进程重启、换一个新的内存索引实例,或升级索引 metadata 字段后,可以从 SQLite 真相源补建/热加载索引:
 
@@ -180,7 +208,8 @@ memcore 是**纯机制**:它不含任何具体人格、领域调教或模型权�
 `import memcore` 暴露:`MemorySystem`、`MemoryConfig`、`Namespace`/`Actor`、`PromptOverrides`、
 `LLMClient`/`LLMRequest`/`LLMResult`、`MemoryStore`/`VectorIndex`/`EmbeddingProvider`/`TokenCounter` 接口、
 默认实现 `SQLiteMemoryStore`/`InMemoryVectorIndex`/`HashedEmbeddingProvider`/`HTTPEmbeddingProvider`、
-`verify_embedding`、`build_native_memory_tool_specs` / `dispatch_native_memory_tool`、契约
+`verify_embedding`、`build_native_memory_tool_specs` / `dispatch_native_memory_tool`、
+`build_action_entry` / `build_observation_entry`、Timeline V2 与 projection 契约、
 `MemoryMetadata`/`SummaryRecord`/`SemanticRecord`、异常类。
 
 ## 跑测试

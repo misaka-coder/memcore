@@ -2,7 +2,7 @@
 
 状态: package implementation baseline complete；Schema foundation、Turn lifecycle、Projection ledger、Compaction V2、Retrieval admission、Relation expansion 以及 native memory tool schema/dispatch 已实现。宿主的 provider-native transport 与 Akane 旧 API 薄适配仍处于迁移窗口。
 
-当前实现检查点（2026-07-21）：
+当前实现检查点（2026-07-22）：
 
 - Slice 1 `Schema foundation` 已提交（`4b82e2d`）：正式 migration runner、V2 物理列/表、namespace-safe relation reads 与 V1 trace compatibility window；
 - Slice 2 `Turn lifecycle` 已提交（`24f1c1b`）：`begin_turn -> append_entry -> complete_turn / abort_turn`、显式 annotation target、并行 action/observation correlation、原子终态提交、visibility 物化与索引 outbox；
@@ -12,6 +12,9 @@
 - Slice 5 `Retrieval admission` 已提交（`df09a50`）：结构化 query/result、visibility/annotation/kind/conversation/index-generation 硬准入、开放 kind prefix flags、评分前过滤与有界 semantic relaxation；
 - Slice 6 `Relation expansion` 已提交（`3523c26`）：Namespace-safe lineage closure、stimulus/final 原子组、并行 correlation branch、派生层去重、visible lineage 排除与精确 token budget；
 - Akane cutover primitives 已实现：无模型回复的 typed standalone entry，以及不提前授予检索准入的 staged annotation；
+- 宿主中立的 `append_action` / `append_observation` 薄接口已实现；JSON、XML、
+  标签等非原生协议可冻结真实 request projection，operation 可逐条选择小型
+  retention anchor，不要求宿主采用固定能力加载协议；
 - `kind` 仍是开放 namespaced 字符串；关系完整性只约束通用 action/observation，不枚举工具、事件、Skill 或 Bot；
 - accepted empty annotation 与 missing/invalid annotation 已分开，只有 accepted target 自动进入 default retrieval；
 - final 继续保留真实 `provider_output_raw`；宿主提供的真实 final projection 会与 annotation/final/turn close 同事务保存，没有提供时可由标准 adapter 产生显式 `canonical_fallback`；
@@ -409,8 +412,9 @@ turn = mem.begin_turn(
     annotation_target_ids=[...],
 )
 
-mem.append_entry(..., turn_id=turn.turn_id)
-# V2 工具 action/observation 使用 append_entry(..., correlation_id=call_id)
+mem.append_action(..., turn_id=turn.turn_id, correlation_id=call_id)
+mem.append_observation(..., turn_id=turn.turn_id, correlation_id=call_id)
+# 高级接入仍可直接使用 append_entry(TimelineEntryInput(...))。
 # 兼容的 record_tool_exchange() 不接收 V2 turn 参数。
 
 projection = mem.build_context_projection(provider_profile="openai_chat")

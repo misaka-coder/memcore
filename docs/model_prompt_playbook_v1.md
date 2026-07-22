@@ -100,7 +100,12 @@ load_material(file_id, kind?, preferred_source?, purpose?)
 
 ## 结构化上下文与工具通道
 
-宿主应优先使用模型服务原生 tool calling / tool result 机制,让工具调用、工具结果、调用 ID、参数和返回值保持结构化。不要把工具结果降级成一段普通自然语言塞进用户消息尾部,除非接入方只能使用 legacy 通道。memcore 提供 `build_native_memory_tool_specs(...)` 和 `dispatch_native_memory_tool(...)` 作为原生工具 schema 与分发辅助。
+模型服务原生 tool calling / tool result 通常能直接保留调用 ID、参数和返回值边界，
+但 MemCore 不要求宿主必须使用它。宿主也可以使用稳定的 JSON、XML、标签或其他
+结构化协议，只要宿主负责解析、权限和执行，并用明确 `correlation_id` 把模型动作
+与系统结果追加到同一 Timeline。不要把结果伪装成用户本人说的话。MemCore 提供
+`build_native_memory_tool_specs(...)` / `dispatch_native_memory_tool(...)` 作为可选原生
+工具辅助，也提供 `append_action(...)` / `append_observation(...)` 记录通用动作和结果。
 
 推荐分层:
 
@@ -110,7 +115,10 @@ load_material(file_id, kind?, preferred_source?, purpose?)
 4. `render_prompt_context(ctx)`:memcore 的可见 raw/summary/semantic 记忆,用于长期连续性和可见上下文。
 5. `retrieve_for_turn/read_timeline/load_material`:需要更多记忆证据或材料内容时由模型主动调用。
 
-如果只能走 legacy 文本 followup,请用清晰边界标出工具名、输入、输出和时间,并告诉模型这段是工具结果而非用户原话。但这只是兼容方案,效果不如原生结构化工具通道。
+如果使用文本协议，请用稳定结构明确标出动作、结果、调用 ID 和时间，并告诉模型
+这段来自宿主环境而非用户原话。实际 provider messages 应通过
+`record_request_projection(...)` 冻结，避免下一轮被默认投影换成另一种表示。协议选择
+由宿主和模型能力决定，MemCore 不据此改变存储、检索或缓存边界。
 
 工具结果写入 raw 时,优先使用 `record_tool_exchange(...)`,不要让最终聊天模型猜 metadata 或手写边界。它会按线性消息序列写入两条 raw:一条 `assistant.tool_call` 事件,一条 `tool.<name>` 结果事件。
 

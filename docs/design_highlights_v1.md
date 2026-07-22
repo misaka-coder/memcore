@@ -129,6 +129,16 @@ retry/deferred,后续调度继续；历史 legacy 数据也不会通过一次长
 价值:高活跃群不会因为压缩欠账同时制造一串模型请求,模型调用、延迟和数据提交
 边界都能被观测和控制。
 
+### 18. 动作—结果开放接缝，不接管宿主工具架构
+
+`append_action` / `append_observation` 只固定轮次角色和 `correlation_id` 关系，
+不固定工具数量、目录加载方式、模型输出语法或业务 payload。原生 tool calling、
+JSON、XML、标签都能进入同一 Timeline，真实 provider 表示可写入 projection ledger。
+
+operation 压缩默认仍是轻量 digest；只有宿主显式提供的小型 retention anchor 才保留
+资源 ID、版本、schema hash 或结果引用。这样既不会无限复制工具结果，也不会要求
+所有宿主实现一套“能力加载协议”。
+
 ## 适合什么场景
 
 - 长期陪伴型 AI:用户偏好、关系、计划、相处时间、情绪余温。

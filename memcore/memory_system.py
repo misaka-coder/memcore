@@ -55,6 +55,7 @@ from .time_anchor import infer_time_of_day, timestamp_to_date_label
 from .timeline import (
     AnnotationStatus,
     CompletionCommitResult,
+    EntryTrust,
     MemoryAnnotation,
     RetrievalVisibility,
     TimelineEntry,
@@ -63,6 +64,8 @@ from .timeline import (
     TurnCompletion,
     TurnHandle,
     TurnStatus,
+    build_action_entry,
+    build_observation_entry,
 )
 from .token_counter import TokenCounter
 
@@ -254,6 +257,74 @@ class MemorySystem:
         except NotImplementedError as exc:
             raise SchemaError("store_timeline_v2_unsupported") from exc
         return self._index_timeline_entry(stored)
+
+    def append_action(
+        self,
+        *,
+        turn_id: str,
+        kind: str,
+        correlation_id: str,
+        semantic_text: str = "",
+        payload: dict[str, Any] | None = None,
+        source_id: str = "",
+        timestamp: int = 0,
+        trace_metadata: dict[str, Any] | None = None,
+        retention_anchor: dict[str, Any] | None = None,
+        prompt_visible: bool = True,
+        trust: EntryTrust | str = EntryTrust.UNTRUSTED_DATA,
+    ) -> TimelineEntry:
+        """Append a host-neutral model action without prescribing its wire protocol."""
+
+        return self.append_entry(
+            build_action_entry(
+                kind=kind,
+                correlation_id=correlation_id,
+                semantic_text=semantic_text,
+                payload=payload,
+                source_id=source_id,
+                timestamp=timestamp,
+                trace_metadata=trace_metadata,
+                retention_anchor=retention_anchor,
+                prompt_visible=prompt_visible,
+                trust=trust,
+            ),
+            turn_id=turn_id,
+        )
+
+    def append_observation(
+        self,
+        *,
+        turn_id: str,
+        kind: str,
+        correlation_id: str,
+        semantic_text: str = "",
+        payload: dict[str, Any] | None = None,
+        source_id: str = "",
+        timestamp: int = 0,
+        status: str = "",
+        trace_metadata: dict[str, Any] | None = None,
+        retention_anchor: dict[str, Any] | None = None,
+        prompt_visible: bool = True,
+        trust: EntryTrust | str = EntryTrust.UNTRUSTED_DATA,
+    ) -> TimelineEntry:
+        """Append a host/environment result linked to a prior action."""
+
+        return self.append_entry(
+            build_observation_entry(
+                kind=kind,
+                correlation_id=correlation_id,
+                semantic_text=semantic_text,
+                payload=payload,
+                source_id=source_id,
+                timestamp=timestamp,
+                status=status,
+                trace_metadata=trace_metadata,
+                retention_anchor=retention_anchor,
+                prompt_visible=prompt_visible,
+                trust=trust,
+            ),
+            turn_id=turn_id,
+        )
 
     def append_standalone_entry(self, entry: TimelineEntryInput) -> TimelineEntry:
         """Persist a typed entry that does not open or complete a model-response turn."""

@@ -14,6 +14,7 @@ from memcore import (
     LLMClient,
     LLMRequest,
     LLMResult,
+    MAX_OPERATION_RETENTION_ANCHOR_BYTES,
     MemoryAnnotation,
     MemorySystem,
     Namespace,
@@ -26,6 +27,8 @@ from memcore import (
     TurnRole,
     TurnStatus,
     VectorIndex,
+    build_action_entry,
+    build_observation_entry,
 )
 from memcore.namespace import Actor
 
@@ -143,6 +146,34 @@ class TimelineContractsTests(unittest.TestCase):
                 origin="assistant",
                 turn_role="action",
                 semantic_text="missing correlation",
+            )
+
+    def test_generic_operation_builders_keep_protocol_open_and_bound_retention_anchor(self) -> None:
+        action = build_action_entry(
+            kind="operation.catalog.request",
+            correlation_id="catalog-1",
+            semantic_text='{"action":"list"}',
+            payload={"protocol": "host_json", "request": {"action": "list"}},
+            retention_anchor={"catalog_version": "v3", "schema_hash": "sha256:abc"},
+        )
+        observation = build_observation_entry(
+            kind="operation.catalog.response",
+            correlation_id="catalog-1",
+            semantic_text="catalog returned",
+            payload={"items": ["search", "weather"]},
+            status="success",
+        )
+
+        self.assertEqual(action.turn_role, TurnRole.ACTION)
+        self.assertEqual(action.payload["protocol"], "host_json")
+        self.assertEqual(action.trace_metadata["retention_anchor"]["schema_hash"], "sha256:abc")
+        self.assertEqual(observation.turn_role, TurnRole.OBSERVATION)
+        self.assertEqual(observation.trace_metadata["status"], "success")
+        with self.assertRaisesRegex(SchemaError, "operation_retention_anchor_too_large"):
+            build_action_entry(
+                kind="operation.catalog.request",
+                correlation_id="too-large",
+                retention_anchor={"value": "x" * (MAX_OPERATION_RETENTION_ANCHOR_BYTES + 1)},
             )
 
 
@@ -330,6 +361,38 @@ class BasicTurnCompletionTests(TurnLifecycleBase):
 
 
 class ParallelToolTurnTests(TurnLifecycleBase):
+    def test_memory_system_helpers_append_generic_non_tool_operations(self) -> None:
+        handle = self.mem.begin_turn(
+            stimuli=[_stimulus("加载目录", source_id="generic-question")],
+            turn_id="generic-operation-turn",
+        )
+        action = self.mem.append_action(
+            turn_id=handle.turn_id,
+            kind="operation.catalog.request",
+            correlation_id="catalog",
+            semantic_text='{"action":"list"}',
+            payload={"action": "list"},
+            source_id="generic-action",
+        )
+        observation = self.mem.append_observation(
+            turn_id=handle.turn_id,
+            kind="operation.catalog.response",
+            correlation_id="catalog",
+            semantic_text="search, weather",
+            payload={"items": ["search", "weather"]},
+            status="success",
+            source_id="generic-observation",
+        )
+
+        self.assertEqual(action.kind, "operation.catalog.request")
+        self.assertEqual(observation.kind, "operation.catalog.response")
+        branch = self.store.get_correlation_entries(
+            namespace=self.namespace,
+            turn_id=handle.turn_id,
+            correlation_id="catalog",
+        )
+        self.assertEqual([entry.source_id for entry in branch], ["generic-action", "generic-observation"])
+
     def test_out_of_order_parallel_results_remain_correlated_and_block_early_final(self) -> None:
         handle = self.mem.begin_turn(
             stimuli=[_stimulus("查两个方向", source_id="question")],

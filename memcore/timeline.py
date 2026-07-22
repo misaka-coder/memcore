@@ -16,6 +16,9 @@ if TYPE_CHECKING:
 
 _KIND_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)+$")
 _ID_PATTERN = re.compile(r"^[^\x00-\x1f\x7f]{1,256}$")
+OPERATION_RETENTION_ANCHOR_KEY = "retention_anchor"
+OPERATION_RETENTION_ANCHOR_STATUS_KEY = "retention_anchor_status"
+MAX_OPERATION_RETENTION_ANCHOR_BYTES = 4096
 
 
 class _TextEnum(str, Enum):
@@ -158,7 +161,7 @@ class TimelineEntryInput:
         object.__setattr__(
             self,
             "trace_metadata",
-            _json_object(self.trace_metadata, "timeline_entry_invalid_trace_metadata"),
+            _normalize_retention_trace(_json_object(self.trace_metadata, "timeline_entry_invalid_trace_metadata")),
         )
         object.__setattr__(
             self,
@@ -197,6 +200,132 @@ class TimelineEntryInput:
             date_label=date_label,
             time_of_day=time_of_day,
         )
+
+
+def build_action_entry(
+    *,
+    kind: str,
+    correlation_id: str,
+    semantic_text: str = "",
+    payload: Mapping[str, Any] | None = None,
+    source_id: str = "",
+    timestamp: int = 0,
+    trace_metadata: Mapping[str, Any] | None = None,
+    retention_anchor: Mapping[str, Any] | None = None,
+    prompt_visible: bool = True,
+    trust: EntryTrust | str = EntryTrust.UNTRUSTED_DATA,
+) -> TimelineEntryInput:
+    """Build a host-neutral model action for an open turn.
+
+    ``kind`` and ``payload`` are intentionally open. A host may use provider-native
+    tools, JSON, XML, tags, or another protocol without teaching MemCore that
+    protocol. ``retention_anchor`` is an optional small structured reference that
+    survives operation compaction; it is not a place to copy the full result.
+    """
+
+    return TimelineEntryInput(
+        kind=kind,
+        origin=EntryOrigin.ASSISTANT,
+        turn_role=TurnRole.ACTION,
+        semantic_text=semantic_text,
+        payload=dict(payload or {}),
+        source_id=source_id,
+        correlation_id=correlation_id,
+        timestamp=timestamp,
+        trace_metadata=_operation_trace_metadata(trace_metadata, retention_anchor),
+        retrieval_policy=RetrievalPolicy.EXPLICIT,
+        retrieval_visibility=RetrievalVisibility.EXPLICIT,
+        semanticize=False,
+        prompt_visible=prompt_visible,
+        trust=trust,
+    )
+
+
+def build_observation_entry(
+    *,
+    kind: str,
+    correlation_id: str,
+    semantic_text: str = "",
+    payload: Mapping[str, Any] | None = None,
+    source_id: str = "",
+    timestamp: int = 0,
+    status: str = "",
+    trace_metadata: Mapping[str, Any] | None = None,
+    retention_anchor: Mapping[str, Any] | None = None,
+    prompt_visible: bool = True,
+    trust: EntryTrust | str = EntryTrust.UNTRUSTED_DATA,
+) -> TimelineEntryInput:
+    """Build a host/environment observation linked to a prior model action."""
+
+    trace = _operation_trace_metadata(trace_metadata, retention_anchor)
+    if str(status or "").strip():
+        trace["status"] = str(status).strip()
+    return TimelineEntryInput(
+        kind=kind,
+        origin=EntryOrigin.ENVIRONMENT,
+        turn_role=TurnRole.OBSERVATION,
+        semantic_text=semantic_text,
+        payload=dict(payload or {}),
+        source_id=source_id,
+        correlation_id=correlation_id,
+        timestamp=timestamp,
+        trace_metadata=trace,
+        retrieval_policy=RetrievalPolicy.EXPLICIT,
+        retrieval_visibility=RetrievalVisibility.EXPLICIT,
+        semanticize=False,
+        prompt_visible=prompt_visible,
+        trust=trust,
+    )
+
+
+def _operation_trace_metadata(
+    trace_metadata: Mapping[str, Any] | None,
+    retention_anchor: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    trace = _json_object(trace_metadata or {}, "timeline_entry_invalid_trace_metadata")
+    anchor = retention_anchor
+    if anchor is None and OPERATION_RETENTION_ANCHOR_KEY in trace:
+        anchor = trace[OPERATION_RETENTION_ANCHOR_KEY]
+    if anchor is None:
+        return trace
+    normalized = _json_object(anchor, "operation_retention_anchor_must_be_object")
+    encoded = json.dumps(
+        normalized,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    if len(encoded) > MAX_OPERATION_RETENTION_ANCHOR_BYTES:
+        raise SchemaError("operation_retention_anchor_too_large")
+    trace[OPERATION_RETENTION_ANCHOR_KEY] = normalized
+    return _normalize_retention_trace(trace)
+
+
+def _normalize_retention_trace(trace: dict[str, Any]) -> dict[str, Any]:
+    raw = trace.get(OPERATION_RETENTION_ANCHOR_KEY)
+    if raw is None:
+        return trace
+    anchor = _json_object(raw, "operation_retention_anchor_must_be_object")
+    encoded = json.dumps(
+        anchor,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    if len(encoded) > MAX_OPERATION_RETENTION_ANCHOR_BYTES:
+        raise SchemaError("operation_retention_anchor_too_large")
+    from .projection import sanitize_projection_payload
+
+    safe_payload, status = sanitize_projection_payload({"role": "user", "content": anchor})
+    clean = safe_payload.get("content")
+    trace[OPERATION_RETENTION_ANCHOR_KEY] = dict(clean) if isinstance(clean, Mapping) else {"value": clean}
+    if status.value != "complete":
+        trace[OPERATION_RETENTION_ANCHOR_STATUS_KEY] = status.value
+    else:
+        trace.pop(OPERATION_RETENTION_ANCHOR_STATUS_KEY, None)
+    return trace
 
 
 @dataclass(frozen=True)
@@ -510,6 +639,9 @@ __all__ = [
     "EntryOrigin",
     "EntryTrust",
     "MemoryAnnotation",
+    "MAX_OPERATION_RETENTION_ANCHOR_BYTES",
+    "OPERATION_RETENTION_ANCHOR_KEY",
+    "OPERATION_RETENTION_ANCHOR_STATUS_KEY",
     "RetrievalPolicy",
     "RetrievalVisibility",
     "TimelineEntry",
@@ -519,5 +651,7 @@ __all__ = [
     "TurnHandle",
     "TurnRole",
     "TurnStatus",
+    "build_action_entry",
+    "build_observation_entry",
     "resolve_retrieval_visibility",
 ]

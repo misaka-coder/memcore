@@ -464,6 +464,69 @@ class ProviderAdapterTests(ProjectionBase):
 
 
 class PrefixAndLedgerTests(ProjectionBase):
+    def test_non_native_json_or_tag_protocol_can_freeze_its_actual_history(self) -> None:
+        handle = self.mem.begin_turn(
+            stimuli=[_stimulus("列出能力", source_id="custom-user")],
+            turn_id="custom-protocol-turn",
+        )
+        self.mem.append_action(
+            turn_id=handle.turn_id,
+            kind="operation.catalog.request",
+            correlation_id="catalog-1",
+            semantic_text='{"action":"list_capabilities"}',
+            payload={"action": "list_capabilities"},
+            source_id="custom-action",
+        )
+        self.mem.append_observation(
+            turn_id=handle.turn_id,
+            kind="operation.catalog.response",
+            correlation_id="catalog-1",
+            semantic_text="search and weather are available",
+            payload={"items": ["search", "weather"]},
+            status="success",
+            source_id="custom-observation",
+        )
+        actual = [
+            {"role": "user", "content": "列出能力"},
+            {"role": "assistant", "content": '<action name="list_capabilities" id="catalog-1" />'},
+            {"role": "user", "content": '<result id="catalog-1">search,weather</result>'},
+        ]
+        frozen = self.mem.record_request_projection(
+            turn_id=handle.turn_id,
+            provider_profile=OPENAI_PROFILE,
+            turn_messages=[
+                ProjectionMessageInput(
+                    provider_profile=OPENAI_PROFILE,
+                    payload=payload,
+                    source_ids=(source_id,),
+                    projection_index=index,
+                )
+                for index, (payload, source_id) in enumerate(
+                    zip(actual, ("custom-user", "custom-action", "custom-observation"))
+                )
+            ],
+            history_messages=actual,
+            model_route="custom-tag-model",
+            system_prefix="stable",
+            tool_schema=[],
+        )
+
+        self.assertEqual([item.payload for item in frozen.projections], actual)
+        before_final = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)
+        self.assertEqual(list(before_final.payloads), actual)
+        self.mem.complete_turn(
+            turn_id=handle.turn_id,
+            semantic_text="已经列出了可用能力。",
+            provider_output_raw="已经列出了可用能力。",
+            annotation_status="accepted",
+            memory_annotation={"keywords": ["能力目录"]},
+            source_id="custom-final",
+            provider_profile=OPENAI_PROFILE,
+            provider_projection={"role": "assistant", "content": "已经列出了可用能力。"},
+        )
+        after_final = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)
+        self.assertTrue(is_strict_message_prefix(before_final.payloads, after_final.payloads))
+
     def test_explicit_final_projection_requires_prior_turn_prefix_and_rolls_back(self) -> None:
         handle = self.mem.begin_turn(
             stimuli=[_stimulus("missing request ledger", source_id="missing-prefix-user")],

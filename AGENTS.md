@@ -121,6 +121,15 @@ cfg = MemoryConfig(
 Never let the model invent category names. memcore will drop values outside the enum.
 If the host records tool calls/results into raw memory, prefer `record_tool_exchange(...)` so the trace is stored as linear `assistant.tool_call <tool> <call_id>` and `tool.<tool> <call_id>` blocks with `categories=["tool_trace"]`. The default count policy includes `tool_trace` in raw compaction triggers, so tool-heavy timelines enter the normal summary lifecycle even without ordinary chat messages. Normal retrieval still excludes it unless `categories=["tool_trace"]` is explicitly requested. If you override `categories`, keep `tool_trace` in the enum if you need this behavior.
 
+For Timeline V2 or non-native model protocols, use `append_action(...)` and
+`append_observation(...)` with an open namespaced `kind` and stable
+`correlation_id`. The host may use provider-native tools, JSON, XML, tags, or
+another protocol; MemCore does not parse or execute it. Freeze the actual
+provider messages with `record_request_projection(...)` when they differ from
+the standard adapter fallback. Use the optional `retention_anchor` only for a
+small resource ID/version/hash/result reference that must survive operation
+compaction, never for a full result, credential, local path, or file.
+
 If the host records images/files into raw memory, prefer `record_material_reference(...)` and `record_material_cleanup(...)`. These store only file/material anchors as `user.attachment <kind> <file_id>` and `system.material_cleanup <kind> <file_id>` blocks with `categories=["material_trace"]`; original files and OCR/vision/document chunks stay in host storage. The default config excludes `material_trace` from count-based raw compaction triggers and from normal retrieval unless `categories=["material_trace"]` is explicitly requested. If you override `categories`, keep `material_trace` in the enum if you need this behavior.
 For group or multi-speaker uploads, pass `actor=Actor(stable_id=..., display_name=...)` to `record_material_reference(...)` so the attachment keeps uploader attribution.
 

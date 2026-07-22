@@ -100,6 +100,12 @@ V2 使用实际 provider projection 的 token 预算规划完整 turn；旧 coun
 
 ### 5. 工具、事件和材料的通用接缝
 
+- `append_action()` / `append_observation()` 是开放的动作—结果薄接口，宿主可用
+  原生 tool calling、JSON、XML、标签或其他协议；MemCore 不解析协议、不执行工具；
+- 非原生协议可以通过 `record_request_projection()` 冻结宿主真正发送的 provider
+  messages，不会被默认 native-tool fallback 改写；
+- operation entry 可逐条附带小型 `retention_anchor`，在 raw 压缩后保留资源 ID、
+  版本、schema hash 或结果引用；无 anchor 的旧行为不变，完整结果仍留在宿主存储；
 - `record_tool_exchange()` 生成稳定的 `assistant.tool_call` + `tool.*` 线性块；
 - `record_external_event()` 生成 `event.*` 中性结构化块；
 - `record_material_reference()` / `record_material_cleanup()` 只保存 file_id、
@@ -108,6 +114,9 @@ V2 使用实际 provider projection 的 token 预算规划完整 turn；旧 coun
   改变检索准入、工具权限或信任边界；
 - 未知 namespaced kind 有安全的 canonical fallback，不会伪造 `system` 或
   provider tool 边界。
+
+这不规定宿主必须动态加载工具。工具少且稳定时，把详细 schema 固定放在系统
+提示词仍是合理选择；动作—结果 Timeline 只是提供可选的统一记录与投影机制。
 
 ### 6. Chat Output Adapter
 
