@@ -523,10 +523,22 @@ class RendererRegistry:
 def default_renderer_registry() -> RendererRegistry:
     registry = RendererRegistry()
     registry.register_prefix(
+        "event",
+        renderer_id="event.structured",
+        version=1,
+        renderer=_render_structured_event,
+    )
+    registry.register_prefix(
         "event.finance",
         renderer_id="event.finance",
         version=1,
         renderer=_render_finance_event,
+    )
+    registry.register_prefix(
+        "material",
+        renderer_id="material.structured",
+        version=1,
+        renderer=_render_structured_material,
     )
     return registry
 
@@ -540,6 +552,76 @@ def _display_scalar(value: Any) -> str:
 def _display_multiline(value: Any) -> str:
     text = normalize_text(value).replace("\r\n", "\n").replace("\r", "\n")
     return _CONTROL_CHARS.sub(" ", text)
+
+
+_DISPLAY_FIELD_KEY = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
+
+
+def _display_field_value(value: Any) -> str:
+    if isinstance(value, str):
+        return _display_scalar(value)
+    if isinstance(value, (Mapping, list, tuple, bool, int, float)) or value is None:
+        return json.dumps(_json_ready(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return _display_scalar(value)
+
+
+def _parse_structured_semantic_fields(value: str) -> tuple[dict[str, str], str]:
+    text = _display_multiline(value).strip()
+    if not text:
+        return {}, ""
+    fields: dict[str, str] = {}
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        key, separator, raw_value = stripped.partition(":")
+        key = key.strip()
+        field_value = _display_scalar(raw_value)
+        if not separator or not field_value or _DISPLAY_FIELD_KEY.fullmatch(key) is None or key in fields:
+            return {}, text
+        fields[key] = field_value
+    return (fields, "") if fields else ({}, text)
+
+
+def _render_structured_entry(
+    entry: TimelineEntry,
+    timezone: str,
+    *,
+    field_order: Sequence[str],
+    field_aliases: Mapping[str, str] | None = None,
+) -> str:
+    """Render open event/material payloads once while preserving free-form meaning."""
+
+    lines = [_entry_header(entry, timezone)]
+    for actor_line in (
+        _actor_line("actor", entry.namespace.actor),
+        _actor_line("target_actor", entry.target_actor),
+    ):
+        if actor_line:
+            lines.append(actor_line)
+    if entry.correlation_id:
+        lines.append(f"correlation_id: {_display_scalar(entry.correlation_id)}")
+    if entry.trust.value != "untrusted_data":
+        lines.append(f"trust: {entry.trust.value}")
+
+    semantic_fields, free_text = _parse_structured_semantic_fields(entry.semantic_text)
+    aliases = dict(field_aliases or {})
+    merged_fields: dict[str, str] = {aliases.get(key, key): value for key, value in semantic_fields.items()}
+    safe_payload, _ = _sanitize_value(dict(entry.payload))
+    for raw_key, raw_value in dict(safe_payload or {}).items():
+        key = aliases.get(str(raw_key), str(raw_key))
+        if key == "text" and _display_multiline(raw_value).strip() == _display_multiline(entry.semantic_text).strip():
+            continue
+        rendered = _display_field_value(raw_value)
+        if rendered:
+            merged_fields[key] = rendered
+
+    preferred = {name: index for index, name in enumerate(field_order)}
+    for key in sorted(merged_fields, key=lambda item: (preferred.get(item, len(preferred)), item)):
+        lines.append(f"{key}: {merged_fields[key]}")
+    if free_text:
+        lines.extend(("content:", free_text))
+    return "\n".join(lines)
 
 
 def _entry_header(entry: TimelineEntry, timezone: str) -> str:
@@ -585,6 +667,30 @@ def _render_canonical_entry(entry: TimelineEntry, timezone: str) -> str:
 
 
 _FINANCE_ORDER = ("source", "published_at", "title", "summary", "url")
+_MATERIAL_ORDER = (
+    "source",
+    "file_id",
+    "kind",
+    "filename",
+    "mime",
+    "file_status",
+    "status",
+    "derived_status",
+    "reason",
+)
+
+
+def _render_structured_event(entry: TimelineEntry, timezone: str) -> str:
+    return _render_structured_entry(entry, timezone, field_order=_FINANCE_ORDER)
+
+
+def _render_structured_material(entry: TimelineEntry, timezone: str) -> str:
+    return _render_structured_entry(
+        entry,
+        timezone,
+        field_order=_MATERIAL_ORDER,
+        field_aliases={"mime_type": "mime"},
+    )
 
 
 def _render_finance_event(entry: TimelineEntry, timezone: str) -> str:

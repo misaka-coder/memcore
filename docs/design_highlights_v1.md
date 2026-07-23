@@ -132,6 +132,10 @@ V2 使用 raw source_id 找到它所属的完整 turn，并按前后 turn 数读
 合法的 namespaced kind。renderer 可以扩展可读性,但不会因为新增业务类型就复制
 一套 MemCore 逻辑,也不会借渲染器绕过 namespace、visibility 或工具授权。
 
+通用 `event.*` 与 `material.*` 会把结构化字段按稳定顺序渲染一次；若
+`semantic_text` 已经只是同一 payload 的 `key: value` 可读投影，不会再附一份
+重复 `data` JSON。无法由 payload 表达的自由文本仍以 `content` 保留，不以变短为由丢失语义。
+
 ### 18. 后台维护有界,但不把差值切成连续小压缩
 
 一次 `compact_due` 只提交一个 raw compaction generation 和一个 semantic batch。

@@ -165,8 +165,66 @@ class CanonicalRenderingTests(ProjectionBase):
         content = str(first.payloads[0]["content"])
         self.assertIn("event.future.signal", content)
         self.assertIn("张三 (id=qq:1)", content)
-        self.assertLess(content.index('"a":1'), content.index('"z":2'))
+        self.assertIn("content:\n未来事件", content)
+        self.assertLess(content.index("a: 1"), content.index("z: 2"))
+        self.assertNotIn("data:", content)
         self.assertEqual(first.messages[0].projection_status, ProjectionStatus.CANONICAL_FALLBACK)
+
+    def test_generic_event_deduplicates_structured_semantic_text_and_payload(self) -> None:
+        self.mem.begin_turn(
+            stimuli=[
+                _stimulus(
+                    "source: task_workspace\ntask_id: task_1\nstatus: completed\nmessage: 已完成",
+                    source_id="task-event",
+                    kind="event.task.completed",
+                    payload={
+                        "message": "已完成",
+                        "status": "completed",
+                        "task_id": "task_1",
+                        "source": "task_workspace",
+                    },
+                )
+            ],
+            turn_id="task-event-turn",
+        )
+
+        content = str(self.mem.build_context_projection(provider_profile=OPENAI_PROFILE).payloads[0]["content"])
+
+        self.assertEqual(content.count("source: task_workspace"), 1)
+        self.assertEqual(content.count("task_id: task_1"), 1)
+        self.assertEqual(content.count("status: completed"), 1)
+        self.assertEqual(content.count("message: 已完成"), 1)
+        self.assertNotIn("content:", content)
+        self.assertNotIn("data:", content)
+
+    def test_generic_material_merges_readable_anchor_fields_without_json_copy(self) -> None:
+        self.mem.begin_turn(
+            stimuli=[
+                _stimulus(
+                    "source: attachment\nfile_id: file_img_001\nkind: image\nfilename: photo.jpg\n"
+                    "mime: image/jpeg\nfile_status: ready\nderived_status: ocr_ready",
+                    source_id="material-event",
+                    kind="material.reference",
+                    payload={
+                        "file_id": "file_img_001",
+                        "kind": "image",
+                        "filename": "photo.jpg",
+                        "mime_type": "image/jpeg",
+                        "file_status": "ready",
+                        "derived_status": "ocr_ready",
+                    },
+                )
+            ],
+            turn_id="material-event-turn",
+        )
+
+        content = str(self.mem.build_context_projection(provider_profile=OPENAI_PROFILE).payloads[0]["content"])
+
+        self.assertEqual(content.count("file_id: file_img_001"), 1)
+        self.assertEqual(content.count("mime: image/jpeg"), 1)
+        self.assertNotIn("mime_type:", content)
+        self.assertNotIn("content:", content)
+        self.assertNotIn("data:", content)
 
     def test_finance_renderer_is_neutral_and_field_order_is_stable(self) -> None:
         handle = self.mem.begin_turn(
