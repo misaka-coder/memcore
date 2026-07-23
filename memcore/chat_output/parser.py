@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
 from typing import Any
 
-from ..schema import DEFAULT_CATEGORIES, coerce_memory_metadata
+from ..schema import coerce_memory_metadata
 from .schema import ChatOutputMode, ChatOutputParseResult
 from .segmenter import segment_speech
 
@@ -18,7 +17,6 @@ def parse_chat_output(
     output: Any,
     *,
     mode: ChatOutputMode = "auto",
-    categories: Iterable[str] = DEFAULT_CATEGORIES,
     enable_flavor: bool = False,
     enable_sentence_segments: bool = True,
     min_segment_chars: int = 2,
@@ -58,7 +56,6 @@ def parse_chat_output(
     metadata_status = "accepted" if isinstance(metadata_value, dict) else "invalid" if metadata_present else "missing"
     metadata = coerce_memory_metadata(
         metadata_value if isinstance(metadata_value, dict) else None,
-        categories=categories,
         enable_flavor=enable_flavor,
     ).to_dict()
     segments = (

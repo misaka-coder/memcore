@@ -77,13 +77,17 @@ from .native_tools import (
 )
 from .namespace import Actor, Namespace
 from .schema import (
-    DEFAULT_CATEGORIES,
+    ABOUT_ROLES,
+    MEMORY_FACETS,
     MOOD_TAGS,
-    SUBJECT_SCOPES,
+    RETRIEVAL_PRIORITIES,
+    TURN_INTENTS,
     MemoryMetadata,
     SemanticRecord,
     SummaryRecord,
+    build_memory_metadata_instruction,
     coerce_memory_metadata,
+    memory_metadata_has_signal,
 )
 from .runtime import ConversationLockRegistry, MemCoreRuntime
 from .retrieval import (
@@ -95,7 +99,8 @@ from .retrieval import (
     RelationExpansionPlan,
     SemanticFilterPlan,
 )
-from .store.base import LineageClosure, MemoryStore
+from .store.base import LineageClosure, MemoryStore, RawTurnWindow
+from .store.migrations import migrate_legacy_memory_metadata
 from .store.sqlite_store import SQLiteMemoryStore
 from .token_counter import TokenCounter
 from .timeline import (
@@ -148,8 +153,12 @@ __all__ = [
     "SummaryRecord",
     "SemanticRecord",
     "coerce_memory_metadata",
-    "DEFAULT_CATEGORIES",
-    "SUBJECT_SCOPES",
+    "memory_metadata_has_signal",
+    "build_memory_metadata_instruction",
+    "MEMORY_FACETS",
+    "ABOUT_ROLES",
+    "RETRIEVAL_PRIORITIES",
+    "TURN_INTENTS",
     "MOOD_TAGS",
     # 接口
     "LLMClient",
@@ -158,6 +167,8 @@ __all__ = [
     "TaskType",
     "ResponseFormat",
     "MemoryStore",
+    "RawTurnWindow",
+    "migrate_legacy_memory_metadata",
     "SQLiteMemoryStore",
     "VectorIndex",
     "InMemoryVectorIndex",

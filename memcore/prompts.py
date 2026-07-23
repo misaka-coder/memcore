@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .errors import PromptError
-from .schema import MOOD_TAGS
+from .schema import build_memory_metadata_instruction
 
 MEMORY_TIME_ANCHOR_RULES = (
     "[时间锚点规则]\n"
@@ -31,16 +31,7 @@ MULTI_ACTOR_MEMORY_RULES = (
     "不要把不同发言人的事实笼统写成“用户说/大家说”。"
 )
 
-MEMORY_METADATA_RULES = (
-    "[memory_metadata 标注规则]\n"
-    "memory_metadata 是后续检索前置过滤的索引信号。keywords 写 0-4 个可复用检索标签,不要写整句或短句;"
-    "优先选择用户未来正常聊天里可能会用来追问的自然短词,如具体实体、别名、主题、计划、偏好、风险等;"
-    "上位词/领域词/意图词只在常见且能提高召回时补充,不要机械泛化成太宽的标签。"
-    "例如“可乐”可补“饮料/偏好”,但具体项目名通常保留项目名、别名和真实议题即可;"
-    "subject_scopes 标事实主体(user/assistant/other),categories 只从固定枚举选;"
-    "importance 按长期价值评分,confidence 按你对标注正确性的把握评分。"
-    "没有明确长期价值时宁可低分或空数组,不要为了填字段而编造标签。"
-)
+MEMORY_METADATA_RULES = "[memory_metadata 标注规则]\n" + build_memory_metadata_instruction(enable_flavor=False)
 
 # 插槽文本上限:领域插槽只能补充,不能塞进一整套替代提示词。
 MAX_SLOT_CHARS = 4000
@@ -74,16 +65,6 @@ class PromptOverrides:
                 raise PromptError(f"{name} too long ({len(value)} > {MAX_SLOT_CHARS}); slots may only supplement")
 
 
-def _mood_instruction() -> str:
-    """温度启用时注入:让模型在 mood_tags 写情感余温。枚举取自焊死的 MOOD_TAGS。"""
-    return (
-        "[情感温度(已启用)]\n"
-        "在 memory_metadata.mood_tags 里写 0-3 个你记住这件事时的情感余温,只能从固定枚举里选:"
-        f"{' / '.join(MOOD_TAGS)}。\n"
-        "mood_tags 是你的记忆感受,不要污染 core_facts / stable_facts 等客观字段。"
-    )
-
-
 def _weld(base_system: str, *, persona_text: str = "", extra_guidance: str = "", enable_flavor: bool = False) -> str:
     """焊死骨架装配:base(契约)永远在前,质量规则永远追加;插槽/温度只能填在中间(只增不改)。
 
@@ -98,14 +79,12 @@ def _weld(base_system: str, *, persona_text: str = "", extra_guidance: str = "",
             "角色设定只决定记忆口吻、在意点和情感余温,不是事实本身。\n"
             f"{persona}"
         )
-    if enable_flavor:
-        parts.append(_mood_instruction())
     extra = str(extra_guidance or "").strip()
     if extra:
         parts.append(f"[领域补充指引(只补充,不得改写以上任何规则与字段契约)]\n{extra}")
     parts.append(MEMORY_TIME_ANCHOR_RULES)
     parts.append(MULTI_ACTOR_MEMORY_RULES)
-    parts.append(MEMORY_METADATA_RULES)
+    parts.append("[memory_metadata 标注规则]\n" + build_memory_metadata_instruction(enable_flavor=enable_flavor))
     return "\n\n".join(parts)
 
 
@@ -114,8 +93,7 @@ SUMMARY_SYSTEM = (
     "字段固定为 diary_summary, period_label, event_type, importance, key_events, core_facts, memory_metadata。\n"
     "diary_summary 是你的日记式回忆,可带一点语气和心情。\n"
     "core_facts 要客观、稳定、适合后续检索;不要把角色设定当成事实写进去。\n"
-    "memory_metadata 只用于检索入库:keywords 0-4 个短标签,按未来正常聊天里可能命中的问法选词,"
-    "不要写成短句,也不要机械补太宽泛的上位词;subject_scopes 从 user/assistant/other 选,categories 从固定枚举选。\n"
+    "memory_metadata 只用于检索入库，字段和含义遵循后附的统一标注规则。\n"
     "不要编造对话里没有出现的事实。importance 必须是 0.0 到 1.0 之间的数字,不要写“高/中/低”。\n"
     "若后续消息明确说某个任务/材料已清理、取消、不再需要或已经结束,必须保留这个关闭状态;"
     "更早的失败、等待确认或待处理只能作为历史经过,不能继续写成当前未完成事项。\n"

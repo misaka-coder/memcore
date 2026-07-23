@@ -33,12 +33,22 @@ class VectorIndex(ABC):
         self,
         *,
         query_text: str,
-        keywords: list[str],
+        entity_anchors: list[str],
+        topic_terms: list[str],
         where: dict[str, Any],
         n_results: int = 8,
         exclude_source_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """关键词/BM25 检索(文本含多维标签),exclude 为候选前排除;返回含 source_id / tag_score。"""
+        raise NotImplementedError
+
+    def count_candidates(
+        self,
+        *,
+        where: dict[str, Any],
+        exclude_source_ids: list[str] | None = None,
+    ) -> int:
+        """Count the exact pre-scoring candidate set selected by ``where``."""
         raise NotImplementedError
 
     @abstractmethod

@@ -52,6 +52,9 @@ class WhereSpyIndex(VectorIndex):
         self.keyword_wheres.append(dict(kwargs["where"]))
         return []
 
+    def count_candidates(self, **kwargs: Any) -> int:
+        return 1
+
     def delete(self, source_ids: list[str]) -> None:
         return None
 
@@ -150,10 +153,10 @@ def _complete_message_turn(
         semantic_text="收到。",
         provider_output_raw='{"speech":"收到。"}',
         memory_annotation={
-            "keywords": ["可乐"],
-            "categories": ["preference"],
-            "subject_scopes": ["user"],
-            "importance": 0.8,
+            "entity_anchors": ["可乐"],
+            "memory_facets": ["preference"],
+            "about_roles": ["user"],
+            "retrieval_priority": "high",
         },
         annotation_status="accepted",
         timestamp=timestamp + 1,
@@ -213,7 +216,7 @@ class StructuredAdmissionTests(unittest.TestCase):
                 text="我喜欢无糖可乐",
                 timestamp=1000,
             )
-            result = mem.retrieve_structured("无糖可乐", keywords=["无糖可乐"])
+            result = mem.retrieve_structured("无糖可乐", entity_anchors=["无糖可乐"])
             self.assertEqual(result.status, "found")
             self.assertTrue(any(match.kind == "message.user" for match in result.matches))
             self.assertTrue(any("无糖可乐" in match.rendered_text for match in result.matches))
@@ -273,14 +276,14 @@ class StructuredAdmissionTests(unittest.TestCase):
                     turn_id="tool-turn",
                 )
 
-            self.assertEqual(mem.retrieve_structured("北京晴天", keywords=["北京晴天"]).status, "empty")
+            self.assertEqual(mem.retrieve_structured("北京晴天", entity_anchors=["北京晴天"]).status, "empty")
             invalid = mem.retrieve_structured("北京晴天", include_explicit=True)
             self.assertEqual(invalid.status, "invalid")
             self.assertEqual(invalid.reason, "explicit_kind_patterns_required")
 
             result = mem.retrieve_structured(
                 "北京晴天",
-                keywords=["北京晴天"],
+                entity_anchors=["北京晴天"],
                 include_explicit=True,
                 kind_patterns=["tool.web_search.*"],
             )
@@ -313,15 +316,15 @@ class StructuredAdmissionTests(unittest.TestCase):
                 semantic_text="这条事件值得后续观察。",
                 provider_output_raw='{"speech":"这条事件值得后续观察。"}',
                 memory_annotation={
-                    "keywords": ["科创债"],
-                    "categories": ["project_work"],
-                    "subject_scopes": ["other"],
+                    "entity_anchors": ["科创债"],
+                    "memory_facets": ["event"],
+                    "about_roles": ["external"],
                 },
                 annotation_status="accepted",
                 timestamp=2501,
                 source_id="finance-event-final",
             )
-            result = mem.retrieve_structured("科创债", keywords=["科创债"])
+            result = mem.retrieve_structured("科创债", entity_anchors=["科创债"])
             self.assertEqual(result.status, "found")
             self.assertTrue(any(match.kind == "event.finance.flash" for match in result.matches))
         finally:
@@ -340,10 +343,10 @@ class StructuredAdmissionTests(unittest.TestCase):
                 text="我喜欢无糖可乐",
                 timestamp=3000,
             )
-            local = current.retrieve_structured("无糖可乐", keywords=["无糖可乐"])
+            local = current.retrieve_structured("无糖可乐", entity_anchors=["无糖可乐"])
             cross = current.retrieve_structured(
                 "无糖可乐",
-                keywords=["无糖可乐"],
+                entity_anchors=["无糖可乐"],
                 cross_conversation=True,
             )
             self.assertEqual(local.status, "empty")
@@ -376,7 +379,7 @@ class StructuredAdmissionTests(unittest.TestCase):
                 index_schema_version=INDEX_SCHEMA_VERSION,
                 index_key=INDEX_SCHEMA_KEY,
             )
-            result = mem.retrieve_structured("旧兼容可乐", keywords=["旧兼容可乐"])
+            result = mem.retrieve_structured("旧兼容可乐", entity_anchors=["旧兼容可乐"])
             self.assertEqual(result.status, "empty")
         finally:
             mem.close()
@@ -394,7 +397,7 @@ class StructuredAdmissionTests(unittest.TestCase):
                 timestamp=4500,
                 policy=RetrievalPolicy.NEVER,
             )
-            result = mem.retrieve_structured("不可检索秘密", keywords=["不可检索秘密"])
+            result = mem.retrieve_structured("不可检索秘密", entity_anchors=["不可检索秘密"])
             self.assertEqual(result.status, "empty")
             stored = store.get_retrieval_record(namespace=mem.namespace, source_id="never-user")
             self.assertEqual(stored["retrieval_visibility"], "never")
@@ -515,7 +518,7 @@ class StructuredAdmissionTests(unittest.TestCase):
 
 
 class HardFilterPlanningTests(unittest.TestCase):
-    def test_semantic_relaxation_never_removes_visibility_kind_or_conversation(self) -> None:
+    def test_facets_and_roles_are_never_silently_relaxed(self) -> None:
         store = SQLiteMemoryStore(":memory:")
         embedding = HashedEmbeddingProvider()
         index = WhereSpyIndex()
@@ -523,18 +526,14 @@ class HardFilterPlanningTests(unittest.TestCase):
         try:
             result = mem.retrieve_structured(
                 "金融风险",
-                categories=["preference"],
-                subject_scopes=["user"],
-                importance_min=0.9,
+                memory_facets=["preference"],
+                about_roles=["user"],
                 include_explicit=True,
                 kind_patterns=["event.finance.*"],
             )
             self.assertEqual(result.status, "empty")
-            self.assertEqual(
-                result.relaxation_steps,
-                ("drop_importance", "drop_categories", "drop_subject_scopes"),
-            )
-            self.assertEqual(len(index.semantic_wheres), 4)
+            self.assertEqual(result.relaxation_steps, ())
+            self.assertEqual(len(index.semantic_wheres), 2)
             for where in index.semantic_wheres:
                 self.assertEqual(where["conversation_id"], "c1")
                 self.assertEqual(where["index_schema_version"], INDEX_SCHEMA_VERSION)

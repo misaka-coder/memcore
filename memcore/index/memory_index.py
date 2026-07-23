@@ -3,7 +3,7 @@
 实现 VectorIndex 全部能力(语义 cosine + 关键词 BM25 + where 硬过滤),不依赖任何外部服务,
 让检索主干(混合 + RRF + 放宽)在无 chroma/无网络下可单测。生产可换 ChromaVectorIndex 等。
 
-关键词侧文本拼入多维标签(keywords/categories/subjects/moods),让标签双向赋能。
+关键词侧文本拼入实体、主题、facet、主体和 mood 标签，让结构化标注参与召回。
 """
 
 from __future__ import annotations
@@ -134,9 +134,10 @@ def _keyword_doc_text(document: str, metadata: dict[str, Any]) -> str:
         str(metadata.get(field_key, "") or "")
         for field_key in (
             "semantic_tags_text",
-            "memory_keywords_text",
-            "memory_categories_text",
-            "memory_subject_scopes_text",
+            "memory_entity_text",
+            "memory_topic_text",
+            "memory_facets_text",
+            "memory_about_roles_text",
             "memory_mood_tags_text",
         )
     )
@@ -256,7 +257,8 @@ class InMemoryVectorIndex(VectorIndex):
         self,
         *,
         query_text: str,
-        keywords: list[str],
+        entity_anchors: list[str],
+        topic_terms: list[str],
         where: dict[str, Any],
         n_results: int = 8,
         exclude_source_ids: list[str] | None = None,
@@ -268,9 +270,14 @@ class InMemoryVectorIndex(VectorIndex):
         if not candidates:
             return []
 
-        query_terms = [
-            term for keyword in (keywords or []) if str(keyword).strip() for term in tokenize(str(keyword))
-        ] or tokenize(query_text)
+        base_terms = tokenize(query_text)
+        entity_terms = [
+            term for entity in (entity_anchors or []) if str(entity).strip() for term in tokenize(str(entity))
+        ]
+        topic_query_terms = [
+            term for topic in (topic_terms or []) if str(topic).strip() for term in tokenize(str(topic))
+        ]
+        query_terms = [*base_terms, *entity_terms, *entity_terms, *entity_terms, *topic_query_terms]
         if not query_terms:
             return []
 
@@ -299,6 +306,17 @@ class InMemoryVectorIndex(VectorIndex):
             )
         hits.sort(key=lambda item: item["tag_score"], reverse=True)
         return hits[: max(1, int(n_results))]
+
+    def count_candidates(
+        self,
+        *,
+        where: dict[str, Any],
+        exclude_source_ids: list[str] | None = None,
+    ) -> int:
+        excluded = {str(source_id) for source_id in (exclude_source_ids or [])}
+        with self._lock:
+            snapshot = list(self._entries.values())
+        return len(_candidate_entries(snapshot, where=where, excluded=excluded))
 
     @staticmethod
     def _bm25(

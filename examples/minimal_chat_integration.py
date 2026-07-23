@@ -56,11 +56,12 @@ class DemoMemoryLLM(LLMClient):
                 "key_events": ["用户询问自己之前喜欢喝什么"],
                 "core_facts": ["用户关心自己过往表达过的偏好"],
                 "memory_metadata": {
-                    "keywords": ["可乐", "饮料", "偏好"],
-                    "subject_scopes": ["user"],
-                    "categories": ["memory_query", "preference"],
-                    "importance": 0.55,
-                    "confidence": 0.85,
+                    "turn_intent": "memory_query",
+                    "memory_facets": ["preference"],
+                    "about_roles": ["user"],
+                    "entity_anchors": ["可乐"],
+                    "topic_terms": ["饮料", "偏好"],
+                    "retrieval_priority": "normal",
                 },
             }
             return LLMResult(ok=True, data=data, attempts=1)
@@ -74,11 +75,11 @@ class DemoMemoryLLM(LLMClient):
                 "important_people": [],
                 "open_loops": [],
                 "memory_metadata": {
-                    "keywords": ["偏好", "饮料", "记忆查询"],
-                    "subject_scopes": ["user"],
-                    "categories": ["preference", "memory_query"],
-                    "importance": 0.65,
-                    "confidence": 0.8,
+                    "memory_facets": ["preference"],
+                    "about_roles": ["user"],
+                    "entity_anchors": ["可乐"],
+                    "topic_terms": ["偏好", "饮料", "记忆查询"],
+                    "retrieval_priority": "high",
                 },
             }
             return LLMResult(ok=True, data=data, attempts=1)
@@ -118,12 +119,13 @@ def fake_chat_model(
         {
             "speech": speech,
             "memory_metadata": {
-                "keywords": ["可乐", "饮料", "偏好"],
-                "subject_scopes": ["user"],
-                "categories": ["memory_query", "preference"],
+                "turn_intent": "memory_query",
+                "memory_facets": [],
+                "about_roles": ["user"],
+                "entity_anchors": ["可乐"],
+                "topic_terms": ["饮料", "偏好"],
+                "retrieval_priority": "low",
                 "mood_tags": [],
-                "importance": 0.55,
-                "confidence": 0.9,
             },
         },
         ensure_ascii=False,
@@ -181,11 +183,11 @@ def main() -> None:
                 semantic_text="记住了,你偏好无糖可乐。",
                 provider_output_raw="记住了,你偏好无糖可乐。",
                 memory_annotation={
-                    "keywords": ["可乐", "饮料", "无糖"],
-                    "subject_scopes": ["user"],
-                    "categories": ["preference"],
-                    "importance": 0.8,
-                    "confidence": 0.95,
+                    "memory_facets": ["preference"],
+                    "about_roles": ["user"],
+                    "entity_anchors": ["可乐", "无糖可乐"],
+                    "topic_terms": ["饮料", "无糖"],
+                    "retrieval_priority": "high",
                 },
                 annotation_status=AnnotationStatus.ACCEPTED_HOST,
                 timestamp=ts(2026, 4, 10, 9, 1),
@@ -237,14 +239,13 @@ def main() -> None:
 
             retrieved = retrieve_memory(
                 "用户喜欢喝什么",
-                keywords=["可乐", "饮料"],
-                categories=["preference"],
-                subject_scopes=["user"],
-                importance_min=0.4,
+                entity_anchors=["可乐"],
+                topic_terms=["饮料"],
+                memory_facets=["preference"],
+                about_roles=["user"],
             )
             timeline = read_timeline("2026-04-10", cross_conversation=True)
             output_contract = build_chat_output_contract_prompt(
-                categories=config.categories,
                 enable_flavor=config.enable_flavor,
                 enable_sentence_segments=True,
             )
@@ -259,7 +260,6 @@ def main() -> None:
             parsed = parse_chat_output(
                 raw_output,
                 mode="memcore_json",
-                categories=config.categories,
                 enable_flavor=config.enable_flavor,
             )
             if not parsed.ok:

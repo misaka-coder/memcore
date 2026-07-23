@@ -22,7 +22,7 @@ from memcore import (
     SchemaError,
 )
 from memcore.namespace import Actor
-from memcore.store.migrations import CURRENT_SCHEMA_VERSION
+from memcore.store.migrations import CURRENT_SCHEMA_VERSION, _migrate_v1_to_v2
 
 
 class _NoopLLM(LLMClient):
@@ -194,6 +194,18 @@ def _create_v1_database(path: Path) -> None:
         connection.close()
 
 
+def _create_v2_database(path: Path) -> None:
+    _create_v1_database(path)
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        _migrate_v1_to_v2(connection)
+        connection.execute("PRAGMA user_version = 2")
+        connection.commit()
+    finally:
+        connection.close()
+
+
 def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
     return {str(row[1]) for row in connection.execute(f'PRAGMA table_info("{table}")').fetchall()}
 
@@ -210,7 +222,11 @@ class LatestSchemaTests(unittest.TestCase):
                 role="user",
                 content="我喜欢热咖啡。",
                 timestamp=100,
-                memory_metadata={"keywords": ["咖啡"], "categories": ["preference"]},
+                memory_metadata={
+                    "entity_anchors": ["咖啡"],
+                    "memory_facets": ["preference"],
+                    "about_roles": ["user"],
+                },
             )
             operation = store.add_summary(
                 namespace=namespace,
@@ -221,7 +237,7 @@ class LatestSchemaTests(unittest.TestCase):
                 role="user.attachment image file-1",
                 content="file_id: file-1",
                 timestamp=102,
-                memory_metadata={"keywords": ["photo.jpg"], "categories": ["material_trace"]},
+                memory_metadata={},
             )
             store.close()
 
@@ -273,6 +289,37 @@ class LatestSchemaTests(unittest.TestCase):
 
 
 class V1MigrationTests(unittest.TestCase):
+    def test_v2_database_is_converted_once_and_every_layer_is_marked_for_reindex(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "v2.sqlite3"
+            _create_v2_database(path)
+
+            store = SQLiteMemoryStore(str(path))
+            records = [
+                store.get_record_by_source_id("user-1"),
+                store.get_record_by_source_id("mixed-summary"),
+                store.get_record_by_source_id("semantic-1"),
+            ]
+            store.close()
+
+            for record in records:
+                self.assertIsNotNone(record)
+                metadata = record["memory_metadata"]
+                self.assertFalse(
+                    {"keywords", "categories", "subject_scopes", "importance", "confidence"} & set(metadata)
+                )
+                self.assertEqual(record["index_status"], "pending")
+                self.assertEqual(record["index_schema_version"], 0)
+                self.assertEqual(record["index_key"], "")
+
+            reopened = SQLiteMemoryStore(str(path))
+            self.assertEqual(reopened.schema_version, 3)
+            self.assertEqual(
+                reopened.get_record_by_source_id("user-1")["memory_metadata"],
+                records[0]["memory_metadata"],
+            )
+            reopened.close()
+
     def test_v1_database_is_backfilled_without_losing_content_or_semantics(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "legacy.sqlite3"
@@ -293,7 +340,11 @@ class V1MigrationTests(unittest.TestCase):
 
             self.assertEqual(user["kind"], "message.user")
             self.assertEqual(user["semantic_text"], "我喜欢无糖可乐。")
-            self.assertEqual(user["annotation_status"], "accepted_legacy")
+            self.assertEqual(user["annotation_status"], "accepted_host")
+            self.assertEqual(user["annotation_source"], "schema_v3_migration")
+            self.assertEqual(user["memory_metadata"]["memory_facets"], ["preference"])
+            self.assertEqual(user["memory_metadata"]["topic_terms"], ["可乐"])
+            self.assertEqual(user["memory_metadata"]["retrieval_priority"], "high")
             self.assertEqual(user["retrieval_visibility"], "default")
 
             self.assertEqual(call["kind"], "tool.web_search.call")
@@ -302,16 +353,14 @@ class V1MigrationTests(unittest.TestCase):
             self.assertEqual(result["turn_role"], "observation")
             self.assertEqual(call["correlation_id"], "call_001")
             self.assertEqual(result["correlation_id"], "call_001")
-            # Foundation phase copies trace identity to the V2 field but keeps the
-            # V1 category until retrieval/compaction consumers cut over together.
-            self.assertEqual(call["memory_metadata"]["categories"], ["tool_trace"])
-            self.assertEqual(call["trace_metadata"]["legacy_categories"], ["tool_trace"])
+            self.assertEqual(call["memory_metadata"]["memory_facets"], [])
+            self.assertNotIn("legacy_categories", call["trace_metadata"])
             self.assertEqual(call["retrieval_visibility"], "explicit")
 
             self.assertEqual(event["kind"], "event.qq.poke")
-            self.assertEqual(event["memory_metadata"]["categories"], ["event_trace", "social_event"])
-            self.assertEqual(event["trace_metadata"]["legacy_categories"], ["event_trace"])
-            self.assertEqual(event["annotation_status"], "accepted_legacy")
+            self.assertEqual(event["memory_metadata"]["topic_terms"], ["戳一戳"])
+            self.assertNotIn("legacy_categories", event["trace_metadata"])
+            self.assertEqual(event["annotation_status"], "accepted_host")
 
             self.assertTrue(legacy["kind"].startswith("legacy."))
             self.assertEqual(legacy["content"], "旧内容必须保留。")
@@ -325,12 +374,14 @@ class V1MigrationTests(unittest.TestCase):
 
             self.assertEqual(mixed["kind"], "memory.episode_summary")
             self.assertEqual(mixed["retrieval_visibility"], "default")
-            self.assertEqual(mixed["memory_metadata"]["categories"], ["preference", "tool_trace"])
-            self.assertEqual(mixed["trace_metadata"]["legacy_categories"], ["tool_trace"])
+            self.assertEqual(mixed["memory_metadata"]["memory_facets"], ["preference"])
+            self.assertEqual(mixed["memory_metadata"]["topic_terms"], ["可乐"])
+            self.assertNotIn("legacy_categories", mixed["trace_metadata"])
             self.assertEqual(trace["kind"], "memory.operation_digest")
             self.assertEqual(trace["retrieval_visibility"], "explicit")
             self.assertEqual(trace["semanticize"], 0)
-            self.assertEqual(semantic["memory_metadata"]["categories"], ["preference", "tool_trace"])
+            self.assertEqual(semantic["memory_metadata"]["memory_facets"], ["preference"])
+            self.assertEqual(semantic["memory_metadata"]["topic_terms"], ["无糖饮料"])
             self.assertEqual(semantic["annotation_status"], "derived")
             self.assertEqual(
                 {item["index_status"] for item in (user, call, result, event, material, mixed, trace, semantic)},
@@ -382,7 +433,8 @@ class V1MigrationTests(unittest.TestCase):
             try:
                 mem.reindex_all()
                 default_hits = mem.retrieve("晴天")
-                category_hits = mem.retrieve("晴天", categories=["tool_trace"])
+                with self.assertRaises(TypeError):
+                    mem.retrieve("晴天", categories=["tool_trace"])
                 explicit = mem.retrieve_structured(
                     "晴天",
                     include_explicit=True,
@@ -390,8 +442,8 @@ class V1MigrationTests(unittest.TestCase):
                 )
 
                 self.assertFalse(any("晴天" in item for item in default_hits))
-                self.assertFalse(any("晴天" in item for item in category_hits))
-                self.assertEqual(explicit.status, "empty")
+                self.assertEqual(explicit.status, "found")
+                self.assertTrue(any("晴天" in item for item in explicit.rendered_texts))
             finally:
                 mem.close()
                 store.close()

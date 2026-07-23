@@ -48,10 +48,10 @@ class WriteAndIdempotency(StoreSliceBase):
             role="user",
             content="x",
             timestamp=100,
-            memory_metadata={"keywords": ["可乐"], "importance": 0.7},
+            memory_metadata={"entity_anchors": ["可乐"], "retrieval_priority": "high"},
         )
         got = self.store.get_record_by_source_id(rec["source_id"])
-        self.assertEqual(got["memory_metadata"]["keywords"], ["可乐"])
+        self.assertEqual(got["memory_metadata"]["entity_anchors"], ["可乐"])
 
     def test_update_message_memory_metadata_sets_pending(self) -> None:
         self.store.add_message(namespace=self.ns, role="user", content="x", timestamp=100, source_id="s1")
@@ -59,10 +59,10 @@ class WriteAndIdempotency(StoreSliceBase):
         updated = self.store.update_message_memory_metadata(
             namespace=self.ns,
             source_id="s1",
-            memory_metadata={"keywords": ["英伟达"], "importance": 0.8},
+            memory_metadata={"entity_anchors": ["英伟达"], "retrieval_priority": "high"},
         )
         self.assertIsNotNone(updated)
-        self.assertEqual(updated["memory_metadata"]["keywords"], ["英伟达"])
+        self.assertEqual(updated["memory_metadata"]["entity_anchors"], ["英伟达"])
         self.assertEqual(updated["index_status"], "pending")  # metadata 变了,raw index 必须重建
         self.assertEqual({r["source_id"] for r in self.store.list_pending_index()}, {"s1"})
 
@@ -91,7 +91,7 @@ class Isolation(StoreSliceBase):
             self.store.update_message_memory_metadata(
                 namespace=other,
                 source_id="s1",
-                memory_metadata={"keywords": ["污染"]},
+                memory_metadata={"entity_anchors": ["污染"]},
             )
 
     def test_update_message_memory_metadata_rejects_cross_conversation(self) -> None:
@@ -101,7 +101,7 @@ class Isolation(StoreSliceBase):
             self.store.update_message_memory_metadata(
                 namespace=other,
                 source_id="s1",
-                memory_metadata={"keywords": ["污染"]},
+                memory_metadata={"entity_anchors": ["污染"]},
             )
 
 

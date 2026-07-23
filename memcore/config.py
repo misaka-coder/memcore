@@ -6,7 +6,7 @@
 焊死的承重不变量(不可绕过):
 - raw 压缩只按 provider projection token 触发，并按完整 terminal turn/component 落切点。
 - `episodic_compact_batch_size < episodic_compact_trigger_count`。
-- 所有窗口/阈值为正;重叠阈值 >= 1;categories 为非空固定枚举。
+- 所有窗口/阈值为正;重叠阈值 >= 1;模型元数据枚举由 schema 固定而非宿主配置。
 - TokenCounter 可由宿主显式注入；缺失时 raw 规划使用带 quality 标记的估算，不伪装成精确 tokenizer。
 """
 
@@ -16,7 +16,6 @@ import math
 from dataclasses import dataclass
 
 from .errors import ConfigError
-from .schema import DEFAULT_CATEGORIES
 
 
 @dataclass
@@ -31,7 +30,8 @@ class MemoryConfig:
 
     # --- provider projection 与检索预算 ---
     # token 决定何时压缩和大致压缩多少，完整 terminal turn/component 决定实际边界。
-    retrieval_result_token_budget: int = 2000
+    # 0 表示 MemCore 不裁剪检索结果；正值仅供宿主显式选择，不由 MemCore 自动推断。
+    retrieval_result_token_budget: int = 0
     projection_profile: str = "canonical_user_assistant"
     compaction_min_recent_turns: int = 1
     compaction_schema_version: int = 2
@@ -49,9 +49,6 @@ class MemoryConfig:
     retrieval_min_fused_score: float = 0.0
     enable_verifier: bool = True  # verifier 门:片段进 prompt 前先校验筛选
     llm_max_retries: int = 2  # 结构化 LLM 调用建议重试次数;失败仍不提交空记忆
-
-    # --- 领域词表(固定枚举,可换内容,不可空) ---
-    categories: tuple[str, ...] = DEFAULT_CATEGORIES
 
     # --- 可见层作用域 ---
     # "conversation":可见 episodic/semantic 只看当前会话(金融/客服安全,默认)。
@@ -126,11 +123,3 @@ class MemoryConfig:
             raise ConfigError(
                 f"visible_memory_scope must be 'conversation' or 'user', got {self.visible_memory_scope!r}"
             )
-
-        # categories 必须是非空、去重的固定枚举。
-        cats = tuple(str(c).strip() for c in self.categories if str(c).strip())
-        if not cats:
-            raise ConfigError("categories must be a non-empty enum")
-        if len(set(cats)) != len(cats):
-            raise ConfigError(f"categories must not contain duplicates: {self.categories!r}")
-        self.categories = cats

@@ -14,7 +14,7 @@ from typing import Any, Iterable
 
 from ..errors import SchemaError
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 _CORE_TABLES = frozenset({"messages", "summaries", "semantic_summaries"})
 _TRACE_CATEGORIES = frozenset({"event_trace", "material_trace", "tool_trace"})
@@ -472,12 +472,14 @@ def migrate_database(connection: sqlite3.Connection) -> int:
         else:
             if has_core != _CORE_TABLES:
                 raise SchemaError("sqlite_schema_partial_core_tables")
-            if version not in {0, 1, CURRENT_SCHEMA_VERSION}:
+            if version not in {0, 1, 2, CURRENT_SCHEMA_VERSION}:
                 raise SchemaError("sqlite_schema_unsupported_version")
-            if version < CURRENT_SCHEMA_VERSION:
+            if version < 2:
                 _migrate_v1_to_v2(connection)
             else:
                 _execute_statements(connection, LATEST_SCHEMA_STATEMENTS)
+            if version < 3:
+                _migrate_v2_to_v3(connection)
 
         _validate_latest_schema(connection)
         connection.execute(f"PRAGMA user_version = {CURRENT_SCHEMA_VERSION}")
@@ -502,6 +504,167 @@ def _migrate_v1_to_v2(connection: sqlite3.Connection) -> None:
     _backfill_messages(connection)
     _backfill_summaries(connection)
     _backfill_semantic_summaries(connection)
+
+
+def _migrate_v2_to_v3(connection: sqlite3.Connection) -> None:
+    """Replace the V1 metadata JSON contract and invalidate every old index entry."""
+
+    for table, id_column in (
+        ("messages", "source_id"),
+        ("summaries", "summary_id"),
+        ("semantic_summaries", "semantic_id"),
+    ):
+        rows = connection.execute(
+            f"SELECT {id_column}, memory_metadata_json FROM {table} ORDER BY {id_column}"
+        ).fetchall()
+        for row in rows:
+            connection.execute(
+                f"""
+                UPDATE {table}
+                SET memory_metadata_json = ?, index_status = 'pending',
+                    index_schema_version = 0, index_key = ''
+                WHERE {id_column} = ?
+                """,
+                (_json_dumps(migrate_legacy_memory_metadata(_load_json_object(row[1]))), str(row[0])),
+            )
+
+    message_rows = connection.execute(
+        "SELECT source_id, annotation_status, trace_metadata_json, memory_metadata_json FROM messages"
+    ).fetchall()
+    for row in message_rows:
+        source_id = str(row[0])
+        annotation_status = str(row[1] or "")
+        trace_metadata = _load_json_object(row[2])
+        trace_metadata.pop("legacy_categories", None)
+        metadata = _load_json_object(row[3])
+        if annotation_status == "accepted_legacy":
+            accepted = _has_target_semantic_metadata(metadata)
+            connection.execute(
+                """
+                UPDATE messages
+                SET annotation_status = ?, annotation_source = ?, retrieval_visibility = ?,
+                    trace_metadata_json = ?
+                WHERE source_id = ?
+                """,
+                (
+                    "accepted_host" if accepted else "unannotated",
+                    "schema_v3_migration" if accepted else "",
+                    "default" if accepted else "explicit",
+                    _json_dumps(trace_metadata),
+                    source_id,
+                ),
+            )
+        else:
+            connection.execute(
+                "UPDATE messages SET trace_metadata_json = ? WHERE source_id = ?",
+                (_json_dumps(trace_metadata), source_id),
+            )
+
+    summary_rows = connection.execute("SELECT summary_id, trace_metadata_json FROM summaries").fetchall()
+    for row in summary_rows:
+        trace_metadata = _load_json_object(row[1])
+        trace_metadata.pop("legacy_categories", None)
+        connection.execute(
+            "UPDATE summaries SET trace_metadata_json = ? WHERE summary_id = ?",
+            (_json_dumps(trace_metadata), str(row[0])),
+        )
+
+
+def migrate_legacy_memory_metadata(data: Any) -> dict[str, Any]:
+    """One-time schema-2/import adapter; active runtime code must not dual-read old keys."""
+
+    metadata = dict(data) if isinstance(data, dict) else {}
+    old_categories = _unique_strings(metadata.get("categories"))
+    facets = _unique_strings(metadata.get("memory_facets"))
+    facet_mapping = {
+        "preference": "preference",
+        "personal_profile": "profile",
+        "plan_goal": "plan",
+        "relationship": "relationship",
+        "emotion_state": "state",
+        "life_event": "event",
+    }
+    facets = _unique_strings([*facets, *(facet_mapping[item] for item in old_categories if item in facet_mapping)])
+    allowed_facets = {
+        "profile",
+        "preference",
+        "viewpoint",
+        "relationship",
+        "event",
+        "state",
+        "plan",
+        "decision",
+        "constraint",
+        "knowledge",
+        "procedure",
+    }
+    facets = [item for item in facets if item in allowed_facets]
+
+    roles = _unique_strings(metadata.get("about_roles"))
+    for scope in _unique_strings(metadata.get("subject_scopes")):
+        if scope in {"user", "assistant"}:
+            roles.append(scope)
+        elif scope == "other":
+            roles.extend(("third_party", "external"))
+    roles = [item for item in _unique_strings(roles) if item in {"user", "assistant", "third_party", "external"}]
+
+    turn_intent = str(metadata.get("turn_intent") or "").strip()
+    if "memory_query" in old_categories:
+        turn_intent = "memory_query"
+    if turn_intent != "memory_query":
+        turn_intent = ""
+
+    priority = str(metadata.get("retrieval_priority") or "").strip().lower()
+    if priority not in {"low", "normal", "high", "critical"}:
+        priority = _priority_from_legacy_importance(metadata.get("importance"))
+
+    return {
+        "turn_intent": turn_intent,
+        "memory_facets": facets,
+        "about_roles": roles,
+        "entity_anchors": _unique_strings(metadata.get("entity_anchors")),
+        "topic_terms": _unique_strings(
+            [*(_unique_strings(metadata.get("topic_terms"))), *(_unique_strings(metadata.get("keywords")))]
+        ),
+        "retrieval_priority": priority,
+        "mood_tags": _unique_strings(metadata.get("mood_tags"))[:3],
+    }
+
+
+def _priority_from_legacy_importance(value: Any) -> str:
+    try:
+        importance = float(value)
+    except (TypeError, ValueError):
+        importance = 0.0
+    if importance >= 0.85:
+        return "critical"
+    if importance >= 0.65:
+        return "high"
+    if importance >= 0.25:
+        return "normal"
+    return "low"
+
+
+def _unique_strings(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    output: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        text = str(item or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            output.append(text)
+    return output
+
+
+def _has_target_semantic_metadata(metadata: dict[str, Any]) -> bool:
+    if any(
+        _unique_strings(metadata.get(key))
+        for key in ("memory_facets", "about_roles", "entity_anchors", "topic_terms", "mood_tags")
+    ):
+        return True
+    return str(metadata.get("retrieval_priority") or "normal") in {"high", "critical"}
 
 
 def _add_missing_columns(connection: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:

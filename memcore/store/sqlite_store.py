@@ -59,7 +59,7 @@ from ..timeline import (
     TurnStatus,
     resolve_retrieval_visibility,
 )
-from .base import LineageClosure, MemoryStore
+from .base import LineageClosure, MemoryStore, RawTurnWindow
 from .migrations import migrate_database, project_legacy_role
 
 _JSON_FIELDS = {
@@ -104,16 +104,10 @@ def _json_dumps(value: Any) -> str:
 
 def _has_semantic_metadata(value: Any) -> bool:
     metadata = value if isinstance(value, dict) else {}
-    for key in ("keywords", "subject_scopes", "categories", "mood_tags"):
+    for key in ("memory_facets", "about_roles", "entity_anchors", "topic_terms", "mood_tags"):
         if list(metadata.get(key) or []):
             return True
-    for key in ("importance", "confidence"):
-        try:
-            if float(metadata.get(key) or 0.0) > 0:
-                return True
-        except (TypeError, ValueError):
-            continue
-    return False
+    return str(metadata.get("retrieval_priority") or "normal").strip().lower() in {"high", "critical"}
 
 
 class SQLiteMemoryStore(MemoryStore):
@@ -1501,27 +1495,9 @@ class SQLiteMemoryStore(MemoryStore):
 
     @staticmethod
     def _compatibility_memory_metadata(entry: TimelineEntryInput) -> dict[str, Any]:
-        """Keep current V1 trace consumers working until their V2 cutover."""
+        """Project typed entries without reintroducing V1 trace categories."""
 
-        metadata = dict(entry.memory_metadata)
-        trace_category = ""
-        if entry.kind.startswith("tool."):
-            trace_category = "tool_trace"
-        elif entry.kind.startswith("material."):
-            trace_category = "material_trace"
-        elif entry.kind.startswith("event.") and entry.annotation_status is AnnotationStatus.UNANNOTATED:
-            trace_category = "event_trace"
-        if not trace_category:
-            return metadata
-        categories = [str(item) for item in list(metadata.get("categories") or []) if str(item or "").strip()]
-        if trace_category not in categories:
-            categories.append(trace_category)
-        metadata["categories"] = categories
-        metadata.setdefault("keywords", [entry.kind])
-        metadata.setdefault("subject_scopes", ["assistant" if trace_category == "tool_trace" else "other"])
-        metadata.setdefault("importance", 0.2)
-        metadata.setdefault("confidence", 1.0)
-        return metadata
+        return dict(entry.memory_metadata)
 
     @staticmethod
     def _completion_annotation_metadata(
@@ -2221,6 +2197,74 @@ class SQLiteMemoryStore(MemoryStore):
                 [*params, int(seq_no) - int(window), int(seq_no) + int(window)],
             ).fetchall()
         return [self._row_to_record(r, "messages") for r in rows]
+
+    def get_raw_turn_window(
+        self,
+        *,
+        namespace: Namespace,
+        anchor_source_id: str,
+        before_turns: int,
+        after_turns: int,
+    ) -> RawTurnWindow:
+        anchor_id = str(anchor_source_id or "").strip()
+        before = max(0, int(before_turns))
+        after = max(0, int(after_turns))
+        if not anchor_id:
+            return RawTurnWindow(status="invalid", reason="anchor_source_id_required")
+        scope_clause, params = self._scope_clause(namespace, with_conversation=True)
+        with self._lock:
+            anchor = self._conn.execute(
+                f"SELECT * FROM messages WHERE {scope_clause} AND source_id = ?",
+                [*params, anchor_id],
+            ).fetchone()
+            if anchor is None:
+                return RawTurnWindow(
+                    status="empty",
+                    anchor_source_id=anchor_id,
+                    before_turns=before,
+                    after_turns=after,
+                    reason="anchor_not_found_or_out_of_scope",
+                )
+            rows = self._conn.execute(
+                f"SELECT * FROM messages WHERE {scope_clause} ORDER BY seq_no",
+                params,
+            ).fetchall()
+
+        groups: list[list[sqlite3.Row]] = []
+        group_indexes: dict[tuple[str, str], int] = {}
+        anchor_group = -1
+        for row in rows:
+            turn_id = str(row["turn_id"] or "").strip()
+            key = ("turn", turn_id) if turn_id else ("source", str(row["source_id"]))
+            group_index = group_indexes.get(key)
+            if group_index is None:
+                group_index = len(groups)
+                group_indexes[key] = group_index
+                groups.append([])
+            groups[group_index].append(row)
+            if str(row["source_id"]) == anchor_id:
+                anchor_group = group_index
+
+        if anchor_group < 0:
+            return RawTurnWindow(
+                status="empty",
+                anchor_source_id=anchor_id,
+                before_turns=before,
+                after_turns=after,
+                reason="anchor_not_found_or_out_of_scope",
+            )
+        start = max(0, anchor_group - before)
+        end = min(len(groups), anchor_group + after + 1)
+        selected_rows = [row for group in groups[start:end] for row in group]
+        entries = tuple(TimelineEntry.from_record(self._row_to_record(row, "messages")) for row in selected_rows)
+        return RawTurnWindow(
+            status="found" if entries else "empty",
+            entries=entries,
+            anchor_source_id=anchor_id,
+            before_turns=before,
+            after_turns=after,
+            reason="" if entries else "no_entries",
+        )
 
     def get_unsummarized_messages(self, *, namespace: Namespace) -> list[dict[str, Any]]:
         scope_clause, params = self._scope_clause(namespace, with_conversation=True)

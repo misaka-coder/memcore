@@ -1,14 +1,7 @@
-"""焊死的输出字段契约 —— 这是 memcore 的皇冠明珠。
+"""MemCore 唯一的模型可写记忆元数据契约。
 
-提示词、存储、检索过滤、片段渲染**四方共用**这套字段名与类型。改一个字段名,四处静默崩。
-因此:
-
-- **枚举焊死**(categories / subject_scopes / mood_tags):领域可换具体词表(经 MemoryConfig 校验),
-  但取值必须来自固定枚举,模型不许自由发挥。
-- **数值焊死**(importance / confidence 必须是 0..1)。
-- **校验即插槽**:外部/模型给的数据先过 `coerce_*`,非法值被丢弃或回退,而不是污染记忆。
-
-本切片只定义契约与校验;真正的入库/检索在后续切片消费这些契约。
+提示词、存储、压缩、索引和检索工具都必须从这里读取字段名与枚举，宿主不能
+另写一套同义 schema。系统掌握的 namespace/kind/lineage 等事实不属于模型元数据。
 """
 
 from __future__ import annotations
@@ -18,27 +11,25 @@ from typing import Any, Iterable
 
 from .errors import SchemaError
 
-# --- 焊死枚举(默认词表;领域可经 MemoryConfig 覆盖,但仍是"固定枚举") ---
+# --- 固定协议枚举 ---
 
-DEFAULT_CATEGORIES: tuple[str, ...] = (
-    "casual",
+MEMORY_FACETS: tuple[str, ...] = (
+    "profile",
     "preference",
-    "personal_profile",
-    "plan_goal",
-    "project_work",
+    "viewpoint",
     "relationship",
-    "emotion_state",
-    "life_event",
-    "memory_query",
-    "system_meta",
-    "event_trace",
-    "tool_trace",
-    "material_trace",
+    "event",
+    "state",
+    "plan",
+    "decision",
+    "constraint",
+    "knowledge",
+    "procedure",
 )
 
-TRACE_CATEGORIES: tuple[str, ...] = ("event_trace", "tool_trace", "material_trace")
-
-SUBJECT_SCOPES: tuple[str, ...] = ("user", "assistant", "other")
+ABOUT_ROLES: tuple[str, ...] = ("user", "assistant", "third_party", "external")
+RETRIEVAL_PRIORITIES: tuple[str, ...] = ("low", "normal", "high", "critical")
+TURN_INTENTS: tuple[str, ...] = ("memory_query",)
 
 MOOD_TAGS: tuple[str, ...] = (
     "calm",
@@ -59,19 +50,8 @@ MOOD_TAGS: tuple[str, ...] = (
     "determined",
 )
 
-# 各列表字段的上限(与设计文档一致:keywords 0-4、mood 0-3)
-MAX_KEYWORDS = 4
+# mood 是有限表现枚举；实体、主题和 facet 不设隐藏长度/token 裁剪。
 MAX_MOOD_TAGS = 3
-
-
-def _clamp01(value: Any) -> float:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return 0.0
-    if number != number:  # NaN
-        return 0.0
-    return max(0.0, min(1.0, number))
 
 
 def _coerce_str_list(value: Any, *, limit: int | None = None) -> list[str]:
@@ -109,44 +89,99 @@ def _coerce_enum_list(value: Any, allowed: Iterable[str], *, limit: int | None =
 class MemoryMetadata:
     """检索入库元数据 —— 检索过滤靠它,贯穿全链。"""
 
-    keywords: list[str] = field(default_factory=list)
-    subject_scopes: list[str] = field(default_factory=list)
-    categories: list[str] = field(default_factory=list)
+    turn_intent: str = ""
+    memory_facets: list[str] = field(default_factory=list)
+    about_roles: list[str] = field(default_factory=list)
+    entity_anchors: list[str] = field(default_factory=list)
+    topic_terms: list[str] = field(default_factory=list)
+    retrieval_priority: str = "normal"
     mood_tags: list[str] = field(default_factory=list)
-    importance: float = 0.0
-    confidence: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "keywords": list(self.keywords),
-            "subject_scopes": list(self.subject_scopes),
-            "categories": list(self.categories),
+            "turn_intent": self.turn_intent,
+            "memory_facets": list(self.memory_facets),
+            "about_roles": list(self.about_roles),
+            "entity_anchors": list(self.entity_anchors),
+            "topic_terms": list(self.topic_terms),
+            "retrieval_priority": self.retrieval_priority,
             "mood_tags": list(self.mood_tags),
-            "importance": self.importance,
-            "confidence": self.confidence,
         }
 
 
 def coerce_memory_metadata(
     data: Any,
     *,
-    categories: Iterable[str] = DEFAULT_CATEGORIES,
     enable_flavor: bool = False,
 ) -> MemoryMetadata:
     """把模型/外部给的 metadata 校验、回退成合法 MemoryMetadata。
 
-    - 枚举外的值丢弃;数值 clamp 到 0..1;列表去重截断。
+    - 枚举外的值丢弃；自由字符串列表 trim 并按首次出现去重。
     - `enable_flavor=False` 时强制清空 mood_tags(温度层关闭,客观字段不受污染)。
+    - 不读取旧 keywords/categories/subject_scopes/importance/confidence；旧库由 schema migration 一次转换。
     """
     src = data if isinstance(data, dict) else {}
     mood = _coerce_enum_list(src.get("mood_tags"), MOOD_TAGS, limit=MAX_MOOD_TAGS) if enable_flavor else []
+    turn_intent = str(src.get("turn_intent") or "").strip()
+    if turn_intent not in TURN_INTENTS:
+        turn_intent = ""
+    priority = str(src.get("retrieval_priority") or "normal").strip().lower()
+    if priority not in RETRIEVAL_PRIORITIES:
+        priority = "normal"
     return MemoryMetadata(
-        keywords=_coerce_str_list(src.get("keywords"), limit=MAX_KEYWORDS),
-        subject_scopes=_coerce_enum_list(src.get("subject_scopes"), SUBJECT_SCOPES),
-        categories=_coerce_enum_list(src.get("categories"), categories),
+        turn_intent=turn_intent,
+        memory_facets=_coerce_enum_list(src.get("memory_facets"), MEMORY_FACETS),
+        about_roles=_coerce_enum_list(src.get("about_roles"), ABOUT_ROLES),
+        entity_anchors=_coerce_str_list(src.get("entity_anchors")),
+        topic_terms=_coerce_str_list(src.get("topic_terms")),
+        retrieval_priority=priority,
         mood_tags=mood,
-        importance=_clamp01(src.get("importance")),
-        confidence=_clamp01(src.get("confidence")),
+    )
+
+
+def memory_metadata_has_signal(data: Any) -> bool:
+    """Return whether normalized metadata contains a non-default retrieval signal."""
+
+    metadata = data.to_dict() if isinstance(data, MemoryMetadata) else coerce_memory_metadata(data).to_dict()
+    if metadata["turn_intent"] or metadata["retrieval_priority"] != "normal":
+        return True
+    return any(metadata[key] for key in ("memory_facets", "about_roles", "entity_anchors", "topic_terms", "mood_tags"))
+
+
+def build_memory_metadata_instruction(
+    *,
+    enable_flavor: bool = False,
+    require_disabled_mood_field: bool = False,
+) -> str:
+    """Build the one model-facing metadata explanation used by every writer.
+
+    Compaction prompts omit the optional flavor field entirely while flavor is
+    disabled. The chat-output JSON contract has a fixed shape, so it can ask
+    for an empty ``mood_tags`` array through ``require_disabled_mood_field``.
+    Both forms still come from this single field contract.
+    """
+
+    mood_rule = ""
+    if enable_flavor:
+        mood_rule = (
+            "[情感温度(已启用)] mood_tags 可写 0-3 个，只能从固定枚举选择："
+            f"{' / '.join(MOOD_TAGS)}；它只表达记忆的情感余温，不能污染客观事实。"
+        )
+    elif require_disabled_mood_field:
+        mood_rule = "mood_tags 必须输出为空数组。"
+    return (
+        "memory_metadata 标注宿主指定的本轮记忆目标，不是你的回复。"
+        "turn_intent 只在当前内容明确查询历史记忆时填写 memory_query，普通内容留空；"
+        "它不表示想找的历史内容。"
+        f"memory_facets 表示这段内容以后能回答哪类问题，只能从 {' / '.join(MEMORY_FACETS)} 中选择；"
+        "没有长期检索价值时留空。"
+        f"about_roles 表示内容主要在陈述谁或什么，不表示谁参加了对话，只能从 {' / '.join(ABOUT_ROLES)} 中选择。"
+        "entity_anchors 只填明确出现或能够确定的准确名称和别名，优先考虑未来正常聊天里可能用于追问的名称；"
+        "不要猜测相关实体，也不要机械补太宽泛的上位词。"
+        "topic_terms 填有助于未来查询的动作、属性或主题短词，不要写整句或短句。"
+        f"retrieval_priority 表示未来重新找回的价值，只能是 {' / '.join(RETRIEVAL_PRIORITIES)}。"
+        f"{mood_rule}"
+        "不确定时宁可留空，不要为了填字段编造标签。"
     )
 
 

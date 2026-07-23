@@ -35,12 +35,13 @@ class ChatOutputParser(unittest.TestCase):
               "speech": "哈啊？！真的吗。",
               "emotion": "happy",
               "memory_metadata": {
-                "keywords": ["可乐", "饮料", "可乐", "a", "b"],
-                "subject_scopes": ["user", "bad"],
-                "categories": ["preference", "bad"],
-                "mood_tags": ["warm"],
-                "importance": 2,
-                "confidence": -1
+                "turn_intent": "memory_query",
+                "memory_facets": ["preference", "bad"],
+                "about_roles": ["user", "bad"],
+                "entity_anchors": ["可乐", "饮料", "可乐"],
+                "topic_terms": ["喜欢"],
+                "retrieval_priority": "high",
+                "mood_tags": ["warm"]
               },
               "debug": "ignored by memory core"
             }
@@ -56,12 +57,13 @@ class ChatOutputParser(unittest.TestCase):
         self.assertEqual(result.segments, ["哈啊？！", "真的吗。"])
         self.assertEqual(result.presentation, {"emotion": "happy"})
         self.assertEqual(result.extra, {"debug": "ignored by memory core"})
-        self.assertEqual(result.memory_metadata["keywords"], ["可乐", "饮料", "a", "b"])
-        self.assertEqual(result.memory_metadata["subject_scopes"], ["user"])
-        self.assertEqual(result.memory_metadata["categories"], ["preference"])
+        self.assertEqual(result.memory_metadata["turn_intent"], "memory_query")
+        self.assertEqual(result.memory_metadata["memory_facets"], ["preference"])
+        self.assertEqual(result.memory_metadata["about_roles"], ["user"])
+        self.assertEqual(result.memory_metadata["entity_anchors"], ["可乐", "饮料"])
+        self.assertEqual(result.memory_metadata["topic_terms"], ["喜欢"])
+        self.assertEqual(result.memory_metadata["retrieval_priority"], "high")
         self.assertEqual(result.memory_metadata["mood_tags"], ["warm"])
-        self.assertEqual(result.memory_metadata["importance"], 1.0)
-        self.assertEqual(result.memory_metadata["confidence"], 0.0)
 
     def test_flavor_off_strips_mood_tags(self) -> None:
         result = parse_chat_output(
@@ -73,7 +75,7 @@ class ChatOutputParser(unittest.TestCase):
         self.assertEqual(result.memory_metadata["mood_tags"], [])
 
     def test_memcore_json_requires_speech(self) -> None:
-        result = parse_chat_output({"memory_metadata": {"keywords": ["可乐"]}}, mode="memcore_json")
+        result = parse_chat_output({"memory_metadata": {"entity_anchors": ["可乐"]}}, mode="memcore_json")
         self.assertFalse(result.ok)
         self.assertEqual(result.status, "invalid_contract")
         self.assertEqual(result.reason, "speech_required")
@@ -127,12 +129,13 @@ class ChatOutputParser(unittest.TestCase):
 class ChatOutputPrompt(unittest.TestCase):
     def test_prompt_mentions_contract_and_not_speech_segments(self) -> None:
         prompt = build_chat_output_contract_prompt(
-            categories=("preference", "finance_profile"),
             enable_flavor=False,
             enable_sentence_segments=True,
         )
         self.assertIn("字段固定为 speech, memory_metadata", prompt)
-        self.assertIn("finance_profile", prompt)
+        self.assertIn("memory_facets", prompt)
+        self.assertIn("about_roles", prompt)
+        self.assertIn("entity_anchors", prompt)
         self.assertIn("mood_tags 必须输出为空数组", prompt)
         self.assertIn("工具调用阶段不适用本 JSON 契约", prompt)
         self.assertIn("不是摆设", prompt)
@@ -151,11 +154,9 @@ class ChatOutputPrompt(unittest.TestCase):
         self.assertIn("不要为了显得记得而编造", prompt)
         self.assertIn("宿主指定的本轮记忆标注目标", prompt)
         self.assertIn('include_explicit=true, kind_patterns=["material.*"]', prompt)
-        self.assertIn("confidence", prompt)
-        self.assertIn("未来正常聊天", prompt)
-        self.assertIn("不要机械补太宽泛的上位词", prompt)
-        self.assertIn("饮料/偏好", prompt)
-        self.assertIn("不要写整句或短句", prompt)
+        self.assertNotIn("confidence", prompt)
+        self.assertIn("准确名称和别名", prompt)
+        self.assertIn("不要写整句", prompt)
         self.assertNotIn("speech_segments", prompt)
 
 
@@ -181,7 +182,7 @@ class StreamingOutputParser(unittest.TestCase):
     def test_memcore_json_stream_extracts_speech_and_final_metadata(self) -> None:
         stream = StreamingSpeechParser(mode="memcore_json")
         events = []
-        events += stream.feed('{"memory_metadata":{"keywords":["英伟达"]},"speech":"哈')
+        events += stream.feed('{"memory_metadata":{"entity_anchors":["英伟达"]},"speech":"哈')
         events += stream.feed('啊？！他说：\\"好吧。\\""}')
         events += stream.finish()
 
@@ -194,7 +195,7 @@ class StreamingOutputParser(unittest.TestCase):
             ["哈啊？！", '他说："好吧。"'],
         )
         metadata = [e for e in events if e["type"] == "metadata_ready"][0]
-        self.assertEqual(metadata["memory_metadata"]["keywords"], ["英伟达"])
+        self.assertEqual(metadata["memory_metadata"]["entity_anchors"], ["英伟达"])
         self.assertEqual(metadata["metadata_status"], "accepted")
         self.assertTrue(metadata["metadata_present"])
         self.assertEqual(events[-1]["payload"]["speech"], '哈啊？！他说："好吧。"')

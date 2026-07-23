@@ -9,7 +9,7 @@ import unittest
 from datetime import datetime, timezone
 
 from memcore import HashedEmbeddingProvider, InMemoryVectorIndex, fuse_with_rrf
-from memcore.index.metadata_filters import category_filter_key, metadata_filter_key, subject_scope_filter_key
+from memcore.index.metadata_filters import about_role_filter_key, facet_filter_key, metadata_filter_key
 from memcore.rendering import (
     render_external_event_text,
     render_prompt_context,
@@ -81,10 +81,10 @@ class Rendering(unittest.TestCase):
         )
         record = {
             "role": "event.finance",
+            "kind": "event.finance",
             "content": content,
             "timestamp": _ts(2026, 7, 20, 14, 30),
             "time_of_day": "afternoon",
-            "memory_metadata": {"categories": ["event_trace"]},
         }
 
         rendered = render_prompt_message(record, tz="Asia/Shanghai")
@@ -190,17 +190,17 @@ class Rendering(unittest.TestCase):
         rows = [
             {
                 "role": "assistant.tool_call web_search call_001",
+                "kind": "tool.web_search.call",
                 "content": tool_use,
                 "timestamp": _ts(2026, 4, 10, 9),
                 "time_of_day": "morning",
-                "memory_metadata": {"categories": ["tool_trace"]},
             },
             {
                 "role": "tool.web_search call_001",
+                "kind": "tool.web_search.result",
                 "content": tool_result,
                 "timestamp": _ts(2026, 4, 10, 9, 1),
                 "time_of_day": "morning",
-                "memory_metadata": {"categories": ["tool_trace"]},
             },
         ]
 
@@ -230,17 +230,17 @@ class Rendering(unittest.TestCase):
         rows = [
             {
                 "role": "user.attachment image file_img_001",
+                "kind": "material.image.reference",
                 "content": material,
                 "timestamp": _ts(2026, 4, 10, 9),
                 "time_of_day": "morning",
-                "memory_metadata": {"categories": ["material_trace"]},
             },
             {
                 "role": "system.material_cleanup image file_img_001",
+                "kind": "material.image.cleanup",
                 "content": cleanup,
                 "timestamp": _ts(2026, 4, 10, 9, 1),
                 "time_of_day": "morning",
-                "memory_metadata": {"categories": ["material_trace"]},
             },
         ]
 
@@ -265,12 +265,12 @@ class Rendering(unittest.TestCase):
         rows = [
             {
                 "role": "user.attachment image file_img_001",
+                "kind": "material.image.reference",
                 "actor_display_name": "张三",
                 "actor_id": "qq-1",
                 "content": material,
                 "timestamp": _ts(2026, 4, 10, 9),
                 "time_of_day": "morning",
-                "memory_metadata": {"categories": ["material_trace"]},
             },
         ]
 
@@ -306,13 +306,11 @@ class Rendering(unittest.TestCase):
 
 class HybridRetrieval(unittest.TestCase):
     def test_metadata_filter_key_is_stable_and_safe(self) -> None:
-        self.assertEqual(category_filter_key("risk_profile"), "memory_category__risk_profile")
-        self.assertEqual(subject_scope_filter_key("user"), "memory_scope__user")
-        self.assertTrue(category_filter_key("偏好").startswith("memory_category__h_"))
-        self.assertEqual(category_filter_key("偏好"), category_filter_key("偏好"))
-        self.assertNotEqual(
-            metadata_filter_key("memory_category", "偏好"), metadata_filter_key("memory_category", "情绪")
-        )
+        self.assertEqual(facet_filter_key("preference"), "memory_facet__preference")
+        self.assertEqual(about_role_filter_key("user"), "memory_about_role__user")
+        self.assertTrue(facet_filter_key("偏好").startswith("memory_facet__h_"))
+        self.assertEqual(facet_filter_key("偏好"), facet_filter_key("偏好"))
+        self.assertNotEqual(metadata_filter_key("memory_facet", "偏好"), metadata_filter_key("memory_facet", "情绪"))
 
     def _index(self) -> InMemoryVectorIndex:
         idx = InMemoryVectorIndex(embedding=HashedEmbeddingProvider())
@@ -321,7 +319,7 @@ class HybridRetrieval(unittest.TestCase):
                 {
                     "source_id": "m1",
                     "text": "主人喜欢喝可乐",
-                    "metadata": {"user_id": "u1", "memory_keywords_text": "可乐 饮料", "entry_type": "raw"},
+                    "metadata": {"user_id": "u1", "memory_entity_text": "可乐 饮料", "entry_type": "raw"},
                 },
                 {
                     "source_id": "m2",
@@ -339,7 +337,7 @@ class HybridRetrieval(unittest.TestCase):
 
     def test_where_hard_isolation(self) -> None:
         idx = self._index()
-        hits = idx.keyword_search(query_text="可乐", keywords=["可乐"], where={"user_id": "u1"})
+        hits = idx.keyword_search(query_text="可乐", entity_anchors=["可乐"], topic_terms=[], where={"user_id": "u1"})
         ids = {h["source_id"] for h in hits}
         self.assertIn("m1", ids)
         self.assertNotIn("m3", ids)  # u2 的记忆绝不串到 u1
@@ -347,8 +345,31 @@ class HybridRetrieval(unittest.TestCase):
     def test_keyword_via_metadata_tags(self) -> None:
         idx = self._index()
         # "饮料"只出现在 m1 的标签里,正文没有 —— 证明关键词侧吃了多维标签。
-        hits = idx.keyword_search(query_text="饮料", keywords=["饮料"], where={"user_id": "u1"})
+        hits = idx.keyword_search(query_text="饮料", entity_anchors=["饮料"], topic_terms=[], where={"user_id": "u1"})
         self.assertEqual(hits[0]["source_id"], "m1")
+
+    def test_keyword_query_is_preserved_and_entity_has_higher_weight_than_topic(self) -> None:
+        idx = InMemoryVectorIndex(embedding=HashedEmbeddingProvider())
+        idx.upsert(
+            [
+                {"source_id": "query", "text": "jacobian", "metadata": {"user_id": "u1"}},
+                {"source_id": "entity", "text": "Fable", "metadata": {"user_id": "u1"}},
+                {"source_id": "topic", "text": "VRChat", "metadata": {"user_id": "u1"}},
+            ]
+        )
+
+        hits = idx.keyword_search(
+            query_text="jacobian",
+            entity_anchors=["Fable"],
+            topic_terms=["VRChat"],
+            where={"user_id": "u1"},
+        )
+        by_id = {hit["source_id"]: hit["tag_score"] for hit in hits}
+
+        self.assertIn("query", by_id)  # topic/entity 不能替换原始 query
+        self.assertIn("entity", by_id)
+        self.assertIn("topic", by_id)
+        self.assertGreater(by_id["entity"], by_id["topic"])
 
     def test_keyword_exclude_is_applied_before_limit(self) -> None:
         idx = InMemoryVectorIndex(embedding=HashedEmbeddingProvider())
@@ -360,7 +381,12 @@ class HybridRetrieval(unittest.TestCase):
         )
 
         hits = idx.keyword_search(
-            query_text="可乐", keywords=["可乐"], where={"user_id": "u1"}, n_results=1, exclude_source_ids=["m1"]
+            query_text="可乐",
+            entity_anchors=["可乐"],
+            topic_terms=[],
+            where={"user_id": "u1"},
+            n_results=1,
+            exclude_source_ids=["m1"],
         )
 
         self.assertEqual([h["source_id"] for h in hits], ["m2"])
@@ -420,8 +446,8 @@ class HybridRetrieval(unittest.TestCase):
                         "user_id": "u1",
                         "entry_type": "raw",
                         "memory_importance": 0.8,
-                        category_filter_key("preference"): True,
-                        subject_scope_filter_key("user"): True,
+                        facet_filter_key("preference"): True,
+                        about_role_filter_key("user"): True,
                     },
                 },
                 {
@@ -431,8 +457,8 @@ class HybridRetrieval(unittest.TestCase):
                         "user_id": "u1",
                         "entry_type": "raw",
                         "memory_importance": 0.9,
-                        category_filter_key("project_work"): True,
-                        subject_scope_filter_key("user"): True,
+                        facet_filter_key("knowledge"): True,
+                        about_role_filter_key("user"): True,
                     },
                 },
                 {
@@ -442,8 +468,8 @@ class HybridRetrieval(unittest.TestCase):
                         "user_id": "u1",
                         "entry_type": "raw",
                         "memory_importance": 0.9,
-                        category_filter_key("preference"): True,
-                        subject_scope_filter_key("assistant"): True,
+                        facet_filter_key("preference"): True,
+                        about_role_filter_key("assistant"): True,
                     },
                 },
                 {
@@ -453,8 +479,8 @@ class HybridRetrieval(unittest.TestCase):
                         "user_id": "u1",
                         "entry_type": "raw",
                         "memory_importance": 0.4,
-                        category_filter_key("preference"): True,
-                        subject_scope_filter_key("user"): True,
+                        facet_filter_key("preference"): True,
+                        about_role_filter_key("user"): True,
                     },
                 },
             ]
@@ -468,11 +494,11 @@ class HybridRetrieval(unittest.TestCase):
                 {"memory_importance": {"$gte": 0.6}},
                 {
                     "$or": [
-                        {category_filter_key("preference"): True},
-                        {category_filter_key("plan_goal"): True},
+                        {facet_filter_key("preference"): True},
+                        {facet_filter_key("plan"): True},
                     ]
                 },
-                {subject_scope_filter_key("user"): True},
+                {about_role_filter_key("user"): True},
             ],
         }
 
@@ -490,8 +516,8 @@ class HybridRetrieval(unittest.TestCase):
                     "metadata": {
                         "user_id": "u1",
                         "entry_type": "raw",
-                        category_filter_key("preference"): True,
-                        subject_scope_filter_key("user"): True,
+                        facet_filter_key("preference"): True,
+                        about_role_filter_key("user"): True,
                     },
                 },
                 {
@@ -500,8 +526,8 @@ class HybridRetrieval(unittest.TestCase):
                     "metadata": {
                         "user_id": "u1",
                         "entry_type": "raw",
-                        category_filter_key("project_work"): True,
-                        subject_scope_filter_key("user"): True,
+                        facet_filter_key("knowledge"): True,
+                        about_role_filter_key("user"): True,
                     },
                 },
             ]
@@ -509,12 +535,12 @@ class HybridRetrieval(unittest.TestCase):
         where = {
             "user_id": "u1",
             "$and": [
-                {"$or": [{category_filter_key("preference"): True}, {category_filter_key("plan_goal"): True}]},
-                {subject_scope_filter_key("user"): True},
+                {"$or": [{facet_filter_key("preference"): True}, {facet_filter_key("plan"): True}]},
+                {about_role_filter_key("user"): True},
             ],
         }
 
-        hits = idx.keyword_search(query_text="可乐", keywords=["可乐"], where=where)
+        hits = idx.keyword_search(query_text="可乐", entity_anchors=["可乐"], topic_terms=[], where=where)
 
         self.assertEqual([hit["source_id"] for hit in hits], ["good"])
 

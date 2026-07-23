@@ -39,7 +39,7 @@ from .projection import (
     stable_projection_hash,
 )
 from .rendering import render_raw_snippet
-from .schema import TRACE_CATEGORIES, coerce_memory_metadata
+from .schema import RETRIEVAL_PRIORITIES, coerce_memory_metadata
 from .store.base import MemoryStore
 from .runtime import MemCoreRuntime
 from .text_utils import normalize_text
@@ -410,26 +410,20 @@ class Compaction:
         timestamps = [int(entry.timestamp) for entry in entries]
         metadata = coerce_memory_metadata(
             payload.get("memory_metadata"),
-            categories=self.config.categories,
             enable_flavor=self.config.enable_flavor,
         ).to_dict()
-        if not any(metadata.get(key) for key in ("keywords", "categories", "subject_scopes")):
-            for entry in entries:
-                if entry.annotation_status.accepted:
-                    metadata["keywords"] = _merge_unique(
-                        metadata.get("keywords"), entry.memory_metadata.get("keywords")
-                    )
-                    metadata["categories"] = _merge_unique(
-                        metadata.get("categories"),
-                        [
-                            item
-                            for item in entry.memory_metadata.get("categories") or ()
-                            if item not in TRACE_CATEGORIES
-                        ],
-                    )
-                    metadata["subject_scopes"] = _merge_unique(
-                        metadata.get("subject_scopes"), entry.memory_metadata.get("subject_scopes")
-                    )
+        accepted_metadata = [entry.memory_metadata for entry in entries if entry.annotation_status.accepted]
+        for key in ("memory_facets", "about_roles", "entity_anchors", "topic_terms", "mood_tags"):
+            if not metadata.get(key):
+                metadata[key] = _merge_unique(*(item.get(key) for item in accepted_metadata))
+        raw_model_metadata = payload.get("memory_metadata")
+        if (
+            not isinstance(raw_model_metadata, dict)
+            or raw_model_metadata.get("retrieval_priority") not in RETRIEVAL_PRIORITIES
+        ):
+            metadata["retrieval_priority"] = _highest_priority(
+                *(item.get("retrieval_priority") for item in accepted_metadata)
+            )
         visibility = (
             "default" if any(entry.retrieval_visibility.value == "default" for entry in entries) else "explicit"
         )
@@ -448,7 +442,7 @@ class Compaction:
             "key_events": _str_list(payload.get("key_events")),
             "core_facts": _str_list(payload.get("core_facts")),
             "memory_metadata": metadata,
-            "semantic_tags": list(metadata.get("keywords") or []),
+            "semantic_tags": _merge_unique(metadata.get("entity_anchors"), metadata.get("topic_terms")),
             "retrieval_visibility": visibility,
             "semanticize": visibility == "default",
             "compaction_schema_version": self.config.compaction_schema_version,
@@ -603,6 +597,23 @@ class Compaction:
         payload = call.data
         start_ts = min(int(s.get("period_start_ts") or s.get("timestamp") or 0) for s in batch)
         end_ts = max(int(s.get("period_end_ts") or s.get("timestamp") or 0) for s in batch)
+        semantic_metadata = coerce_memory_metadata(
+            payload.get("memory_metadata"), enable_flavor=cfg.enable_flavor
+        ).to_dict()
+        source_metadata = [
+            summary.get("memory_metadata") for summary in batch if isinstance(summary.get("memory_metadata"), dict)
+        ]
+        for key in ("memory_facets", "about_roles", "entity_anchors", "topic_terms", "mood_tags"):
+            if not semantic_metadata.get(key):
+                semantic_metadata[key] = _merge_unique(*(item.get(key) for item in source_metadata))
+        raw_model_metadata = payload.get("memory_metadata")
+        if (
+            not isinstance(raw_model_metadata, dict)
+            or raw_model_metadata.get("retrieval_priority") not in RETRIEVAL_PRIORITIES
+        ):
+            semantic_metadata["retrieval_priority"] = _highest_priority(
+                *(item.get("retrieval_priority") for item in source_metadata)
+            )
         incoming = {
             "timestamp": end_ts,
             "period_start_ts": start_ts,
@@ -615,12 +626,13 @@ class Compaction:
             "recurring_topics": _str_list(payload.get("recurring_topics")),
             "important_people": _str_list(payload.get("important_people")),
             "open_loops": _str_list(payload.get("open_loops")),
-            "memory_metadata": coerce_memory_metadata(
-                payload.get("memory_metadata"), categories=cfg.categories, enable_flavor=cfg.enable_flavor
-            ).to_dict(),
+            "memory_metadata": semantic_metadata,
             "source_summary_ids": [str(s["summary_id"]) for s in batch],
         }
-        incoming["semantic_tags"] = list(incoming["memory_metadata"].get("keywords") or [])
+        incoming["semantic_tags"] = _merge_unique(
+            incoming["memory_metadata"].get("entity_anchors"),
+            incoming["memory_metadata"].get("topic_terms"),
+        )
 
         target = self._find_reinforcement_target(namespace, incoming)
         if target is not None:
@@ -740,7 +752,11 @@ class Compaction:
             "recurring_topics": _str_list(payload.get("recurring_topics")) or fallback["recurring_topics"],
             "important_people": _str_list(payload.get("important_people")) or fallback["important_people"],
             "open_loops": _str_list(payload.get("open_loops")) or fallback["open_loops"],
-            "memory_metadata": incoming["memory_metadata"],
+            "memory_metadata": _merge_memory_metadata(
+                target.get("memory_metadata"),
+                incoming["memory_metadata"],
+                enable_flavor=self.config.enable_flavor,
+            ),
             "semantic_tags": _merge_unique(target.get("semantic_tags"), incoming.get("semantic_tags")),
             "source_summary_ids": _merge_unique(target.get("source_summary_ids"), incoming["source_summary_ids"]),
             "reinforcement_count": int(target.get("reinforcement_count") or 1) + 1,
@@ -879,7 +895,7 @@ def _has_semantic_content(payload: dict[str, Any]) -> bool:
     )
 
 
-def _merge_unique(*lists: Any, limit: int = 8) -> list[str]:
+def _merge_unique(*lists: Any, limit: int | None = None) -> list[str]:
     out, seen = [], set()
     for lst in lists:
         for item in lst or []:
@@ -887,21 +903,70 @@ def _merge_unique(*lists: Any, limit: int = 8) -> list[str]:
             if text and text not in seen:
                 seen.add(text)
                 out.append(text)
-                if len(out) >= limit:
+                if limit is not None and len(out) >= limit:
                     return out
     return out
+
+
+def _highest_priority(*values: Any) -> str:
+    ranking = {value: index for index, value in enumerate(RETRIEVAL_PRIORITIES)}
+    normalized = [str(value or "").strip().lower() for value in values]
+    valid = [value for value in normalized if value in ranking]
+    return max(valid, key=ranking.__getitem__) if valid else "normal"
+
+
+def _merge_memory_metadata(*values: Any, enable_flavor: bool) -> dict[str, Any]:
+    metadata_values = [value for value in values if isinstance(value, dict)]
+    merged = {
+        "turn_intent": next(
+            (str(value.get("turn_intent") or "") for value in reversed(metadata_values) if value.get("turn_intent")),
+            "",
+        ),
+        "memory_facets": _merge_unique(*(value.get("memory_facets") for value in metadata_values)),
+        "about_roles": _merge_unique(*(value.get("about_roles") for value in metadata_values)),
+        "entity_anchors": _merge_unique(*(value.get("entity_anchors") for value in metadata_values)),
+        "topic_terms": _merge_unique(*(value.get("topic_terms") for value in metadata_values)),
+        "retrieval_priority": _highest_priority(*(value.get("retrieval_priority") for value in metadata_values)),
+        "mood_tags": _merge_unique(*(value.get("mood_tags") for value in metadata_values)),
+    }
+    return coerce_memory_metadata(merged, enable_flavor=enable_flavor).to_dict()
 
 
 def _overlap_score(candidate: dict[str, Any], incoming: dict[str, Any]) -> int:
     def norm_set(record: dict[str, Any], key: str) -> set[str]:
         return {normalize_text(x) for x in (record.get(key) or []) if normalize_text(x)}
 
-    score = 0
-    for key in ("semantic_tags", "recurring_topics", "important_people"):
-        score += len(norm_set(candidate, key) & norm_set(incoming, key))
-    if norm_set(candidate, "stable_facts") & norm_set(incoming, "stable_facts"):
-        score += 1
-    return score
+    candidate_metadata = candidate.get("memory_metadata") if isinstance(candidate.get("memory_metadata"), dict) else {}
+    incoming_metadata = incoming.get("memory_metadata") if isinstance(incoming.get("memory_metadata"), dict) else {}
+    candidate_entities = {
+        normalize_text(item).casefold()
+        for item in candidate_metadata.get("entity_anchors") or []
+        if normalize_text(item)
+    }
+    incoming_entities = {
+        normalize_text(item).casefold()
+        for item in incoming_metadata.get("entity_anchors") or []
+        if normalize_text(item)
+    }
+    shared_entities = candidate_entities & incoming_entities
+    if not shared_entities:
+        return 0
+    candidate_facets = set(candidate_metadata.get("memory_facets") or [])
+    incoming_facets = set(incoming_metadata.get("memory_facets") or [])
+    if candidate_facets and incoming_facets and not (candidate_facets & incoming_facets):
+        return 0
+    candidate_topics = {
+        normalize_text(item).casefold() for item in candidate_metadata.get("topic_terms") or [] if normalize_text(item)
+    }
+    incoming_topics = {
+        normalize_text(item).casefold() for item in incoming_metadata.get("topic_terms") or [] if normalize_text(item)
+    }
+    proposition_overlap = len(candidate_topics & incoming_topics)
+    proposition_overlap += len(norm_set(candidate, "stable_facts") & norm_set(incoming, "stable_facts"))
+    proposition_overlap += len(norm_set(candidate, "recurring_topics") & norm_set(incoming, "recurring_topics"))
+    if proposition_overlap <= 0:
+        return 0
+    return len(shared_entities) + proposition_overlap
 
 
 def _render_semantic_text(record: dict[str, Any]) -> str:

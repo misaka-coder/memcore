@@ -57,9 +57,9 @@ class CountingLLM(LLMClient):
                     "key_events": ["完成对话"],
                     "core_facts": ["输入与终态成对保留"],
                     "memory_metadata": {
-                        "keywords": ["完整轮次"],
-                        "categories": ["plan_goal"],
-                        "subject_scopes": ["user"],
+                        "entity_anchors": ["完整轮次"],
+                        "memory_facets": ["plan"],
+                        "about_roles": ["user"],
                     },
                 },
                 attempts=1,
@@ -138,9 +138,9 @@ def _complete_simple_turn(mem: MemorySystem, number: int, *, payload: dict[str, 
         semantic_text=f"回答{number}",
         provider_output_raw=f'{{"speech":"回答{number}"}}',
         memory_annotation={
-            "keywords": [f"问题{number}"],
-            "categories": ["plan_goal"],
-            "subject_scopes": ["user"],
+            "entity_anchors": [f"问题{number}"],
+            "memory_facets": ["plan"],
+            "about_roles": ["user"],
         },
         annotation_status="accepted",
         timestamp=1001 + number * 10,
@@ -203,7 +203,7 @@ def _append_tool_turn(mem: MemorySystem, *, turn_id: str = "tool-turn", retain_a
         turn_id=turn_id,
         semantic_text="两个方向都完成",
         provider_output_raw='{"speech":"两个方向都完成"}',
-        memory_annotation={"keywords": ["两个方向"], "categories": ["plan_goal"]},
+        memory_annotation={"topic_terms": ["两个方向"], "memory_facets": ["plan"]},
         annotation_status="accepted",
         timestamp=2003,
         source_id=f"{turn_id}-final",
@@ -611,7 +611,7 @@ class ToolPartitionAndAtomicityTests(CompactionV2Base):
             store.update_message_memory_metadata(
                 namespace=mem.namespace,
                 source_id="user-0",
-                memory_metadata={"keywords": ["changed"]},
+                memory_metadata={"topic_terms": ["changed"]},
             )
             summary_id = "stable-summary-id"
             committed = store.commit_summary_batch(

@@ -9,7 +9,7 @@ memcore 不替宿主写完整人格 prompt,但建议把下面这些规则拼到�
 ```text
 你可以看到 memcore 提供的可见三层记忆,并可使用记忆工具:
 - retrieve_for_turn: 按语义/关键词/metadata 模糊检索长期或历史记忆,并排除当前 prompt 已经可见的记忆与本轮消息。
-- read_timeline: 按日期/时间段精确读取原始对话,适合处理“昨天/上周二/4月10日晚上”等时间问题。
+- read_timeline: 按日期/时间段精确读取原始对话；也可用 retrieve 返回的 raw source_id 读取前后完整轮次。
 - load_material: 若宿主支持图片/文件,按 file_id 读取当前可用的原文件、OCR、视觉描述、文档 chunks 或清理状态。
 
 把工具当作你的可用能力和结构化信息通道,不是摆设。凡是答案依赖未在当前 prompt 中明确可见的事实、旧记忆、精确时间线、人物归因、承诺、偏好、关系或平台事件时,请主动调用合适的工具求证。一次工具结果不够时,可以根据结果继续调用工具补查,直到足以回答或确认没有明确记录。
@@ -76,11 +76,11 @@ memcore 会把 raw、summary、semantic、timeline 渲染成带日期和星期�
 推荐给聊天模型的工具说明:
 
 ```text
-retrieve_for_turn(query, keywords?, source_layers?, categories?, subject_scopes?, importance_min?, time_hint?)
-用于模糊检索。可以传 categories/subject_scopes/importance_min 缩小候选,系统会先做 metadata 前置过滤再算相似度。
+retrieve_for_turn(query, entity_anchors?, topic_terms?, source_layers?, memory_facets?, about_roles?, time_hint?)
+用于模糊检索。query 始终参与检索；准确实体使用 entity_anchors，动作/属性/主题使用 topic_terms。memory_facets/about_roles 会在相似度计算前裁剪候选。
 
-read_timeline(date_from, date_to?, time_periods?)
-用于精确读取某天或日期范围的原始对话。日期必须是 YYYY-MM-DD。
+read_timeline(date_from?, date_to?, time_periods?, anchor_source_id?, before_turns?, after_turns?)
+日期模式精确读取某天或日期范围；anchor 模式从一条 raw 命中扩展前后完整 turn。两种模式互斥。
 
 load_material(file_id, kind?, preferred_source?, purpose?)
 用于读取宿主保存的图片/附件/PDF 当前可用内容或状态。先从可见 raw、`read_timeline` 或宿主授权的 `retrieve_for_turn(include_explicit=true, kind_patterns=["material.*"])` 找到 file_id,再调用它。
@@ -91,7 +91,7 @@ load_material(file_id, kind?, preferred_source?, purpose?)
 | 用户意图 | 推荐工具 |
 |---|---|
 | “昨天晚上我说了什么?” | `read_timeline(date_from=昨天日期,time_periods=["night"])` |
-| “我之前是不是说过喜欢可乐?” | `retrieve_for_turn(query="喜欢 可乐", categories=["preference"], subject_scopes=["user"])` |
+| “我之前是不是说过喜欢可乐?” | `retrieve_for_turn(query="喜欢 可乐", entity_anchors=["可乐"], memory_facets=["preference"], about_roles=["user"])` |
 | “上周二那件事后来怎么样了?” | 先用时间锚点算日期,再 `read_timeline`;必要时补 `retrieve_for_turn` |
 | “谁负责基金复盘?” | 群聊场景优先带人物/计划关键词 `retrieve_for_turn`,必要时读时间线 |
 | “刚才谁戳你了?” | 优先 `read_timeline` 读取最近/当天平台事件;只根据明确事件记录回答 |
@@ -131,7 +131,6 @@ mem.record_tool_exchange(
     tool_input={"query": "北京天气"},
     result="北京今天 25°C,晴天。",
     timestamp=now_ts,
-    keywords=["北京天气"],
 )
 ```
 
@@ -150,7 +149,7 @@ output:
 ```
 
 这样工具使用与工具返回仍在同一条线性事件流里，但边界由 typed role 和调用 ID
-确定；它不依赖 `MemoryConfig.categories` 才能维持关系正确性。
+确定；工具身份不伪装成语义 metadata。
 
 材料引用写入 raw 时,优先使用 `record_material_reference(...)`;材料被容量策略或用户操作清理时,使用 `record_material_cleanup(...)`。这两个事件不会保存文件本体:
 
@@ -164,13 +163,12 @@ mem.record_material_reference(
     file_status="ready",
     derived_status="ocr_ready",
     timestamp=now_ts,
-    keywords=["题目图片"],
+    topic_terms=["题目图片"],
 )
 ```
 
-当前便捷 API 会保留 `categories=["material_trace"]` 作为旧接入兼容 metadata,
-但 V2 的材料身份和显式检索依据是 `kind=material.*`、visibility 与宿主授权,
-不依赖该 category。可见 raw 中渲染为稳定块:
+材料身份和显式检索依据是 `kind=material.*`、visibility 与宿主授权，不占用
+`memory_facets`。可见 raw 中渲染为稳定块:
 
 ```text
 [20:30 | 晚上] user.attachment image file_img_001
@@ -184,9 +182,6 @@ derived_status: ocr_ready
 ```
 
 多模态模型当前轮需要看图时,宿主可以在 provider 请求里直接附图片;非多模态模型则应先等待视觉/OCR/文档解析完成,或让 `load_material` 返回明确的 pending/unavailable 状态,不要让最终聊天模型和视觉模型赛跑。历史追问时,模型先通过可见 raw、`read_timeline` 或宿主授权的 `retrieve_for_turn(include_explicit=true, kind_patterns=["material.*"])` 找到材料锚点,再调用宿主暴露的 `load_material` 工具读取可用内容。若材料已清理且没有保留解析结果,模型必须说明无法确认,不要假装看到了原文件。
-
-接入方自定义 `MemoryConfig.categories` 时不需要为了 V2 材料轨迹保留
-`material_trace`；只有仍兼容旧 category-based 工具的宿主才需要保留它。
 
 ## 工具使用纪律
 
@@ -205,23 +200,29 @@ derived_status: ocr_ready
 
 ```json
 {
-  "keywords": ["可乐", "饮料", "偏好"],
-  "subject_scopes": ["user"],
-  "categories": ["preference"],
-  "mood_tags": [],
-  "importance": 0.7,
-  "confidence": 0.9
+  "turn_intent": "",
+  "memory_facets": ["preference"],
+  "about_roles": ["user"],
+  "entity_anchors": ["可乐", "无糖可乐"],
+  "topic_terms": ["饮料", "偏好"],
+  "retrieval_priority": "high",
+  "mood_tags": []
 }
 ```
 
 标注原则:
 
-- `keywords`: 0-4 个可复用检索标签,按用户未来正常聊天里可能命中的问法选词。优先保留具体实体、别名、真实议题、计划、偏好、风险等自然短词;上位词/领域词/意图词只在常见且能提高召回时补充。例如用户说喜欢可乐,可写 `可乐 / 饮料 / 偏好`;提到英伟达财报风险,可写 `英伟达 / NVDA / 财报 / 风险`,不必机械补很宽的 `股票`。不要写整句或短句,比如不要写“用户喜欢喝可乐”。
-- `subject_scopes`: 事实主体。用户自己的偏好/计划用 `user`;助手自己的设定或承诺用 `assistant`;群聊其他人用 `other`。
-- `categories`: 必须从当前 `MemoryConfig.categories` 枚举里选。金融领域应换成稳定领域枚举,如 `risk_profile / investment_goal / asset_preference / compliance_preference`。
-- `importance`: 未来是否值得检索。闲聊寒暄低,稳定偏好/身份/计划/风险约束高。
-- `confidence`: 模型对自己标注是否准确的把握。不确定就低分,不要硬填。
+- `turn_intent`: 只有当前内容在查询历史记忆时写 `memory_query`；它不表示想检索的历史内容类别。
+- `memory_facets`: 内容未来能回答哪类问题，从 `profile / preference / viewpoint / relationship / event / state / plan / decision / constraint / knowledge / procedure` 中选择。不确定就留空，不要猜一个大桶。
+- `about_roles`: 内容主要在陈述 `user / assistant / third_party / external` 中的谁或什么，不表示谁参加了对话，也不自动等于发言者。
+- `entity_anchors`: 只填明确出现或能够确定的准确名称、项目名和别名，如 `Fable / 雅可比猜想 / NVDA`；不要机械补宽泛上位词。
+- `topic_terms`: 填动作、属性和辅助主题短词，如 `反例 / 风险 / 无糖`；不要写整句或短句。
+- `retrieval_priority`: 未来重新找回的价值，使用 `low / normal / high / critical`。它不决定是否入库，也不会让低值 raw 消失。
 - `mood_tags`: 只有 `enable_flavor=True` 时才写;关闭时必须空数组。
+
+检索时传入的是“想找的历史内容”。例如当前消息“我们聊过 Fable 吗”可标为
+`turn_intent=memory_query`，但工具调用应使用 `memory_facets=["knowledge"]`、
+`about_roles=["external"]`、`entity_anchors=["Fable"]`，不能拿 `memory_query` 去过滤历史。
 
 ## 群聊 / 多人
 

@@ -37,7 +37,7 @@ For normal host integration, read these files in order:
    model.
 5. `docs/chat_output_adapter_v1.md` - optional final JSON contract and
    streaming speech parsing.
-6. `docs/metadata_prefilter_design_v1.md` - retrieval filter semantics.
+6. `docs/memory_metadata_raw_retrieval_design_v1.md` - current metadata and raw-first retrieval semantics.
 7. `docs/raw_token_compaction_policy_v1.md` - token/ratio raw compaction.
 
 If you are changing `memcore` itself, also inspect nearby tests before editing.
@@ -73,7 +73,6 @@ raw_model_output = call_chat_model(...)
 parsed = parse_chat_output(
     raw_model_output,
     mode="memcore_json",
-    categories=mem.config.categories,
     enable_flavor=mem.config.enable_flavor,
 )
 if not parsed.ok:
@@ -124,13 +123,13 @@ Expose memory tools to the final chat model:
 
 - `retrieve_for_turn(current=cur, ...)` for fuzzy preferences, plans, people,
   topics, and long-term facts.
-- `read_timeline(...)` for exact date/time questions such as yesterday, last
-  Tuesday, or a date range.
+- `read_timeline(...)` for exact date/time questions, or for expanding a raw
+  retrieval `source_id` into complete nearby turns without cutting a tool loop in half.
 
 If the host supports images/files, also expose `load_material(file_id, kind?,
 preferred_source?, purpose?)` as a provider-native tool backed by host
 file/derived storage. Historical image/file follow-ups should find a
-`material_trace` anchor first, then call `load_material` for current original
+typed `material.*` anchor first, then call `load_material` for current original
 content, OCR, image descriptions, document chunks, or an expired status.
 
 Prefer `retrieve_for_turn` over direct `retrieve` during live turns because it
@@ -143,7 +142,7 @@ tool errors according to host policy.
 memcore provides optional native-tool helpers:
 
 ```python
-tools = build_native_memory_tool_specs(categories=mem.config.categories)
+tools = build_native_memory_tool_specs()
 tool_result = dispatch_native_memory_tool(
     tool_name=tool_call.name,
     arguments=tool_call.arguments,
@@ -162,10 +161,9 @@ If the product wants cross-turn recall of tool calls/results, record them with
 `record_tool_exchange(...)` after the native tool call completes.
 
 If the host app records tool calls or tool results into raw memory, prefer
-`record_tool_exchange(...)`. It writes `assistant.tool_call <tool> <call_id>`
-and `tool.<tool> <call_id>` blocks. The compatibility metadata may still contain
-`categories=["tool_trace"]`, but V2 identity and admission use typed roles,
-`kind`, visibility, and correlation lineage. These records contribute to the
+`record_tool_exchange(...)`. It writes typed action/observation records. Their
+identity and admission use `kind`, turn role, visibility, and correlation
+lineage; they do not masquerade as a semantic category. These records contribute to the
 normal token compaction lifecycle. Retrieval requires `include_explicit=true`,
 an authorized precise `kind_patterns` value, and host policy approval.
 
@@ -186,9 +184,8 @@ behavior.
 
 If the host app handles images or files, record only material references with
 `record_material_reference(...)` and cleanup events with
-`record_material_cleanup(...)`. These write `user.attachment <kind> <file_id>`
-and `system.material_cleanup <kind> <file_id>` blocks with
-`categories=["material_trace"]`. Store original files and derived OCR, vision
+`record_material_cleanup(...)`. These write typed `material.*` references and
+cleanup events. Store original files and derived OCR, vision
 descriptions, or document chunks in the host file/derived stores. Current-turn
 multimodal models may receive the image through the provider request. For non-
 multimodal models, do not race the final chat model against OCR/vision parsing:
@@ -199,6 +196,33 @@ context or through authorized explicit `material.*` retrieval, then load
 available derived content via host tools.
 In group or multi-speaker uploads, pass `actor=Actor(stable_id=..., display_name=...)`
 to `record_material_reference(...)` so the attachment keeps uploader attribution.
+
+## Memory Metadata Contract
+
+Every chat annotation, stage summary, semantic summary, index entry, and
+retrieval tool uses the same fields:
+
+```json
+{
+  "turn_intent": "",
+  "memory_facets": [],
+  "about_roles": [],
+  "entity_anchors": [],
+  "topic_terms": [],
+  "retrieval_priority": "normal",
+  "mood_tags": []
+}
+```
+
+- `memory_facets` describes which future question the content can answer.
+- `about_roles` describes who or what the content is about, not who spoke.
+- `entity_anchors` contains only exact names/aliases; `topic_terms` contains supporting actions or themes.
+- `turn_intent="memory_query"` marks the current turn as asking about memory; it is not a target history facet.
+- Tool/event/material identity stays in typed timeline fields, not in metadata facets.
+
+The old `keywords/categories/subject_scopes/importance/confidence` write API is
+not a runtime compatibility path. SQLite schema migration converts old stored
+JSON once and schedules every affected entry for reindexing.
 
 ## Prompt Composition
 

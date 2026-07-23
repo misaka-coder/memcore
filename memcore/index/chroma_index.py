@@ -14,7 +14,12 @@ from ..embedding.base import EmbeddingProvider
 from ..text_utils import tokenize
 from .base import VectorIndex
 from .memory_index import _keyword_doc_text
-from .metadata_filters import INDEX_SCHEMA_VERSION, KIND_FLAG_SCHEMA_VERSION, VISIBILITY_SCHEMA_VERSION
+from .metadata_filters import (
+    ENTITY_FLAG_SCHEMA_VERSION,
+    INDEX_SCHEMA_VERSION,
+    KIND_FLAG_SCHEMA_VERSION,
+    VISIBILITY_SCHEMA_VERSION,
+)
 
 _NEVER_MATCH = {"__memcore_never_match__": True}
 
@@ -72,7 +77,7 @@ class ChromaVectorIndex(VectorIndex):
         self._collection = self._client.get_or_create_collection(
             name=(
                 f"memcore_{embedding.collection_key()}_i{INDEX_SCHEMA_VERSION}"
-                f"_k{KIND_FLAG_SCHEMA_VERSION}_v{VISIBILITY_SCHEMA_VERSION}"
+                f"_k{KIND_FLAG_SCHEMA_VERSION}_v{VISIBILITY_SCHEMA_VERSION}_e{ENTITY_FLAG_SCHEMA_VERSION}"
             ),
             metadata={"hnsw:space": "cosine"},
         )
@@ -130,7 +135,8 @@ class ChromaVectorIndex(VectorIndex):
         self,
         *,
         query_text: str,
-        keywords: list[str],
+        entity_anchors: list[str],
+        topic_terms: list[str],
         where: dict[str, Any],
         n_results: int = 8,
         exclude_source_ids: list[str] | None = None,
@@ -146,9 +152,14 @@ class ChromaVectorIndex(VectorIndex):
         metadatas = got.get("metadatas") or []
         if not ids:
             return []
-        query_terms = [
-            term for keyword in (keywords or []) if str(keyword).strip() for term in tokenize(str(keyword))
-        ] or tokenize(query_text)
+        base_terms = tokenize(query_text)
+        entity_terms = [
+            term for entity in (entity_anchors or []) if str(entity).strip() for term in tokenize(str(entity))
+        ]
+        topic_query_terms = [
+            term for topic in (topic_terms or []) if str(topic).strip() for term in tokenize(str(topic))
+        ]
+        query_terms = [*base_terms, *entity_terms, *entity_terms, *entity_terms, *topic_query_terms]
         if not query_terms:
             return []
 
@@ -185,6 +196,18 @@ class ChromaVectorIndex(VectorIndex):
                 )
         hits.sort(key=lambda item: item["tag_score"], reverse=True)
         return hits[: max(1, int(n_results))]
+
+    def count_candidates(
+        self,
+        *,
+        where: dict[str, Any],
+        exclude_source_ids: list[str] | None = None,
+    ) -> int:
+        got = self._collection.get(
+            where=_to_chroma_where(_with_source_excludes(where, exclude_source_ids)),
+            include=[],
+        )
+        return len(got.get("ids") or [])
 
     def delete(self, source_ids: list[str]) -> None:
         if source_ids:

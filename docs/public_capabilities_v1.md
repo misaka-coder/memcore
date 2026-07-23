@@ -24,7 +24,7 @@ provider-neutral 的记忆与上下文基础设施：把普通消息、模型回
        │            │            │
        └────────────┼────────────┘
                     ▼
-       有界压缩、lineage、outbox 自愈
+       token 差值压缩、lineage、outbox 自愈
 ```
 
 ## 已实现能力
@@ -69,7 +69,7 @@ raw working memory → episodic summaries → semantic long-term facts
 
 - raw 保留近期原始细节和完整 source lineage；
 - episodic 摘要压缩一段完整内容；
-- semantic 按主题重叠进行强化合并，保留稳定事实、反复主题、人物和 open loops；
+- semantic 只有在共享明确实体、兼容 facet 且共享命题/主题时才强化合并，常见人物重叠不会把无关主题焊在一起；
 - 每次后台 `run_due()` 只推进一个 raw batch 和一个 semantic batch，下一次调度
   继续，避免高活跃 namespace 在一次维护中连续调用模型清仓；
 - LLM 失败、索引失败或并发冲突都返回结构化状态，不提交空摘要、不伪造成功。
@@ -81,7 +81,7 @@ V2 使用实际 provider projection 的 token 预算规划完整 turn。这是�
 ### 4. 两种互补的记忆读取工具
 
 - `retrieve_for_turn`：面向偏好、计划、关系、人物、主题和长期事实的模糊检索；
-- `read_timeline`：面向“某天/上周二/昨晚说过什么”的精确时间线读取；
+- `read_timeline`：既可按日期/时间段读取，也可把 raw 检索命中扩成前后完整 turn；
 - `load_material`：只负责调用宿主提供的材料 loader，不保存文件本体；
 - 普通检索只接纳 `retrieval_visibility=default` 的记录；没有有效 annotation 的
   standalone 事件、operation 和 material 轨迹默认是 `explicit`，不会混入普通候选；
@@ -97,7 +97,9 @@ V2 使用实际 provider projection 的 token 预算规划完整 turn。这是�
   kind pattern，并接受宿主
   `ToolDispatchPolicy` 的授权；
 - namespace、conversation、visibility、kind 和 source lineage 等硬过滤在
-  embedding/BM25 评分前完成；软放宽不会突破硬边界；
+  embedding/BM25 评分前完成；facet/role 同样前置。准确实体导致候选为零时只移除
+  实体强制条件，query 与实体权重仍保留，并返回候选数和放宽 diagnostics；
+- raw 与 summary/semantic 分池检索，raw 先占用现有结果位；derived 只补充，不能挤掉原始证据，也不会自动沿 lineage 下钻；
 - relation-aware expansion 会返回完整 stimulus/final 或 call/result 关系，
   不用物理相邻消息猜窗口，也不会把中间工具轨迹偷偷混入普通命中。
 
@@ -128,6 +130,9 @@ V2 使用实际 provider projection 的 token 预算规划完整 turn。这是�
 - `memcore_json` 最终回复契约；
 - `speech` 提取、流式 speech 解析和中文/英文标点分段；
 - `memory_metadata` 校验、状态区分和回写当前 annotation target；
+- 写入、摘要、长期记忆、索引与检索共用 `turn_intent / memory_facets /
+  about_roles / entity_anchors / topic_terms / retrieval_priority / mood_tags`
+  唯一契约；工具/事件/材料身份由 typed kind 表达；
 - 工具中间轮不套最终回复 JSON，只有没有待处理工具调用的终态回复进入
   final contract；
 - 缺字段、非法 JSON、fallback 和 rejected 都有显式状态，不把坏 JSON 当成
@@ -149,8 +154,9 @@ V2 使用实际 provider projection 的 token 预算规划完整 turn。这是�
 |---|---|
 | 聊天历史、工具轨迹各存一份 | 一条统一时间线，检索准入和长期语义再独立决策 |
 | 直接把数据库行拼进 prompt | provider-specific projection + immutable ledger + prefix audit |
-| 先向量搜索再过滤 | namespace/kind/visibility/lineage 在评分前硬过滤 |
-| 用相邻消息扩窗 | 按 turn、correlation 和 source lineage 做关系扩窗 |
+| 先向量搜索再过滤 | namespace/kind/visibility/lineage/facet/role/entity 在评分前裁剪候选 |
+| 摘要和 raw 混成一个榜 | raw-first 分池，摘要和长期记忆只补充 |
+| 用相邻物理行扩窗 | raw source_id 按完整 turn 分组扩窗，工具轮不会截半 |
 | 压缩失败仍标记完成 | 结构化 retry/deferred，原始 source 保留，不假成功 |
 | 工具类型写死在核心枚举 | 开放 namespaced kind + 可插拔 renderer |
 
@@ -160,7 +166,7 @@ MemCore 不包含也不推断这些产品资产：
 
 - 最终聊天模型、API key、provider 路由和模型参数；
 - QQ/桌宠/HTTP 渠道、权限和工具实际执行；
-- persona、领域提示词、领域 categories；
+- persona 与领域补充提示词；固定 metadata facet/role 契约不能由宿主换成另一套同义词；
 - 文件本体、OCR、视觉模型和 derived store；
 - 生产环境 embedding 模型选择。
 
@@ -170,7 +176,9 @@ MemCore 不需要为每个 Bot 复制一套业务逻辑。
 
 ## 仍然明确存在的兼容边界
 
-- 旧数据可能没有完整 turn/correlation lineage；它们作为 standalone component
+- SQLite schema 3 会把旧 metadata 一次转换并将三层索引全部标记 pending；运行时
+  不再双读或双写旧 `keywords/categories/subject_scopes`；
+- 更早的数据可能没有完整 turn/correlation lineage；它们作为 standalone component
   进入唯一 V2 planner，不靠物理相邻位置猜造关系；
 - 产品级 prompt assembly 和 provider transport 按架构边界继续由宿主负责，
   这不是 V2 未完成或需要复制的第二套记忆实现；
@@ -186,6 +194,6 @@ MemCore 不需要为每个 Bot 复制一套业务逻辑。
 1. [`README.md`](../README.md)；
 2. [`usage_flow_v1.md`](usage_flow_v1.md)；
 3. [`model_prompt_playbook_v1.md`](model_prompt_playbook_v1.md)；
-4. [`unified_timeline_v2_design_v1.md`](unified_timeline_v2_design_v1.md)。
+4. [`memory_metadata_raw_retrieval_design_v1.md`](memory_metadata_raw_retrieval_design_v1.md)。
 
 测试、构建和授权信息以仓库根目录 README 为准。

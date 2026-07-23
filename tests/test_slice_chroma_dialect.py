@@ -46,10 +46,10 @@ class WhereTranslation(unittest.TestCase):
         self.assertEqual(out, {"$and": [{"user_id": "u1"}, {"source_id": {"$nin": ["m1", "m2"]}}]})
 
     def test_or_clause_is_preserved(self) -> None:
-        out = _to_chroma_where({"$or": [{"memory_category__preference": True}, {"memory_category__plan_goal": True}]})
+        out = _to_chroma_where({"$or": [{"memory_facet__preference": True}, {"memory_facet__plan": True}]})
         self.assertEqual(
             out,
-            {"$or": [{"memory_category__preference": True}, {"memory_category__plan_goal": True}]},
+            {"$or": [{"memory_facet__preference": True}, {"memory_facet__plan": True}]},
         )
 
     def test_empty_or_is_not_silently_dropped(self) -> None:
@@ -60,8 +60,8 @@ class WhereTranslation(unittest.TestCase):
             {
                 "user_id": "u1",
                 "$and": [
-                    {"$or": [{"memory_category__preference": True}, {"memory_category__plan_goal": True}]},
-                    {"memory_scope__user": True},
+                    {"$or": [{"memory_facet__preference": True}, {"memory_facet__plan": True}]},
+                    {"memory_about_role__user": True},
                 ],
             }
         )
@@ -70,8 +70,8 @@ class WhereTranslation(unittest.TestCase):
             {
                 "$and": [
                     {"user_id": "u1"},
-                    {"$or": [{"memory_category__preference": True}, {"memory_category__plan_goal": True}]},
-                    {"memory_scope__user": True},
+                    {"$or": [{"memory_facet__preference": True}, {"memory_facet__plan": True}]},
+                    {"memory_about_role__user": True},
                 ]
             },
         )
@@ -95,7 +95,7 @@ class ChromaIntegration(unittest.TestCase):
                         "user_id": "u1",
                         "domain_id": "d",
                         "timestamp": 100,
-                        "memory_keywords_text": "可乐 饮料",
+                        "memory_entity_text": "可乐 饮料",
                         "entry_type": "raw",
                     },
                 },
@@ -126,8 +126,14 @@ class ChromaIntegration(unittest.TestCase):
 
     def test_keyword_search_with_multi_key_where(self) -> None:
         where = {"tenant_id": "t", "user_id": "u1", "domain_id": "d"}
-        hits = self.index.keyword_search(query_text="饮料", keywords=["饮料"], where=where)
+        hits = self.index.keyword_search(query_text="饮料", entity_anchors=["饮料"], topic_terms=[], where=where)
         self.assertEqual(hits[0]["source_id"], "m1")  # 标签命中,且只在 u1 范围
+
+    def test_count_candidates_uses_same_filter_and_exclusions(self) -> None:
+        where = {"tenant_id": "t", "user_id": "u1", "domain_id": "d"}
+
+        self.assertEqual(self.index.count_candidates(where=where), 1)
+        self.assertEqual(self.index.count_candidates(where=where, exclude_source_ids=["m1"]), 0)
 
 
 if __name__ == "__main__":

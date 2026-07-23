@@ -227,11 +227,10 @@ class BasicTurnCompletionTests(TurnLifecycleBase):
             semantic_text="记住了，你喜欢无糖可乐。",
             provider_output_raw='{"speech":"记住了，你喜欢无糖可乐。","memory_metadata":{}}',
             memory_annotation={
-                "keywords": ["可乐", "无糖饮料"],
-                "categories": ["preference", "tool_trace"],
-                "subject_scopes": ["user"],
-                "importance": 0.8,
-                "confidence": 0.95,
+                "entity_anchors": ["可乐", "无糖饮料"],
+                "memory_facets": ["preference"],
+                "about_roles": ["user"],
+                "retrieval_priority": "high",
             },
             annotation_status="accepted",
             timestamp=101,
@@ -242,8 +241,8 @@ class BasicTurnCompletionTests(TurnLifecycleBase):
         self.assertEqual(result.status, "completed")
         self.assertEqual(result.updated_targets[0].annotation_status, AnnotationStatus.ACCEPTED_MODEL)
         self.assertEqual(result.updated_targets[0].retrieval_visibility, RetrievalVisibility.DEFAULT)
-        self.assertEqual(result.updated_targets[0].memory_metadata["keywords"], ["可乐", "无糖饮料"])
-        self.assertEqual(result.updated_targets[0].memory_metadata["categories"], ["preference"])
+        self.assertEqual(result.updated_targets[0].memory_metadata["entity_anchors"], ["可乐", "无糖饮料"])
+        self.assertEqual(result.updated_targets[0].memory_metadata["memory_facets"], ["preference"])
         self.assertEqual(result.final_entry.annotation_status, AnnotationStatus.DERIVED_TURN_FINAL)
         self.assertEqual(result.final_entry.retrieval_visibility, RetrievalVisibility.DEFAULT)
         self.assertEqual(result.final_entry.reply_to_source_id, "stimulus-1")
@@ -295,16 +294,17 @@ class BasicTurnCompletionTests(TurnLifecycleBase):
             annotation_status="accepted",
         )
         self.assertEqual(result.updated_targets[0].annotation_status, AnnotationStatus.ACCEPTED_MODEL)
-        self.assertEqual(result.updated_targets[0].memory_metadata["keywords"], [])
+        self.assertEqual(result.updated_targets[0].memory_metadata["topic_terms"], [])
         self.assertEqual(result.updated_targets[0].retrieval_visibility, RetrievalVisibility.DEFAULT)
 
-    def test_unannotated_event_keeps_v1_explicit_trace_compatibility(self) -> None:
+    def test_unannotated_event_uses_typed_kind_without_metadata_compatibility(self) -> None:
         handle = self.mem.begin_turn(
             stimuli=[_stimulus("张三戳了戳助手", source_id="poke", kind="event.qq.poke")],
             turn_id="turn-event-missing",
         )
         before = self.store.get_entry(namespace=self.namespace, source_id="poke")
-        self.assertIn("event_trace", before.memory_metadata["categories"])
+        self.assertEqual(before.kind, "event.qq.poke")
+        self.assertEqual(before.memory_metadata, {})
         result = self.mem.complete_turn(
             turn_id=handle.turn_id,
             semantic_text="我感觉到了。",
@@ -312,7 +312,8 @@ class BasicTurnCompletionTests(TurnLifecycleBase):
             annotation_status="missing",
         )
         self.assertEqual(result.updated_targets[0].retrieval_visibility, RetrievalVisibility.EXPLICIT)
-        self.assertIn("event_trace", result.updated_targets[0].memory_metadata["categories"])
+        self.assertEqual(result.updated_targets[0].kind, "event.qq.poke")
+        self.assertEqual(result.updated_targets[0].memory_metadata, {})
 
     def test_policy_always_and_never_override_auto_admission(self) -> None:
         always = self.mem.begin_turn(
@@ -337,7 +338,7 @@ class BasicTurnCompletionTests(TurnLifecycleBase):
             turn_id=never.turn_id,
             semantic_text="reply",
             provider_output_raw="reply",
-            memory_annotation={"keywords": ["never"]},
+            memory_annotation={"topic_terms": ["never"]},
             annotation_status="accepted",
         )
         self.assertEqual(never_result.updated_targets[0].retrieval_visibility, RetrievalVisibility.NEVER)
@@ -358,6 +359,103 @@ class BasicTurnCompletionTests(TurnLifecycleBase):
         }
         self.assertNotIn("never", indexed_ids)
         self.assertNotIn(never_result.final_entry.source_id, indexed_ids)
+
+
+class RawTimelineAnchorTests(TurnLifecycleBase):
+    def _add(
+        self,
+        source_id: str,
+        text: str,
+        *,
+        timestamp: int,
+        turn_id: str = "",
+        turn_role: str = "",
+        kind: str = "message.user",
+    ) -> None:
+        self.store.add_message(
+            namespace=self.namespace,
+            role="user",
+            content=text,
+            semantic_text=text,
+            timestamp=timestamp,
+            source_id=source_id,
+            turn_id=turn_id,
+            turn_role=turn_role,
+            kind=kind,
+            correlation_id="search-call" if turn_role in {"action", "observation"} else "",
+        )
+
+    def test_raw_anchor_returns_complete_tool_turn_and_adjacent_standalone_groups(self) -> None:
+        self._add("before", "前一条独立消息", timestamp=100)
+        self._add("stimulus", "查两个来源", timestamp=101, turn_id="tool-turn", turn_role="stimulus")
+        self._add(
+            "action",
+            "调用搜索",
+            timestamp=102,
+            turn_id="tool-turn",
+            turn_role="action",
+            kind="tool.web_search.call",
+        )
+        self._add(
+            "observation",
+            "搜索结果",
+            timestamp=103,
+            turn_id="tool-turn",
+            turn_role="observation",
+            kind="tool.web_search.result",
+        )
+        self._add(
+            "final",
+            "综合回复",
+            timestamp=104,
+            turn_id="tool-turn",
+            turn_role="final",
+            kind="message.assistant",
+        )
+        self._add("after", "后一条独立消息", timestamp=105)
+
+        turn_only = self.mem.read_timeline(anchor_source_id="action")
+        expanded = self.mem.read_timeline(anchor_source_id="action", before_turns=1, after_turns=1)
+
+        self.assertEqual(turn_only["status"], "ok")
+        self.assertEqual(
+            [row["source_id"] for row in turn_only["messages"]],
+            ["stimulus", "action", "observation", "final"],
+        )
+        self.assertEqual(
+            [row["source_id"] for row in expanded["messages"]],
+            ["before", "stimulus", "action", "observation", "final", "after"],
+        )
+
+    def test_anchor_rejects_derived_and_does_not_cross_conversation(self) -> None:
+        self.store.add_summary(
+            namespace=self.namespace,
+            record={"summary_id": "derived", "timestamp": 100, "diary_summary": "阶段摘要"},
+        )
+        other_namespace = Namespace(
+            user_id="user",
+            tenant_id="tenant",
+            domain_id="domain",
+            conversation_id="other",
+        )
+        self.store.add_message(
+            namespace=other_namespace,
+            role="user",
+            content="其它会话",
+            timestamp=101,
+            source_id="other-raw",
+        )
+
+        derived = self.mem.read_timeline(anchor_source_id="derived")
+        out_of_scope = self.mem.read_timeline(anchor_source_id="other-raw")
+        mixed = self.mem.read_timeline(date_from="2026-07-23", anchor_source_id="derived")
+
+        self.assertEqual(derived["status"], "invalid_filter")
+        self.assertEqual(derived["reason"], "raw_anchor_required")
+        self.assertEqual(out_of_scope["status"], "empty")
+        self.assertEqual(out_of_scope["reason"], "anchor_not_found_or_out_of_scope")
+        self.assertEqual(mixed["status"], "invalid_filter")
+        self.assertEqual(mixed["reason"], "timeline_modes_are_mutually_exclusive")
 
 
 class ParallelToolTurnTests(TurnLifecycleBase):
@@ -410,7 +508,7 @@ class ParallelToolTurnTests(TurnLifecycleBase):
             turn_id=handle.turn_id,
             semantic_text="too early",
             provider_output_raw="too early",
-            memory_annotation={"keywords": ["两个方向"]},
+            memory_annotation={"topic_terms": ["两个方向"]},
             annotation_status="accepted",
             timestamp=310,
             source_id="must-not-exist",
@@ -427,7 +525,7 @@ class ParallelToolTurnTests(TurnLifecycleBase):
             turn_id=handle.turn_id,
             semantic_text="两个方向都查完了。",
             provider_output_raw="final raw",
-            memory_annotation={"keywords": ["两个方向"]},
+            memory_annotation={"topic_terms": ["两个方向"]},
             annotation_status="accepted",
             timestamp=312,
             source_id="tools-final",
@@ -442,7 +540,8 @@ class ParallelToolTurnTests(TurnLifecycleBase):
         self.assertEqual([entry.source_id for entry in branch_a], ["action-a", "progress-a", "result-a"])
         self.assertEqual([entry.source_id for entry in branch_b], ["action-b", "result-b"])
         self.assertTrue(all(entry.retrieval_visibility is RetrievalVisibility.EXPLICIT for entry in branch_a))
-        self.assertTrue(all("tool_trace" in entry.memory_metadata["categories"] for entry in branch_a))
+        self.assertTrue(all(entry.kind.startswith("tool.web_search.") for entry in branch_a))
+        self.assertTrue(all(entry.memory_metadata == {} for entry in branch_a))
 
     def test_duplicate_action_correlation_is_rejected(self) -> None:
         handle = self.mem.begin_turn(stimuli=[_stimulus("q")], turn_id="turn-duplicate")
@@ -478,7 +577,7 @@ class MultiTargetAndRollbackTests(TurnLifecycleBase):
                 MemoryAnnotation(
                     target_source_id="u1",
                     status=AnnotationStatus.ACCEPTED_MODEL,
-                    memory_metadata={"keywords": ["可乐"]},
+                    memory_metadata={"entity_anchors": ["可乐"]},
                 )
             ],
             annotation_status="accepted",
@@ -499,12 +598,12 @@ class MultiTargetAndRollbackTests(TurnLifecycleBase):
                 MemoryAnnotation(
                     target_source_id="u1",
                     status=AnnotationStatus.ACCEPTED_MODEL,
-                    memory_metadata={"keywords": ["可乐"], "categories": ["preference"]},
+                    memory_metadata={"entity_anchors": ["可乐"], "memory_facets": ["preference"]},
                 ),
                 MemoryAnnotation(
                     target_source_id="u2",
                     status=AnnotationStatus.ACCEPTED_MODEL,
-                    memory_metadata={"keywords": ["咖啡"], "categories": ["preference"]},
+                    memory_metadata={"entity_anchors": ["咖啡"], "memory_facets": ["preference"]},
                 ),
             ],
             annotation_status="accepted",
@@ -512,8 +611,8 @@ class MultiTargetAndRollbackTests(TurnLifecycleBase):
             source_id="bundle-final",
         )
         targets = {entry.source_id: entry for entry in completed.updated_targets}
-        self.assertEqual(targets["u1"].memory_metadata["keywords"], ["可乐"])
-        self.assertEqual(targets["u2"].memory_metadata["keywords"], ["咖啡"])
+        self.assertEqual(targets["u1"].memory_metadata["entity_anchors"], ["可乐"])
+        self.assertEqual(targets["u2"].memory_metadata["entity_anchors"], ["咖啡"])
         self.assertEqual(completed.final_entry.reply_to_source_id, "")
         repeated = self.mem.complete_turn(
             turn_id=handle.turn_id,
@@ -539,7 +638,7 @@ class MultiTargetAndRollbackTests(TurnLifecycleBase):
             turn_id=handle.turn_id,
             semantic_text="should roll back",
             provider_output_raw="raw",
-            memory_annotation={"keywords": ["污染"]},
+            memory_annotation={"topic_terms": ["污染"]},
             annotation_status="accepted",
             timestamp=501,
             source_id="occupied-final-id",
@@ -620,7 +719,7 @@ class AbortIsolationAndOutboxTests(TurnLifecycleBase):
                 turn_id=handle.turn_id,
                 semantic_text="persisted final",
                 provider_output_raw="raw",
-                memory_annotation={"keywords": ["persist"]},
+                memory_annotation={"topic_terms": ["persist"]},
                 annotation_status="accepted",
                 source_id="persist-final",
             )

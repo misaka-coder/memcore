@@ -41,7 +41,7 @@ class EvalCase:
     name: str
     namespace: Namespace
     query: str
-    keywords: list[str] = field(default_factory=list)
+    entity_anchors: list[str] = field(default_factory=list)
     time_hint: dict[str, Any] | None = None
     expect_substrings: list[str] = field(default_factory=list)  # 必须出现在检索结果
     forbid_substrings: list[str] = field(default_factory=list)  # 绝不能出现(隔离/时间红线)
@@ -107,7 +107,7 @@ def run_eval(
         failures: list[str] = []
         for case in cases:
             mem = mem_for(case.namespace)
-            snippets = mem.retrieve(case.query, keywords=case.keywords, time_hint=case.time_hint)
+            snippets = mem.retrieve(case.query, entity_anchors=case.entity_anchors, time_hint=case.time_hint)
             blob = "\n".join(snippets)
 
             case_ok = True
@@ -154,7 +154,7 @@ def default_dataset() -> tuple[list[SeedTurn], list[EvalCase]]:
             name="preference_recall_cross_conversation",
             namespace=u1_c1,
             query="我之前说过最喜欢喝可乐吗",
-            keywords=["可乐"],
+            entity_anchors=["可乐"],
             expect_substrings=["可乐"],
             forbid_substrings=["讨厌"],  # u2 的"讨厌可乐"不能泄漏
         ),
@@ -162,7 +162,7 @@ def default_dataset() -> tuple[list[SeedTurn], list[EvalCase]]:
             name="hard_isolation_u2_not_leaked",
             namespace=u2_c1,
             query="我对可乐什么态度",
-            keywords=["可乐"],
+            entity_anchors=["可乐"],
             expect_substrings=["讨厌"],  # u2 自己的能看到
             forbid_substrings=["最喜欢喝可乐"],  # u1 的不能串过来
         ),
@@ -170,7 +170,7 @@ def default_dataset() -> tuple[list[SeedTurn], list[EvalCase]]:
             name="explicit_tool_retrieve_cross_conversation",
             namespace=u1_c1,
             query="还记得我喜欢喝可乐吗",
-            keywords=["可乐"],
+            entity_anchors=["可乐"],
             expect_substrings=["可乐"],
         ),
     ]

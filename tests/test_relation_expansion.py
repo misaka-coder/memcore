@@ -84,7 +84,7 @@ def _complete_message_turn(
         turn_id=turn_id,
         semantic_text=final_text,
         provider_output_raw=json.dumps({"speech": final_text}, ensure_ascii=False),
-        memory_annotation={"keywords": ["滑雪"], "categories": ["preference"]},
+        memory_annotation={"entity_anchors": ["滑雪"], "memory_facets": ["preference"]},
         annotation_status="accepted",
         source_id=final_id,
         timestamp=timestamp + 1,
@@ -138,13 +138,13 @@ class RelationExpansionTests(unittest.TestCase):
                 turn_id="turn-default",
                 semantic_text="记得带护目镜。",
                 provider_output_raw='{"speech":"记得带护目镜。"}',
-                memory_annotation={"keywords": ["滑雪"], "categories": ["preference"]},
+                memory_annotation={"entity_anchors": ["滑雪"], "memory_facets": ["preference"]},
                 annotation_status="accepted",
                 source_id="answer",
                 timestamp=1003,
             )
 
-            result = mem.retrieve_structured("周末滑雪", keywords=["滑雪"])
+            result = mem.retrieve_structured("周末滑雪", entity_anchors=["滑雪"])
 
             self.assertEqual(result.status, "found")
             self.assertEqual(len(result.matches), 1)
@@ -205,7 +205,7 @@ class RelationExpansionTests(unittest.TestCase):
 
             result = mem.retrieve_structured(
                 "北京晴天",
-                keywords=["北京晴天"],
+                entity_anchors=["北京晴天"],
                 include_explicit=True,
                 kind_patterns=["tool.weather.*"],
             )
@@ -249,7 +249,7 @@ class RelationExpansionTests(unittest.TestCase):
 
             result = mem.retrieve_structured(
                 "政策快讯",
-                keywords=["政策快讯"],
+                entity_anchors=["政策快讯"],
                 include_explicit=True,
                 kind_patterns=["event.finance.*"],
             )
@@ -293,7 +293,7 @@ class RelationExpansionTests(unittest.TestCase):
 
             result = mem.retrieve_structured(
                 "未完成查询参数",
-                keywords=["未完成查询参数"],
+                entity_anchors=["未完成查询参数"],
                 include_explicit=True,
                 kind_patterns=["tool.pending.*"],
             )
@@ -305,7 +305,7 @@ class RelationExpansionTests(unittest.TestCase):
             mem.close()
             store.close()
 
-    def test_semantic_lineage_suppresses_summary_and_raw_duplicates(self) -> None:
+    def test_raw_lineage_suppresses_summary_and_semantic_duplicates(self) -> None:
         mem, store = _memory()
         try:
             raw = mem.record_user_turn("我喜欢滑雪", timestamp=3000, source_id="raw-ski")
@@ -316,7 +316,7 @@ class RelationExpansionTests(unittest.TestCase):
                     "timestamp": 3001,
                     "diary_summary": "用户喜欢滑雪",
                     "source_ids": [raw["source_id"]],
-                    "memory_metadata": {"keywords": ["滑雪"]},
+                    "memory_metadata": {"entity_anchors": ["滑雪"]},
                 },
             )
             semantic = store.add_semantic_summary(
@@ -326,7 +326,7 @@ class RelationExpansionTests(unittest.TestCase):
                     "timestamp": 3002,
                     "semantic_summary": "稳定偏好：滑雪",
                     "source_summary_ids": [summary["summary_id"]],
-                    "memory_metadata": {"keywords": ["滑雪"]},
+                    "memory_metadata": {"entity_anchors": ["滑雪"]},
                 },
             )
             mem.index.upsert([build_summary_entry(summary), build_semantic_entry(semantic)])
@@ -338,11 +338,11 @@ class RelationExpansionTests(unittest.TestCase):
                     index_key=INDEX_SCHEMA_KEY,
                 )
 
-            result = mem.retrieve_structured("滑雪", keywords=["滑雪"])
+            result = mem.retrieve_structured("滑雪", entity_anchors=["滑雪"])
 
             self.assertEqual(result.status, "found")
-            self.assertEqual([match.source_id for match in result.matches], ["semantic-ski"])
-            self.assertEqual(result.matches[0].lineage, ("summary-ski", "raw-ski"))
+            self.assertEqual([match.source_id for match in result.matches], ["raw-ski"])
+            self.assertEqual(result.matches[0].lineage, ())
         finally:
             mem.close()
             store.close()
@@ -365,7 +365,7 @@ class RelationExpansionTests(unittest.TestCase):
                     "timestamp": 4001,
                     "diary_summary": "错误跨域滑雪摘要",
                     "source_ids": ["other-raw"],
-                    "memory_metadata": {"keywords": ["滑雪"]},
+                    "memory_metadata": {"entity_anchors": ["滑雪"]},
                 },
             )
             mem.index.upsert([build_summary_entry(summary)])
@@ -376,7 +376,7 @@ class RelationExpansionTests(unittest.TestCase):
                 index_key=INDEX_SCHEMA_KEY,
             )
 
-            result = mem.retrieve_structured("滑雪", keywords=["滑雪"])
+            result = mem.retrieve_structured("滑雪", entity_anchors=["滑雪"])
             stored = store.get_retrieval_record(namespace=mem.namespace, source_id="broken-summary")
 
             self.assertEqual(result.status, "empty")
@@ -432,7 +432,7 @@ class RelationExpansionTests(unittest.TestCase):
                     "timestamp": 5001,
                     "diary_summary": "不应重复返回的滑雪摘要",
                     "source_ids": ["visible-raw"],
-                    "memory_metadata": {"keywords": ["滑雪"]},
+                    "memory_metadata": {"entity_anchors": ["滑雪"]},
                 },
             )
             mem.index.upsert([build_summary_entry(summary)])
@@ -447,7 +447,7 @@ class RelationExpansionTests(unittest.TestCase):
             result = mem.retrieve_for_turn_structured(
                 current=current,
                 query="滑雪",
-                keywords=["滑雪"],
+                entity_anchors=["滑雪"],
             )
 
             self.assertEqual(result.status, "empty")
@@ -534,7 +534,7 @@ class AtomicBudgetTests(unittest.TestCase):
 
             result = mem.retrieve_structured(
                 "超长结果",
-                keywords=["超长结果"],
+                entity_anchors=["超长结果"],
                 include_explicit=True,
                 kind_patterns=["tool.long.*"],
                 result_token_budget=520,
@@ -575,7 +575,7 @@ class AtomicBudgetTests(unittest.TestCase):
             )
             full = mem.retrieve_structured(
                 "共同主题滑雪",
-                keywords=["共同主题滑雪"],
+                entity_anchors=["共同主题滑雪"],
                 result_token_budget=100_000,
             )
             self.assertEqual(len(full.matches), 2)
@@ -585,7 +585,7 @@ class AtomicBudgetTests(unittest.TestCase):
 
             limited = mem.retrieve_structured(
                 "共同主题滑雪",
-                keywords=["共同主题滑雪"],
+                entity_anchors=["共同主题滑雪"],
                 result_token_budget=first_count,
             )
 

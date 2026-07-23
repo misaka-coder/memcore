@@ -4,17 +4,20 @@ from __future__ import annotations
 
 import hashlib
 import re
+import unicodedata
 from typing import Any
 
 _SAFE_KEY = re.compile(r"^[A-Za-z0-9_]+$")
 _KIND_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)+$")
 _KIND_PREFIX_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)*$")
 
-INDEX_SCHEMA_VERSION = 2
+INDEX_SCHEMA_VERSION = 3
 KIND_FLAG_SCHEMA_VERSION = 1
 VISIBILITY_SCHEMA_VERSION = 1
+ENTITY_FLAG_SCHEMA_VERSION = 1
 INDEX_SCHEMA_KEY = (
-    f"index_v{INDEX_SCHEMA_VERSION}:kind_v{KIND_FLAG_SCHEMA_VERSION}:visibility_v{VISIBILITY_SCHEMA_VERSION}"
+    f"index_v{INDEX_SCHEMA_VERSION}:kind_v{KIND_FLAG_SCHEMA_VERSION}:"
+    f"visibility_v{VISIBILITY_SCHEMA_VERSION}:entity_v{ENTITY_FLAG_SCHEMA_VERSION}"
 )
 
 
@@ -30,12 +33,27 @@ def metadata_filter_key(prefix: str, value: str) -> str:
     return f"{safe_prefix}__h_{digest}"
 
 
-def category_filter_key(category: str) -> str:
-    return metadata_filter_key("memory_category", category)
+def facet_filter_key(facet: str) -> str:
+    return metadata_filter_key("memory_facet", facet)
 
 
-def subject_scope_filter_key(scope: str) -> str:
-    return metadata_filter_key("memory_scope", scope)
+def about_role_filter_key(role: str) -> str:
+    return metadata_filter_key("memory_about_role", role)
+
+
+def normalize_entity_anchor(value: Any) -> str:
+    """Stable entity normalization without guessing aliases or stripping meaningful symbols."""
+
+    normalized = unicodedata.normalize("NFKC", str(value or ""))
+    return " ".join(normalized.strip().casefold().split())
+
+
+def entity_filter_key(entity: str) -> str:
+    normalized = normalize_entity_anchor(entity)
+    if not normalized:
+        raise ValueError("empty_entity_anchor")
+    digest = hashlib.sha256(f"entity_flag_v{ENTITY_FLAG_SCHEMA_VERSION}:{normalized}".encode("utf-8")).hexdigest()
+    return f"memory_entity__v{ENTITY_FLAG_SCHEMA_VERSION}_{digest}"
 
 
 def kind_prefixes(kind: str) -> tuple[str, ...]:
@@ -72,12 +90,14 @@ def normalize_kind_pattern(pattern: str) -> tuple[str, bool]:
 
 
 def metadata_filter_flags(metadata: dict[str, Any]) -> dict[str, bool]:
-    """Build boolean index metadata flags for structured category/scope prefilters."""
+    """Build boolean index metadata flags for facet/role/entity prefilters."""
     flags: dict[str, bool] = {}
-    for category in _string_items(metadata.get("categories")):
-        flags[category_filter_key(category)] = True
-    for scope in _string_items(metadata.get("subject_scopes")):
-        flags[subject_scope_filter_key(scope)] = True
+    for facet in _string_items(metadata.get("memory_facets")):
+        flags[facet_filter_key(facet)] = True
+    for role in _string_items(metadata.get("about_roles")):
+        flags[about_role_filter_key(role)] = True
+    for entity in _string_items(metadata.get("entity_anchors")):
+        flags[entity_filter_key(entity)] = True
     return flags
 
 

@@ -1,5 +1,10 @@
 # Metadata Prefilter Design v1
 
+> 历史设计文档：下文记录 schema 2 的旧 `categories/subject_scopes` 方案，
+> 不是当前接入 API。schema 3 的唯一权威见
+> [`memory_metadata_raw_retrieval_design_v1.md`](memory_metadata_raw_retrieval_design_v1.md)。
+> 新代码不得照此文档恢复旧字段或多级自动放宽。
+
 > 状态：本文保留 metadata flag/recursive where 的 V1 设计依据；当前运行权威已经是
 > Unified Timeline Retrieval V2，详见 `unified_timeline_v2_design_v1.md` §20。
 > V2 中 Namespace、conversation、time、visibility、annotation、kind、source layer、

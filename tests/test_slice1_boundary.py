@@ -22,7 +22,7 @@ from memcore import (
     TokenCounter,
     coerce_memory_metadata,
 )
-from memcore.schema import SEMANTIC_REQUIRED_FIELDS, TRACE_CATEGORIES, require_fields
+from memcore.schema import ABOUT_ROLES, MEMORY_FACETS, SEMANTIC_REQUIRED_FIELDS, require_fields
 
 
 class _StubLLM(LLMClient):
@@ -41,10 +41,9 @@ class ConfigInvariants(unittest.TestCase):
         self.assertGreater(cfg.raw_token_trigger, 0)
         self.assertGreater(cfg.raw_token_batch_ratio, 0)
         self.assertLess(cfg.raw_token_batch_ratio, 1)
-        self.assertIn("event_trace", cfg.categories)
-        self.assertIn("tool_trace", cfg.categories)
-        self.assertIn("material_trace", cfg.categories)
-        self.assertEqual(TRACE_CATEGORIES, ("event_trace", "tool_trace", "material_trace"))
+        self.assertEqual(cfg.retrieval_result_token_budget, 0)
+        self.assertIn("knowledge", MEMORY_FACETS)
+        self.assertEqual(ABOUT_ROLES, ("user", "assistant", "third_party", "external"))
 
     def test_retrieval_result_budget_rejects_negative_values(self) -> None:
         with self.assertRaises(ConfigError):
@@ -58,10 +57,6 @@ class ConfigInvariants(unittest.TestCase):
         with self.assertRaises(ConfigError):
             MemoryConfig(semantic_visible_limit=0)
 
-    def test_categories_must_be_nonempty_enum(self) -> None:
-        with self.assertRaises(ConfigError):
-            MemoryConfig(categories=())
-
     def test_raw_token_batch_ratio_bounds(self) -> None:
         with self.assertRaises(ConfigError):
             MemoryConfig(raw_token_batch_ratio=1)
@@ -70,24 +65,31 @@ class ConfigInvariants(unittest.TestCase):
 
 
 class MetadataCoercion(unittest.TestCase):
-    def test_enum_filtering_and_clamping(self) -> None:
+    def test_enum_filtering_and_string_deduplication(self) -> None:
         meta = coerce_memory_metadata(
             {
-                "keywords": ["可乐", "饮料", "可乐", "a", "b", "c"],  # 去重 + 截到 4
-                "subject_scopes": ["user", "bogus"],  # bogus 丢弃
-                "categories": ["preference", "not_a_category"],  # 非法丢弃
+                "turn_intent": "memory_query",
+                "memory_facets": ["preference", "not_a_facet"],
+                "about_roles": ["user", "bogus"],
+                "entity_anchors": ["可乐", "可乐", "饮料"],
+                "topic_terms": ["喜欢", "饮用习惯"],
+                "retrieval_priority": "critical",
                 "mood_tags": ["warm"],
-                "importance": 5,  # clamp 到 1.0
-                "confidence": -3,  # clamp 到 0.0
             },
             enable_flavor=True,
         )
-        self.assertEqual(meta.subject_scopes, ["user"])
-        self.assertEqual(meta.categories, ["preference"])
-        self.assertLessEqual(len(meta.keywords), 4)
-        self.assertEqual(meta.importance, 1.0)
-        self.assertEqual(meta.confidence, 0.0)
+        self.assertEqual(meta.turn_intent, "memory_query")
+        self.assertEqual(meta.memory_facets, ["preference"])
+        self.assertEqual(meta.about_roles, ["user"])
+        self.assertEqual(meta.entity_anchors, ["可乐", "饮料"])
+        self.assertEqual(meta.topic_terms, ["喜欢", "饮用习惯"])
+        self.assertEqual(meta.retrieval_priority, "critical")
         self.assertEqual(meta.mood_tags, ["warm"])
+
+    def test_legacy_fields_are_not_a_second_authority(self) -> None:
+        meta = coerce_memory_metadata({"keywords": ["旧字段"], "categories": ["preference"], "confidence": 1.0})
+        self.assertEqual(meta.entity_anchors, [])
+        self.assertEqual(meta.memory_facets, [])
 
     def test_flavor_off_strips_mood(self) -> None:
         meta = coerce_memory_metadata({"mood_tags": ["warm", "sad"]}, enable_flavor=False)

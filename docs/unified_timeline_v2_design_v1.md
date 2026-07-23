@@ -1,5 +1,10 @@
 # MemCore Unified Timeline V2 设计与实现说明
 
+> Timeline V2 建设过程的历史设计记录。metadata 与检索章节停留在 schema 2；
+> 当前字段、raw-first 检索和 raw anchor 规则以
+> [`memory_metadata_raw_retrieval_design_v1.md`](memory_metadata_raw_retrieval_design_v1.md)
+> 为准。旧字段描述只解释迁移来源，不是运行时兼容承诺。
+
 状态（2026-07-22）: package 与 Akane 回填均已完成。Timeline V2 是唯一运行权威；Schema foundation、Turn lifecycle、Projection ledger、Compaction V2、Retrieval admission、Relation expansion、native memory tool schema/dispatch 和 Akane 读写切换均已落地。provider-native transport、产品 prompt assembly 与工具执行继续由宿主负责，这是稳定架构边界，不是待迁移能力。
 
 当前实现检查点（2026-07-22）：

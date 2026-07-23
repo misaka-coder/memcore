@@ -27,8 +27,9 @@ from memcore.index.entry_builder import build_raw_entry, build_semantic_entry, b
 from memcore.index.metadata_filters import (
     INDEX_SCHEMA_KEY,
     INDEX_SCHEMA_VERSION,
-    category_filter_key,
-    subject_scope_filter_key,
+    about_role_filter_key,
+    entity_filter_key,
+    facet_filter_key,
 )
 from memcore.llm.base import LLMClient, LLMRequest, LLMResult, TaskType
 
@@ -36,9 +37,8 @@ from memcore.llm.base import LLMClient, LLMRequest, LLMResult, TaskType
 class ReadLLM(LLMClient):
     """verifier 按 verifier_match 决定 match/mismatch。"""
 
-    def __init__(self, *, verifier_match: bool = True, keywords: list[str] | None = None) -> None:
+    def __init__(self, *, verifier_match: bool = True) -> None:
         self.verifier_match = verifier_match
-        self.keywords = keywords or ["可乐"]
 
     def call(self, request: LLMRequest) -> LLMResult:
         if request.task_type == TaskType.VERIFIER:
@@ -90,10 +90,20 @@ class SpyIndex(VectorIndex):
         return []
 
     def keyword_search(
-        self, *, query_text: str, keywords: list[str], where: dict, n_results: int = 8, exclude_source_ids=None
+        self,
+        *,
+        query_text: str,
+        entity_anchors: list[str],
+        topic_terms: list[str],
+        where: dict,
+        n_results: int = 8,
+        exclude_source_ids=None,
     ) -> list[dict]:
         self.keyword_wheres.append(dict(where))
         return []
+
+    def count_candidates(self, *, where: dict, exclude_source_ids=None) -> int:
+        return 1
 
     def delete(self, source_ids: list[str]) -> None:
         return None
@@ -107,7 +117,7 @@ class ExplicitRetrieve(unittest.TestCase):
         store, index, emb = _shared_backends()
         mem = _mem(store, index, emb, conversation="c1")
         mem.record_user_turn("我最喜欢喝可乐", timestamp=1000)
-        hits = mem.retrieve("可乐", keywords=["可乐"])
+        hits = mem.retrieve("可乐", entity_anchors=["可乐"])
         self.assertTrue(any("可乐" in s for s in hits))
         store.close()
 
@@ -135,14 +145,13 @@ class ExplicitRetrieve(unittest.TestCase):
             result="北京今天 25 度晴天",
             timestamp=1000,
             source_id_prefix="tool1",
-            keywords=["北京天气"],
         )
         mem.abort_turn("tool-turn", reason="retrieval_fixture", closed_at=1002)
 
-        self.assertEqual(mem.retrieve("北京天气", keywords=["北京天气"]), [])
+        self.assertEqual(mem.retrieve("北京天气", entity_anchors=["北京天气"]), [])
         hits = mem.retrieve(
             "北京天气",
-            keywords=["北京天气"],
+            entity_anchors=["北京天气"],
             include_explicit=True,
             kind_patterns=["tool.web_search.*"],
         )
@@ -163,13 +172,13 @@ class ExplicitRetrieve(unittest.TestCase):
             },
             timestamp=1000,
             source_id="event1",
-            keywords=["科创债"],
+            entity_anchors=["科创债"],
         )
 
-        self.assertEqual(mem.retrieve("科创债", keywords=["科创债"]), [])
+        self.assertEqual(mem.retrieve("科创债", entity_anchors=["科创债"]), [])
         hits = mem.retrieve(
             "科创债",
-            keywords=["科创债"],
+            entity_anchors=["科创债"],
             include_explicit=True,
             kind_patterns=["event.finance.*"],
         )
@@ -188,13 +197,13 @@ class ExplicitRetrieve(unittest.TestCase):
             derived_status="ocr_ready",
             timestamp=1000,
             source_id="mat1",
-            keywords=["题目图片"],
+            topic_terms=["题目图片"],
         )
 
-        self.assertEqual(mem.retrieve("photo.jpg", keywords=["photo.jpg"]), [])
+        self.assertEqual(mem.retrieve("photo.jpg", entity_anchors=["photo.jpg"]), [])
         hits = mem.retrieve(
             "photo.jpg",
-            keywords=["photo.jpg"],
+            entity_anchors=["photo.jpg"],
             include_explicit=True,
             kind_patterns=["material.*"],
         )
@@ -205,7 +214,7 @@ class ExplicitRetrieve(unittest.TestCase):
         store, index, emb = _shared_backends()
         mem = _mem(store, index, emb, conversation="c1", llm=ReadLLM(verifier_match=False))
         mem.record_user_turn("我最喜欢喝可乐", timestamp=1000)
-        self.assertEqual(mem.retrieve("可乐", keywords=["可乐"]), [])
+        self.assertEqual(mem.retrieve("可乐", entity_anchors=["可乐"]), [])
         store.close()
 
     def test_verifier_disabled_passes_through(self) -> None:
@@ -213,7 +222,7 @@ class ExplicitRetrieve(unittest.TestCase):
         cfg = MemoryConfig(enable_verifier=False)
         mem = _mem(store, index, emb, conversation="c1", llm=ReadLLM(verifier_match=False), config=cfg)
         mem.record_user_turn("我最喜欢喝可乐", timestamp=1000)
-        self.assertTrue(any("可乐" in s for s in mem.retrieve("可乐", keywords=["可乐"])))
+        self.assertTrue(any("可乐" in s for s in mem.retrieve("可乐", entity_anchors=["可乐"])))
         store.close()
 
     def test_index_safe_metadata_filters_are_pushed_into_where(self) -> None:
@@ -231,26 +240,21 @@ class ExplicitRetrieve(unittest.TestCase):
         mem.retrieve(
             "风险偏好",
             source_layers=["summary"],
-            importance_min=0.7,
-            categories=["preference", "plan_goal"],
-            subject_scopes=["user", "assistant"],
+            memory_facets=["preference", "plan"],
+            about_roles=["user", "assistant"],
+            entity_anchors=["Akane"],
         )
 
         first = index.semantic_wheres[0]
-        category_or = {"$or": [{category_filter_key("preference"): True}, {category_filter_key("plan_goal"): True}]}
-        scope_or = {"$or": [{subject_scope_filter_key("user"): True}, {subject_scope_filter_key("assistant"): True}]}
-        self.assertEqual(first["entry_type"], {"$in": ["summary"]})
-        self.assertEqual(first["memory_importance"], {"$gte": 0.7})
-        self.assertIn(category_or, first["$and"])
-        self.assertIn(scope_or, first["$and"])
-        self.assertNotIn("memory_categories_text", first)
+        facet_or = {"$or": [{facet_filter_key("preference"): True}, {facet_filter_key("plan"): True}]}
+        role_or = {"$or": [{about_role_filter_key("user"): True}, {about_role_filter_key("assistant"): True}]}
+        self.assertEqual(first["entry_type"], "summary")
+        self.assertIn(facet_or, first["$and"])
+        self.assertIn(role_or, first["$and"])
+        self.assertIn({entity_filter_key("Akane"): True}, first["$and"])
+        self.assertNotIn("memory_facets_text", first)
         self.assertEqual(index.keyword_wheres[0], first)
-        self.assertEqual(len(index.semantic_wheres), 4)
-        self.assertNotIn("memory_importance", index.semantic_wheres[1])
-        self.assertIn(category_or, index.semantic_wheres[1]["$and"])
-        self.assertIn(scope_or, index.semantic_wheres[2]["$and"])
-        self.assertNotIn(category_or, index.semantic_wheres[2]["$and"])
-        self.assertNotIn(scope_or, index.semantic_wheres[3]["$and"])
+        self.assertEqual(len(index.semantic_wheres), 1)
         self.assertTrue(all("entry_type" in where for where in index.semantic_wheres))
         store.close()
 
@@ -262,9 +266,10 @@ class ExplicitRetrieve(unittest.TestCase):
             "conversation_id": "c1",
             "timestamp": 1000,
             "memory_metadata": {
-                "categories": ["preference", "plan_goal"],
-                "subject_scopes": ["user"],
-                "importance": 0.8,
+                "memory_facets": ["preference", "plan"],
+                "about_roles": ["user"],
+                "entity_anchors": ["可乐"],
+                "retrieval_priority": "high",
             },
         }
         entries = [
@@ -275,10 +280,94 @@ class ExplicitRetrieve(unittest.TestCase):
 
         for entry in entries:
             metadata = entry["metadata"]
-            self.assertTrue(metadata[category_filter_key("preference")])
-            self.assertTrue(metadata[category_filter_key("plan_goal")])
-            self.assertTrue(metadata[subject_scope_filter_key("user")])
-            self.assertEqual(metadata["memory_importance"], 0.8)
+            self.assertTrue(metadata[facet_filter_key("preference")])
+            self.assertTrue(metadata[facet_filter_key("plan")])
+            self.assertTrue(metadata[about_role_filter_key("user")])
+            self.assertTrue(metadata[entity_filter_key("可乐")])
+            self.assertEqual(metadata["memory_priority"], "high")
+
+    def test_entity_filter_only_relaxes_after_zero_candidates(self) -> None:
+        store, index, emb = _shared_backends()
+        mem = _mem(store, index, emb, conversation="c1", config=MemoryConfig(enable_verifier=False))
+        mem.record_user_turn(
+            "Fable 5 被讨论为雅可比猜想的反例构造。",
+            timestamp=1000,
+            source_id="fable-raw",
+            memory_metadata={
+                "memory_facets": ["knowledge"],
+                "about_roles": ["external"],
+                "entity_anchors": ["Fable", "雅可比猜想"],
+                "topic_terms": ["反例"],
+            },
+        )
+
+        strict = mem.retrieve_structured(
+            "Fable 雅可比猜想反例",
+            entity_anchors=["Fable"],
+            memory_facets=["knowledge"],
+            about_roles=["external"],
+        )
+        relaxed = mem.retrieve_structured(
+            "Fable 雅可比猜想反例",
+            entity_anchors=["不存在的别名"],
+            memory_facets=["knowledge"],
+            about_roles=["external"],
+        )
+
+        self.assertEqual(strict.status, "found")
+        self.assertFalse(strict.entity_filter_relaxed)
+        self.assertGreater(strict.candidate_counts["raw_strict"], 0)
+        self.assertEqual(relaxed.status, "found")
+        self.assertTrue(relaxed.entity_filter_relaxed)
+        self.assertEqual(relaxed.candidate_counts["raw_strict"], 0)
+        self.assertGreater(relaxed.candidate_counts["raw_effective"], 0)
+        self.assertEqual(relaxed.effective_filters["memory_facets"], ["knowledge"])
+        self.assertEqual(relaxed.effective_filters["about_roles"], ["external"])
+        self.assertEqual(
+            relaxed.relaxation_steps,
+            ("drop_entity_requirement_after_zero_candidates:raw",),
+        )
+        store.close()
+
+    def test_raw_results_fill_limit_before_derived_results(self) -> None:
+        store, index, emb = _shared_backends()
+        mem = _mem(store, index, emb, conversation="c1", config=MemoryConfig(enable_verifier=False))
+        mem.record_user_turn(
+            "Fable 原始对话保存了雅可比猜想的具体讨论。",
+            timestamp=1000,
+            source_id="raw-fable",
+            memory_metadata={"entity_anchors": ["Fable"], "memory_facets": ["knowledge"]},
+        )
+        summary = store.add_summary(
+            namespace=mem.namespace,
+            record={
+                "summary_id": "summary-fable",
+                "timestamp": 900,
+                "diary_summary": "Fable 雅可比猜想的概括摘要。",
+                "memory_metadata": {"entity_anchors": ["Fable"], "memory_facets": ["knowledge"]},
+                "source_ids": ["unrelated-raw"],
+            },
+        )
+        index.upsert([build_summary_entry(summary)])
+        store.set_index_state(
+            "summary-fable",
+            "indexed",
+            index_schema_version=INDEX_SCHEMA_VERSION,
+            index_key=INDEX_SCHEMA_KEY,
+        )
+
+        result = mem.retrieve_structured(
+            "Fable 雅可比猜想",
+            entity_anchors=["Fable"],
+            memory_facets=["knowledge"],
+            max_matches=1,
+        )
+
+        self.assertEqual(result.status, "found")
+        self.assertEqual(len(result.matches), 1)
+        self.assertEqual(result.matches[0].layer, "raw")
+        self.assertEqual(result.matches[0].source_id, "raw-fable")
+        store.close()
 
     def test_retrieve_for_turn_excludes_visible_raw_and_context_neighbor(self) -> None:
         store, index, emb = _shared_backends()
@@ -288,7 +377,7 @@ class ExplicitRetrieve(unittest.TestCase):
         other = _mem(store, index, emb, conversation="c2", config=MemoryConfig(enable_verifier=False))
         other.record_user_turn("跨会话隐藏 raw 可乐", timestamp=900, source_id="hidden")
 
-        hits = mem.retrieve_for_turn(current=cur, query="可乐", keywords=["可乐"])
+        hits = mem.retrieve_for_turn(current=cur, query="可乐", entity_anchors=["可乐"])
         blob = "\n".join(hits)
 
         self.assertIn("跨会话隐藏 raw 可乐", blob)
@@ -308,7 +397,7 @@ class ExplicitRetrieve(unittest.TestCase):
                 "summary_id": "visible-summary",
                 "timestamp": 1100,
                 "diary_summary": "当前会话可见阶段摘要滑雪",
-                "memory_metadata": {"keywords": ["滑雪"]},
+                "memory_metadata": {"entity_anchors": ["滑雪"]},
             },
         )
         hidden_summary = store.add_summary(
@@ -317,7 +406,7 @@ class ExplicitRetrieve(unittest.TestCase):
                 "summary_id": "hidden-summary",
                 "timestamp": 900,
                 "diary_summary": "跨会话隐藏阶段摘要滑雪",
-                "memory_metadata": {"keywords": ["滑雪"]},
+                "memory_metadata": {"entity_anchors": ["滑雪"]},
             },
         )
         visible_semantic = store.add_semantic_summary(
@@ -327,7 +416,7 @@ class ExplicitRetrieve(unittest.TestCase):
                 "timestamp": 1200,
                 "last_reinforced_ts": 1200,
                 "semantic_summary": "当前会话可见长期语义滑雪",
-                "memory_metadata": {"keywords": ["滑雪"]},
+                "memory_metadata": {"entity_anchors": ["滑雪"]},
             },
         )
         hidden_semantic = store.add_semantic_summary(
@@ -337,7 +426,7 @@ class ExplicitRetrieve(unittest.TestCase):
                 "timestamp": 950,
                 "last_reinforced_ts": 950,
                 "semantic_summary": "跨会话隐藏长期语义滑雪",
-                "memory_metadata": {"keywords": ["滑雪"]},
+                "memory_metadata": {"entity_anchors": ["滑雪"]},
             },
         )
         index.upsert(
@@ -356,7 +445,7 @@ class ExplicitRetrieve(unittest.TestCase):
                 index_key=INDEX_SCHEMA_KEY,
             )
 
-        hits = mem.retrieve_for_turn(current=cur, query="滑雪", keywords=["滑雪"])
+        hits = mem.retrieve_for_turn(current=cur, query="滑雪", entity_anchors=["滑雪"])
         blob = "\n".join(hits)
 
         self.assertIn("跨会话隐藏阶段摘要滑雪", blob)
@@ -372,10 +461,11 @@ class ExplicitRetrieve(unittest.TestCase):
         out = mem.update_turn_metadata(
             rec["source_id"],
             {
-                "keywords": ["英伟达", "风险偏好"],
-                "categories": ["preference"],
+                "entity_anchors": ["英伟达"],
+                "topic_terms": ["风险偏好"],
+                "memory_facets": ["preference"],
                 "mood_tags": ["warm"],  # 默认 flavor 关,应被清空
-                "importance": 0.9,
+                "retrieval_priority": "high",
             },
         )
         self.assertTrue(out["ok"])
@@ -383,15 +473,15 @@ class ExplicitRetrieve(unittest.TestCase):
         self.assertEqual(out["index_status"], "indexed")
         self.assertEqual(out["memory_metadata"]["mood_tags"], [])
         stored = store.get_record_by_source_id("m1")
-        self.assertEqual(stored["memory_metadata"]["keywords"], ["英伟达", "风险偏好"])
-        hits = mem.retrieve("英伟达", keywords=["英伟达"])
+        self.assertEqual(stored["memory_metadata"]["entity_anchors"], ["英伟达"])
+        hits = mem.retrieve("英伟达", entity_anchors=["英伟达"])
         self.assertTrue(any("波动很大的股票" in s for s in hits))  # 不是原文命中,是 metadata tag 命中
         store.close()
 
     def test_update_turn_metadata_not_found_is_structured(self) -> None:
         store, index, emb = _shared_backends()
         mem = _mem(store, index, emb, conversation="c1")
-        out = mem.update_turn_metadata("missing", {"keywords": ["x"]})
+        out = mem.update_turn_metadata("missing", {"entity_anchors": ["x"]})
         self.assertFalse(out["ok"])
         self.assertEqual(out["status"], "not_found")
         self.assertEqual(out["reason"], "source_id_not_found_or_not_raw")
@@ -411,10 +501,11 @@ class ExplicitRetrieve(unittest.TestCase):
         out = mem.update_turn_metadata(
             rec["source_id"],
             {
-                "keywords": ["新能源", "关注板块"],
-                "categories": ["preference"],
-                "subject_scopes": ["user"],
-                "importance": 0.8,
+                "entity_anchors": ["新能源"],
+                "topic_terms": ["关注板块"],
+                "memory_facets": ["preference"],
+                "about_roles": ["user"],
+                "retrieval_priority": "high",
             },
             actor=actor,
         )
@@ -423,8 +514,8 @@ class ExplicitRetrieve(unittest.TestCase):
         stored = store.get_record_by_source_id(rec["source_id"])
         self.assertEqual(stored["actor_id"], "qq:10001")
         self.assertEqual(stored["actor_display_name"], "张三")
-        self.assertEqual(stored["memory_metadata"]["keywords"], ["新能源", "关注板块"])
-        self.assertTrue(any("新能源板块" in item for item in mem.retrieve("新能源", keywords=["新能源"])))
+        self.assertEqual(stored["memory_metadata"]["entity_anchors"], ["新能源"])
+        self.assertTrue(any("新能源板块" in item for item in mem.retrieve("新能源", entity_anchors=["新能源"])))
         store.close()
 
     def test_update_turn_metadata_rejects_wrong_actor_owner(self) -> None:
@@ -440,10 +531,10 @@ class ExplicitRetrieve(unittest.TestCase):
         with self.assertRaises(NamespaceError):
             mem.update_turn_metadata(
                 "actor-message-1",
-                {"keywords": ["污染"]},
+                {"entity_anchors": ["污染"]},
                 actor=Actor(stable_id="qq:10002", display_name="李四"),
             )
-        self.assertEqual(store.get_record_by_source_id("actor-message-1")["memory_metadata"]["keywords"], [])
+        self.assertEqual(store.get_record_by_source_id("actor-message-1")["memory_metadata"]["entity_anchors"], [])
         store.close()
 
     def test_update_turn_metadata_rejects_cross_namespace_source_id(self) -> None:
@@ -460,8 +551,8 @@ class ExplicitRetrieve(unittest.TestCase):
         )
 
         with self.assertRaises(NamespaceError):
-            mem_u2.update_turn_metadata("s1", {"keywords": ["污染"]})
-        self.assertEqual(store.get_record_by_source_id("s1")["memory_metadata"]["keywords"], [])
+            mem_u2.update_turn_metadata("s1", {"entity_anchors": ["污染"]})
+        self.assertEqual(store.get_record_by_source_id("s1")["memory_metadata"]["entity_anchors"], [])
         store.close()
 
     def test_update_turn_metadata_rejects_cross_conversation_source_id(self) -> None:
@@ -471,8 +562,8 @@ class ExplicitRetrieve(unittest.TestCase):
         mem_c2 = _mem(store, index, emb, conversation="c2")
 
         with self.assertRaises(NamespaceError):
-            mem_c2.update_turn_metadata("s1", {"keywords": ["污染"]})
-        self.assertEqual(store.get_record_by_source_id("s1")["memory_metadata"]["keywords"], [])
+            mem_c2.update_turn_metadata("s1", {"entity_anchors": ["污染"]})
+        self.assertEqual(store.get_record_by_source_id("s1")["memory_metadata"]["entity_anchors"], [])
         store.close()
 
 
@@ -494,7 +585,7 @@ class BuildContext(unittest.TestCase):
         self.assertIn("[日期 2026-04-10 周五]", rendered)
         self.assertIn("[09:00 | 上午] user: 我之前说过爱喝什么", rendered)
         # 聊天模型若需要旧记忆,应显式调用 retrieve 工具;检索仍按 hardkey 跨会话。
-        hits = mem_c1.retrieve("可乐", keywords=["可乐"])
+        hits = mem_c1.retrieve("可乐", entity_anchors=["可乐"])
         self.assertTrue(any("可乐" in s for s in hits))
         store.close()
 

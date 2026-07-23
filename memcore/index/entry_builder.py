@@ -10,6 +10,7 @@ from typing import Any
 
 from ..text_utils import join_tags
 from .metadata_filters import (
+    ENTITY_FLAG_SCHEMA_VERSION,
     INDEX_SCHEMA_KEY,
     INDEX_SCHEMA_VERSION,
     KIND_FLAG_SCHEMA_VERSION,
@@ -17,16 +18,6 @@ from .metadata_filters import (
     kind_filter_flags,
     metadata_filter_flags,
 )
-
-
-def _safe_importance(value: Any) -> float:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return 0.0
-    if number != number:  # NaN
-        return 0.0
-    return max(0.0, min(1.0, number))
 
 
 def _scope_meta(record: dict[str, Any]) -> dict[str, Any]:
@@ -44,13 +35,12 @@ def _scope_meta(record: dict[str, Any]) -> dict[str, Any]:
 def _metadata_tags(record: dict[str, Any]) -> dict[str, Any]:
     meta = record.get("memory_metadata") if isinstance(record.get("memory_metadata"), dict) else {}
     return {
-        "memory_keywords_text": join_tags(meta.get("keywords")),
-        "memory_subject_scopes_text": join_tags(meta.get("subject_scopes")),
-        "memory_categories_text": join_tags(meta.get("categories")),
+        "memory_entity_text": join_tags(meta.get("entity_anchors")),
+        "memory_topic_text": join_tags(meta.get("topic_terms")),
+        "memory_facets_text": join_tags(meta.get("memory_facets")),
+        "memory_about_roles_text": join_tags(meta.get("about_roles")),
         "memory_mood_tags_text": join_tags(meta.get("mood_tags")),
-        "memory_importance": _safe_importance(
-            meta.get("importance") if "importance" in meta else record.get("importance")
-        ),
+        "memory_priority": str(meta.get("retrieval_priority") or "normal"),
         "semantic_tags_text": join_tags(record.get("semantic_tags")),
         **metadata_filter_flags(meta),
     }
@@ -81,6 +71,7 @@ def _retrieval_metadata(record: dict[str, Any], *, default_kind: str) -> dict[st
         "index_schema_key": INDEX_SCHEMA_KEY,
         "kind_flag_schema_version": KIND_FLAG_SCHEMA_VERSION,
         "visibility_schema_version": VISIBILITY_SCHEMA_VERSION,
+        "entity_flag_schema_version": ENTITY_FLAG_SCHEMA_VERSION,
     }
 
 

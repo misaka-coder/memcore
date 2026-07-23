@@ -64,7 +64,7 @@ class TimelineV2StandaloneTests(unittest.TestCase):
 
         first = self.mem.append_standalone_entry(entry)
         duplicate = self.mem.append_standalone_entry(entry)
-        result = self.mem.retrieve_structured("群公告更新", keywords=["群公告更新"])
+        result = self.mem.retrieve_structured("群公告更新", topic_terms=["群公告更新"])
 
         self.assertEqual(first.source_id, "standalone-event")
         self.assertEqual(duplicate.source_id, first.source_id)
@@ -103,16 +103,15 @@ class TimelineV2StandaloneTests(unittest.TestCase):
             opened_at=2000,
         )
         metadata = {
-            "keywords": ["滑雪"],
-            "subject_scopes": ["user"],
-            "categories": ["preference"],
-            "importance": 0.8,
-            "confidence": 0.9,
+            "entity_anchors": ["滑雪"],
+            "about_roles": ["user"],
+            "memory_facets": ["preference"],
+            "retrieval_priority": "high",
         }
 
         staged = self.mem.stage_turn_metadata("staged-user", metadata)
         before = self.store.get_entry(namespace=self.mem.namespace, source_id="staged-user")
-        hidden = self.mem.retrieve_structured("滑雪", keywords=["滑雪"])
+        hidden = self.mem.retrieve_structured("滑雪", entity_anchors=["滑雪"])
 
         self.assertTrue(staged["ok"])
         self.assertEqual(staged["status"], "staged")
@@ -130,7 +129,7 @@ class TimelineV2StandaloneTests(unittest.TestCase):
             source_id="staged-final",
             timestamp=2001,
         )
-        visible = self.mem.retrieve_structured("滑雪", keywords=["滑雪"])
+        visible = self.mem.retrieve_structured("滑雪", entity_anchors=["滑雪"])
 
         self.assertTrue(completed.completed)
         self.assertEqual(visible.status, "found")
@@ -147,7 +146,7 @@ class TimelineV2StandaloneTests(unittest.TestCase):
                 timestamp=3000,
             )
         )
-        invalid = self.mem.stage_turn_metadata(standalone.source_id, {"keywords": ["x"]})
+        invalid = self.mem.stage_turn_metadata(standalone.source_id, {"topic_terms": ["x"]})
         self.assertFalse(invalid["ok"])
         self.assertEqual(invalid["status"], "invalid")
         self.assertEqual(invalid["reason"], "staged_annotation_requires_turn_stimulus")
@@ -174,7 +173,7 @@ class TimelineV2StandaloneTests(unittest.TestCase):
             source_id="closed-final",
             timestamp=3101,
         )
-        closed = self.mem.stage_turn_metadata("closed-user", {"keywords": ["x"]})
+        closed = self.mem.stage_turn_metadata("closed-user", {"topic_terms": ["x"]})
         self.assertFalse(closed["ok"])
         self.assertEqual(closed["status"], "invalid")
         self.assertEqual(closed["reason"], "staged_annotation_requires_open_turn")
@@ -197,8 +196,8 @@ class TimelineV2StandaloneTests(unittest.TestCase):
             opened_at=3200,
         )
 
-        wrong = self.mem.stage_turn_metadata("actor-user", {"keywords": ["滑雪"]})
-        correct = self.mem.stage_turn_metadata("actor-user", {"keywords": ["滑雪"]}, actor=actor)
+        wrong = self.mem.stage_turn_metadata("actor-user", {"entity_anchors": ["滑雪"]})
+        correct = self.mem.stage_turn_metadata("actor-user", {"entity_anchors": ["滑雪"]}, actor=actor)
 
         self.assertFalse(wrong["ok"])
         self.assertEqual(wrong["status"], "forbidden")

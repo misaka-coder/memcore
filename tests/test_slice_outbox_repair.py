@@ -84,7 +84,7 @@ class OutboxResilience(unittest.TestCase):
         mem.record_user_turn("原始但不参与检索", timestamp=1000, source_id="raw-only", index_in_vector=False)
         self.index.fail = False
 
-        out = mem.update_turn_metadata("raw-only", {"keywords": ["时间线"]})
+        out = mem.update_turn_metadata("raw-only", {"topic_terms": ["时间线"]})
 
         self.assertTrue(out["ok"])
         self.assertEqual(out["index_status"], "skipped")
@@ -115,11 +115,11 @@ class OutboxResilience(unittest.TestCase):
         self.index.fail = False
         mem.record_user_turn("先安全落库", timestamp=1000, source_id="s1")
         self.index.fail = True
-        out = mem.update_turn_metadata("s1", {"keywords": ["补标签"]})
+        out = mem.update_turn_metadata("s1", {"topic_terms": ["补标签"]})
         self.assertFalse(out["ok"])
         self.assertEqual(out["status"], "pending")
         self.assertEqual({r["source_id"] for r in self.store.list_pending_index()}, {"s1"})
-        self.assertEqual(self.store.get_record_by_source_id("s1")["memory_metadata"]["keywords"], ["补标签"])
+        self.assertEqual(self.store.get_record_by_source_id("s1")["memory_metadata"]["topic_terms"], ["补标签"])
         self.index.fail = False
         healed = mem.reindex_pending()
         self.assertEqual(healed["repaired"], 1)
@@ -145,10 +145,10 @@ class OutboxResilience(unittest.TestCase):
             timestamp=1000,
             source_id="raw1",
             memory_metadata={
-                "keywords": ["可乐"],
-                "categories": ["preference"],
-                "subject_scopes": ["user"],
-                "importance": 0.7,
+                "entity_anchors": ["可乐"],
+                "memory_facets": ["preference"],
+                "about_roles": ["user"],
+                "retrieval_priority": "high",
             },
         )
         self.store.add_summary(
@@ -157,7 +157,7 @@ class OutboxResilience(unittest.TestCase):
                 "summary_id": "sum1",
                 "timestamp": 1001,
                 "diary_summary": "用户表达了可乐偏好",
-                "memory_metadata": {"keywords": ["可乐"], "categories": ["preference"]},
+                "memory_metadata": {"entity_anchors": ["可乐"], "memory_facets": ["preference"]},
             },
         )
         self.store.add_semantic_summary(
@@ -166,7 +166,7 @@ class OutboxResilience(unittest.TestCase):
                 "semantic_id": "sem1",
                 "timestamp": 1002,
                 "semantic_summary": "用户偏好可乐",
-                "memory_metadata": {"keywords": ["可乐"], "subject_scopes": ["user"]},
+                "memory_metadata": {"entity_anchors": ["可乐"], "about_roles": ["user"]},
             },
         )
         fresh_index = InMemoryVectorIndex(embedding=self.emb)
@@ -179,7 +179,8 @@ class OutboxResilience(unittest.TestCase):
         self.assertEqual(self.store.list_pending_index(), [])
         hits = fresh_index.keyword_search(
             query_text="可乐",
-            keywords=["可乐"],
+            entity_anchors=["可乐"],
+            topic_terms=[],
             where={"tenant_id": "", "user_id": "u1", "domain_id": ""},
             n_results=10,
         )
@@ -199,7 +200,8 @@ class OutboxResilience(unittest.TestCase):
         self.assertEqual(fresh_index.count(), 1)
         hits = fresh_index.keyword_search(
             query_text="可乐",
-            keywords=["可乐"],
+            entity_anchors=["可乐"],
+            topic_terms=[],
             where={"tenant_id": "", "user_id": "u2", "domain_id": ""},
             n_results=10,
         )

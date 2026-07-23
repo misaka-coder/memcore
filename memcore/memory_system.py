@@ -46,7 +46,7 @@ from .projection import (
 )
 from .retrieval import ReadPipeline, RetrievalRequest, RetrievalResult
 from .runtime import MemCoreRuntime
-from .schema import TRACE_CATEGORIES, coerce_memory_metadata
+from .schema import coerce_memory_metadata
 from .store.base import MemoryStore
 from .store.sqlite_store import SQLiteMemoryStore
 from .time_anchor import infer_time_of_day, timestamp_to_date_label
@@ -385,10 +385,8 @@ class MemorySystem:
                 status = self._coerce_completion_annotation_status(annotation_status)
                 metadata = coerce_memory_metadata(
                     memory_annotation,
-                    categories=self.config.categories,
                     enable_flavor=self.config.enable_flavor,
                 ).to_dict()
-                metadata["categories"] = [item for item in metadata["categories"] if item not in TRACE_CATEGORIES]
                 resolved_annotations = (
                     MemoryAnnotation(
                         target_source_id=handle.annotation_target_ids[0],
@@ -694,10 +692,8 @@ class MemorySystem:
             raise TypeError("annotations must contain MemoryAnnotation values")
         metadata = coerce_memory_metadata(
             annotation.memory_metadata,
-            categories=self.config.categories,
             enable_flavor=self.config.enable_flavor,
         ).to_dict()
-        metadata["categories"] = [item for item in metadata["categories"] if item not in TRACE_CATEGORIES]
         return replace(annotation, memory_metadata=metadata)
 
     @staticmethod
@@ -752,9 +748,9 @@ class MemorySystem:
         source: str = "",
         timestamp: int | None = None,
         source_id: str | None = None,
-        keywords: list[str] | None = None,
-        importance: float = 0.4,
-        confidence: float = 1.0,
+        entity_anchors: list[str] | None = None,
+        topic_terms: list[str] | None = None,
+        retrieval_priority: str = "normal",
     ) -> dict[str, Any]:
         """Append one independent typed external event.
 
@@ -766,14 +762,17 @@ class MemorySystem:
         from .rendering import render_external_event_text
 
         label = self._tool_event_part(event_type, fallback="external")
-        tags = [label, *[str(item or "").strip() for item in (keywords or [])]]
         metadata = {
-            "categories": ["event_trace"],
-            "keywords": [item for item in tags if item][:4],
-            "subject_scopes": ["other"],
-            "importance": importance,
-            "confidence": confidence,
+            "memory_facets": ["event"],
+            "about_roles": ["external"],
+            "entity_anchors": list(entity_anchors or []),
+            "topic_terms": [label, *(topic_terms or [])],
+            "retrieval_priority": retrieval_priority,
         }
+        metadata = coerce_memory_metadata(
+            metadata,
+            enable_flavor=self.config.enable_flavor,
+        ).to_dict()
         event_fields = dict(fields or {})
         semantic_text = render_external_event_text(
             event_type=label,
@@ -811,19 +810,12 @@ class MemorySystem:
         source: str = "",
         timestamp: int | None = None,
         source_id_prefix: str | None = None,
-        keywords: list[str] | None = None,
-        importance: float = 0.2,
-        confidence: float = 1.0,
     ) -> dict[str, dict[str, Any]]:
         """Append one correlated action/observation pair to an open V2 turn.
 
-        ``keywords``/``importance``/``confidence`` remain accepted so an old
-        caller can migrate without rewriting its argument builder, but operation
-        retrieval and compaction are governed by typed roles and correlation
-        lineage rather than trace categories.
+        Operation retrieval and compaction are governed by typed roles and
+        correlation lineage, not by semantic metadata categories.
         """
-
-        del keywords, importance, confidence
         from .rendering import render_tool_result_text, render_tool_use_text
 
         resolved_turn_id = str(turn_id or "").strip()
@@ -870,27 +862,21 @@ class MemorySystem:
         derived_status: str = "",
         timestamp: int | None = None,
         source_id: str | None = None,
-        keywords: list[str] | None = None,
-        importance: float = 0.25,
-        confidence: float = 1.0,
+        entity_anchors: list[str] | None = None,
+        topic_terms: list[str] | None = None,
+        retrieval_priority: str = "normal",
     ) -> dict[str, Any]:
         """追加附件/文件引用事件:只记录材料锚点,不把文件本体写进 memory。"""
         from .rendering import render_material_reference_text
 
         file_key = self._tool_event_part(file_id, fallback="file")
         kind_label = self._tool_event_part(kind, fallback="material")
-        tags = self._material_keywords(
-            file_id=file_id,
-            kind=kind,
-            filename=filename,
-            extra=keywords,
-        )
         metadata = {
-            "categories": ["material_trace"],
-            "keywords": tags,
-            "subject_scopes": ["user"],
-            "importance": importance,
-            "confidence": confidence,
+            "memory_facets": ["event", "state"],
+            "about_roles": ["external"],
+            "entity_anchors": [file_id, filename, *(entity_anchors or [])],
+            "topic_terms": [kind, file_status, *(topic_terms or [])],
+            "retrieval_priority": retrieval_priority,
         }
         fields: dict[str, Any] = {
             "annotation_status": "unannotated",
@@ -929,27 +915,21 @@ class MemorySystem:
         reason: str = "",
         timestamp: int | None = None,
         source_id: str | None = None,
-        keywords: list[str] | None = None,
-        importance: float = 0.2,
-        confidence: float = 1.0,
+        entity_anchors: list[str] | None = None,
+        topic_terms: list[str] | None = None,
+        retrieval_priority: str = "normal",
     ) -> dict[str, Any]:
         """追加材料清理事件,让模型知道旧文件/解析物可能已经不可再读。"""
         from .rendering import render_material_cleanup_text
 
         file_key = self._tool_event_part(file_id, fallback="file")
         kind_label = self._tool_event_part(kind, fallback="material")
-        tags = self._material_keywords(
-            file_id=file_id,
-            kind=kind,
-            filename=filename,
-            extra=keywords,
-        )
         metadata = {
-            "categories": ["material_trace"],
-            "keywords": tags,
-            "subject_scopes": ["other"],
-            "importance": importance,
-            "confidence": confidence,
+            "memory_facets": ["event", "state"],
+            "about_roles": ["external"],
+            "entity_anchors": [file_id, filename, *(entity_anchors or [])],
+            "topic_terms": [kind, file_status, reason, *(topic_terms or [])],
+            "retrieval_priority": retrieval_priority,
         }
         fields: dict[str, Any] = {
             "annotation_status": "unannotated",
@@ -976,21 +956,6 @@ class MemorySystem:
             actor=None,
             **fields,
         )
-
-    @staticmethod
-    def _material_keywords(*, file_id: str, kind: str, filename: str, extra: list[str] | None = None) -> list[str]:
-        tags = [file_id, filename, kind, *[str(item or "").strip() for item in (extra or [])]]
-        out: list[str] = []
-        seen: set[str] = set()
-        for tag in tags:
-            text = str(tag or "").strip()
-            if not text or text in seen:
-                continue
-            seen.add(text)
-            out.append(text)
-            if len(out) >= 4:
-                break
-        return out
 
     @staticmethod
     def _tool_event_part(value: str, *, fallback: str) -> str:
@@ -1025,7 +990,6 @@ class MemorySystem:
         source_id = str(fields.pop("source_id", None) or uuid.uuid4().hex)
         metadata = coerce_memory_metadata(
             fields.pop("memory_metadata", None),
-            categories=self.config.categories,
             enable_flavor=self.config.enable_flavor,
         ).to_dict()
         if compatibility_role in {"assistant", "user"}:
@@ -1226,7 +1190,6 @@ class MemorySystem:
         sid = str(source_id or "").strip()
         metadata = coerce_memory_metadata(
             memory_metadata,
-            categories=self.config.categories,
             enable_flavor=self.config.enable_flavor,
         ).to_dict()
         namespace = self.namespace if actor is None else self._with_actor(actor)
@@ -1308,7 +1271,6 @@ class MemorySystem:
             }
         metadata = coerce_memory_metadata(
             memory_metadata,
-            categories=self.config.categories,
             enable_flavor=self.config.enable_flavor,
         ).to_dict()
         owner_namespace = self.namespace if actor is None else self._with_actor(actor)
@@ -1407,11 +1369,11 @@ class MemorySystem:
         self,
         query: str,
         *,
-        keywords: list[str] | None = None,
+        entity_anchors: list[str] | None = None,
+        topic_terms: list[str] | None = None,
         source_layers: list[str] | None = None,
-        categories: list[str] | None = None,
-        subject_scopes: list[str] | None = None,
-        importance_min: float | None = None,
+        memory_facets: list[str] | None = None,
+        about_roles: list[str] | None = None,
         time_hint: dict[str, Any] | None = None,
         kind_patterns: list[str] | None = None,
         include_explicit: bool = False,
@@ -1425,11 +1387,11 @@ class MemorySystem:
             namespace=self.namespace,
             request=RetrievalRequest(
                 query=query,
-                keywords=tuple(keywords or ()),
+                entity_anchors=tuple(entity_anchors or ()),
+                topic_terms=tuple(topic_terms or ()),
                 source_layers=tuple(source_layers or ()),
-                categories=tuple(categories or ()),
-                subject_scopes=tuple(subject_scopes or ()),
-                importance_min=importance_min,
+                memory_facets=tuple(memory_facets or ()),
+                about_roles=tuple(about_roles or ()),
                 time_hint=dict(time_hint or {}),
                 kind_patterns=tuple(kind_patterns or ()),
                 include_explicit=include_explicit,
@@ -1484,15 +1446,18 @@ class MemorySystem:
     def read_timeline(
         self,
         *,
-        date_from: str,
+        date_from: str = "",
         date_to: str = "",
         time_periods: list[str] | None = None,
+        anchor_source_id: str = "",
+        before_turns: int = 0,
+        after_turns: int = 0,
         cross_conversation: bool = False,
     ) -> dict[str, Any]:
-        """时间线工具:按日期(范围)精确读原始对话,不走向量。与 retrieve 互补。
+        """时间线工具:按日期或 raw anchor 精确读原始对话,不走向量。
 
         date_to 省略时等于 date_from(单日)。time_periods 接受上午/下午/晚上/凌晨等别名。
-        这是精确读工具:日期/时间段非法时**结构化报 invalid_filter**,绝不静默放宽成"查整天"。
+        两种模式互斥；非法参数结构化报 invalid_filter，绝不静默放宽。
         """
         from datetime import date
 
@@ -1510,6 +1475,56 @@ class MemorySystem:
                 return False
 
         start = str(date_from or "").strip()
+        anchor_id = str(anchor_source_id or "").strip()
+        has_date_mode = bool(start or str(date_to or "").strip() or list(time_periods or []))
+        if anchor_id and has_date_mode:
+            return _invalid("timeline_modes_are_mutually_exclusive")
+        if not anchor_id and not has_date_mode:
+            return _invalid("timeline_selector_required")
+        if anchor_id:
+            if cross_conversation:
+                return _invalid("raw_anchor_requires_current_conversation")
+            try:
+                before = int(before_turns)
+                after = int(after_turns)
+            except (TypeError, ValueError):
+                return _invalid("turn_window_must_be_non_negative_integer")
+            if before < 0 or after < 0:
+                return _invalid("turn_window_must_be_non_negative_integer")
+            record = self.store.get_retrieval_record(
+                namespace=self.namespace,
+                source_id=anchor_id,
+                cross_conversation=False,
+            )
+            if record is not None and str(record.get("entry_type") or "raw") != "raw":
+                return _invalid("raw_anchor_required")
+            try:
+                window = self.store.get_raw_turn_window(
+                    namespace=self.namespace,
+                    anchor_source_id=anchor_id,
+                    before_turns=before,
+                    after_turns=after,
+                )
+            except NotImplementedError:
+                return {
+                    "status": "unavailable",
+                    "reason": "raw_turn_window_store_unsupported",
+                    "messages": [],
+                    "message_count": 0,
+                    "text": "",
+                }
+            messages = [entry.to_record() for entry in window.entries]
+            return {
+                "status": "ok" if messages else "empty",
+                "reason": window.reason,
+                "anchor_source_id": anchor_id,
+                "before_turns": before,
+                "after_turns": after,
+                "messages": messages,
+                "message_count": len(messages),
+                "text": render_timeline(messages, tz=self.timezone),
+            }
+
         end = str(date_to or "").strip() or start
         if not _is_iso_date(start) or not _is_iso_date(end):
             return _invalid("date_must_be_YYYY-MM-DD")

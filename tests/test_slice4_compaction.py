@@ -23,7 +23,7 @@ from memcore import (
     TokenCounter,
     TurnRole,
 )
-from memcore.compaction import Compaction
+from memcore.compaction import Compaction, _overlap_score
 from memcore.llm.base import LLMClient, LLMRequest, LLMResult, TaskType
 
 
@@ -43,7 +43,13 @@ class CannedLLM(LLMClient):
                 "importance": 0.7,
                 "key_events": ["泰勒展开"],
                 "core_facts": ["用户在复习高数"],
-                "memory_metadata": {"keywords": ["学习"], "categories": ["plan_goal"], "importance": 0.7},
+                "memory_metadata": {
+                    "memory_facets": ["plan"],
+                    "about_roles": ["user"],
+                    "entity_anchors": ["高数"],
+                    "topic_terms": ["学习"],
+                    "retrieval_priority": "high",
+                },
             }
         elif request.task_type == TaskType.SEMANTIC:
             data = {
@@ -53,7 +59,13 @@ class CannedLLM(LLMClient):
                 "recurring_topics": ["学习", "复习"],
                 "important_people": [],
                 "open_loops": [],
-                "memory_metadata": {"keywords": ["学习"], "importance": 0.8},
+                "memory_metadata": {
+                    "memory_facets": ["plan"],
+                    "about_roles": ["user"],
+                    "entity_anchors": ["高数"],
+                    "topic_terms": ["学习"],
+                    "retrieval_priority": "high",
+                },
             }
         elif request.task_type == TaskType.REINFORCEMENT:
             data = {
@@ -138,7 +150,11 @@ def _complete_turn(
         turn_id=turn_id,
         semantic_text=assistant_text,
         provider_output_raw=assistant_text,
-        memory_annotation={"keywords": [user_text[:20]], "categories": ["plan_goal"]},
+        memory_annotation={
+            "memory_facets": ["plan"],
+            "about_roles": ["user"],
+            "topic_terms": [user_text[:20]],
+        },
         annotation_status=AnnotationStatus.ACCEPTED_HOST,
         timestamp=timestamp + 1,
         source_id=f"a{number}",
@@ -243,7 +259,6 @@ class SummaryCycleViaFacade(unittest.TestCase):
             result="first search output",
             timestamp=1000,
             source_id_prefix="tool1",
-            keywords=["第一条搜索"],
         )
         second_tool = mem.record_tool_exchange(
             turn_id="tool-turn",
@@ -253,7 +268,6 @@ class SummaryCycleViaFacade(unittest.TestCase):
             result="second tool output",
             timestamp=1002,
             source_id_prefix="tool2",
-            keywords=["日经225"],
         )
         mem.complete_turn(
             turn_id="tool-turn",
@@ -267,8 +281,9 @@ class SummaryCycleViaFacade(unittest.TestCase):
         out = mem.compact_due_sync()
 
         self.assertEqual(out["summaries_created"], 2)
-        self.assertEqual(first_tool["tool_result"]["memory_metadata"]["categories"], ["tool_trace"])
-        self.assertEqual(second_tool["tool_result"]["memory_metadata"]["categories"], ["tool_trace"])
+        self.assertEqual(first_tool["tool_result"]["memory_metadata"], {})
+        self.assertEqual(second_tool["tool_result"]["memory_metadata"], {})
+        self.assertEqual(first_tool["tool_result"]["kind"], "tool.web_search.result")
         self.assertEqual(mem.store.get_unsummarized_messages(namespace=mem.namespace), [])
         visible = mem.store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10)
         operation = next(item for item in visible if item["kind"] == "memory.operation_digest")
@@ -309,7 +324,7 @@ class SummaryCycleViaFacade(unittest.TestCase):
             turn_id=handle.turn_id,
             semantic_text="条件式分析",
             provider_output_raw="条件式分析",
-            memory_annotation={"keywords": ["虚构事件"], "categories": ["plan_goal"]},
+            memory_annotation={"memory_facets": ["plan"], "topic_terms": ["虚构事件"]},
             annotation_status=AnnotationStatus.ACCEPTED_HOST,
             timestamp=1001,
             source_id="assistant-1",
@@ -360,7 +375,11 @@ class SummaryCycleViaFacade(unittest.TestCase):
                 semantic_text="图片材料已就绪",
                 payload={"file_id": "file_img_001", "filename": "photo.jpg", "status": "ready"},
                 timestamp=1001,
-                memory_metadata={"categories": ["material_trace"], "keywords": ["题目图片"]},
+                memory_metadata={
+                    "memory_facets": ["event"],
+                    "about_roles": ["external"],
+                    "topic_terms": ["题目图片"],
+                },
                 semanticize=False,
             ),
             turn_id="material-turn",
@@ -376,7 +395,8 @@ class SummaryCycleViaFacade(unittest.TestCase):
 
         out = mem.compact_due_sync()
 
-        self.assertEqual(material.memory_metadata["categories"], ["material_trace"])
+        self.assertEqual(material.kind, "material.image.reference")
+        self.assertEqual(material.memory_metadata["memory_facets"], ["event"])
         self.assertEqual(out["summaries_created"], 2)
         self.assertEqual(mem.store.get_unsummarized_messages(namespace=mem.namespace), [])
         visible = mem.store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10)
@@ -522,17 +542,17 @@ class SummaryCycleViaFacade(unittest.TestCase):
             "在吗",
             timestamp=1000,
             memory_metadata={
-                "keywords": ["可乐", "饮料", "可乐", "a", "b", "c"],
-                "categories": ["not_a_category"],
+                "entity_anchors": ["可乐", "饮料", "可乐", "a", "b", "c"],
+                "memory_facets": ["not_a_facet"],
                 "mood_tags": ["warm"],
-                "importance": "oops",
+                "retrieval_priority": "impossible",
             },
         )
         metadata = rec["memory_metadata"]
-        self.assertEqual(metadata["categories"], [])
+        self.assertEqual(metadata["memory_facets"], [])
         self.assertEqual(metadata["mood_tags"], [])
-        self.assertEqual(metadata["importance"], 0.0)
-        self.assertEqual(len(metadata["keywords"]), 4)
+        self.assertEqual(metadata["retrieval_priority"], "normal")
+        self.assertEqual(metadata["entity_anchors"], ["可乐", "饮料", "a", "b", "c"])
         self.assertEqual(mem.store.get_record_by_source_id(rec["source_id"])["index_status"], "indexed")
 
     def test_summary_failure_keeps_raw_for_retry(self) -> None:
@@ -685,6 +705,61 @@ class SemanticAndReinforcement(unittest.TestCase):
         self.assertEqual(recent[0]["reinforcement_count"], 3)
         self.assertEqual(recent[0]["source_summary_ids"], ["ep0", "ep1", "ep2"])
         self.assertEqual(recent[0]["index_status"], "indexed")
+
+    def test_semantic_lineage_keeps_more_than_eight_source_summaries(self) -> None:
+        config = MemoryConfig(episodic_compact_trigger_count=10, episodic_compact_batch_size=9)
+        compaction = Compaction(
+            store=self.store,
+            index=self.index,
+            llm=CannedLLM(),
+            config=config,
+            timezone="Asia/Shanghai",
+        )
+        for index in range(10):
+            self.store.add_summary(
+                namespace=self.ns,
+                record={
+                    "summary_id": f"source-{index}",
+                    "timestamp": 100 + index,
+                    "diary_summary": f"第 {index} 段学习记录",
+                    "memory_metadata": {
+                        "entity_anchors": ["高数"],
+                        "memory_facets": ["plan"],
+                        "topic_terms": ["学习"],
+                    },
+                },
+            )
+
+        result = compaction.run_due(namespace=self.ns)
+        semantic = self.store.get_recent_semantic_summaries(namespace=self.ns, limit=1)[0]
+
+        self.assertEqual(result["semantic_created"], 1)
+        self.assertEqual(
+            semantic["source_summary_ids"],
+            [f"source-{index}" for index in range(9)],
+        )
+
+    def test_common_person_alone_cannot_merge_unrelated_fable_and_vrchat_memories(self) -> None:
+        fable = {
+            "stable_facts": ["Fable 被用于讨论雅可比猜想"],
+            "recurring_topics": ["雅可比猜想"],
+            "memory_metadata": {
+                "entity_anchors": ["张三", "Fable"],
+                "memory_facets": ["knowledge"],
+                "topic_terms": ["雅可比猜想", "反例"],
+            },
+        }
+        vrchat = {
+            "stable_facts": ["张三晚上去了 VRChat"],
+            "recurring_topics": ["VRChat"],
+            "memory_metadata": {
+                "entity_anchors": ["张三", "VRChat"],
+                "memory_facets": ["knowledge"],
+                "topic_terms": ["VRChat", "社交"],
+            },
+        }
+
+        self.assertEqual(_overlap_score(fable, vrchat), 0)
 
     def test_no_pending_index_left_after_compaction(self) -> None:
         for i in range(2):

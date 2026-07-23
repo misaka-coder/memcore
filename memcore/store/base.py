@@ -54,6 +54,18 @@ class LineageClosure:
         return tuple(dict.fromkeys((*self.requested_ids, *self.descendant_ids, *self.ancestor_ids)))
 
 
+@dataclass(frozen=True)
+class RawTurnWindow:
+    """Namespace-safe raw entries around one complete turn/standalone anchor."""
+
+    status: str
+    entries: tuple[TimelineEntry, ...] = ()
+    anchor_source_id: str = ""
+    before_turns: int = 0
+    after_turns: int = 0
+    reason: str = ""
+
+
 class MemoryStore(ABC):
     def runtime_identity(self) -> str:
         """Safe process-local identity; must never expose a database path."""
@@ -254,6 +266,18 @@ class MemoryStore(ABC):
     @abstractmethod
     def get_context_slice(self, *, namespace: Namespace, seq_no: int, window: int) -> list[dict[str, Any]]:
         """raw 上下文扩窗:取目标消息前后 window 条邻居。"""
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_raw_turn_window(
+        self,
+        *,
+        namespace: Namespace,
+        anchor_source_id: str,
+        before_turns: int,
+        after_turns: int,
+    ) -> RawTurnWindow:
+        """Read complete raw turn groups around an owned source id."""
         raise NotImplementedError
 
     @abstractmethod

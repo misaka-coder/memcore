@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from .schema import DEFAULT_CATEGORIES, SUBJECT_SCOPES
+from .schema import ABOUT_ROLES, MEMORY_FACETS
 
 SOURCE_LAYERS: tuple[str, ...] = ("raw", "summary", "semantic_summary")
 MATERIAL_SOURCE_PREFERENCES: tuple[str, ...] = ("auto", "original", "derived")
@@ -32,7 +32,6 @@ class ToolDispatchPolicy:
 
 def build_native_memory_tool_specs(
     *,
-    categories: Iterable[str] = DEFAULT_CATEGORIES,
     include_material_tool: bool = True,
     tool_format: str = "openai",
     strict: bool = True,
@@ -46,9 +45,8 @@ def build_native_memory_tool_specs(
     - "plain": {"name","description","parameters"}
     """
 
-    cats = _clean_categories(categories)
     tools = [
-        _tool_spec("retrieve_for_turn", _retrieve_description(), _retrieve_schema(cats)),
+        _tool_spec("retrieve_for_turn", _retrieve_description(), _retrieve_schema()),
         _tool_spec("read_timeline", _timeline_description(), _timeline_schema()),
     ]
     if include_material_tool:
@@ -96,11 +94,11 @@ def _dispatch_retrieve(
         args,
         {
             "query",
-            "keywords",
+            "entity_anchors",
+            "topic_terms",
             "source_layers",
-            "categories",
-            "subject_scopes",
-            "importance_min",
+            "memory_facets",
+            "about_roles",
             "time_hint",
             "include_explicit",
             "kind_patterns",
@@ -114,19 +112,19 @@ def _dispatch_retrieve(
     if not isinstance(current, dict) or not str(current.get("source_id") or "").strip():
         return _err("retrieve_for_turn", "invalid_state", "current_turn_required")
 
-    keywords, error = _string_list(args.get("keywords"), "keywords")
+    entity_anchors, error = _string_list(args.get("entity_anchors"), "entity_anchors")
+    if error:
+        return _err("retrieve_for_turn", "invalid_arguments", error)
+    topic_terms, error = _string_list(args.get("topic_terms"), "topic_terms")
     if error:
         return _err("retrieve_for_turn", "invalid_arguments", error)
     source_layers, error = _enum_list(args.get("source_layers"), "source_layers", SOURCE_LAYERS)
     if error:
         return _err("retrieve_for_turn", "invalid_arguments", error)
-    categories, error = _enum_list(args.get("categories"), "categories", tuple(mem.config.categories))
+    memory_facets, error = _enum_list(args.get("memory_facets"), "memory_facets", MEMORY_FACETS)
     if error:
         return _err("retrieve_for_turn", "invalid_arguments", error)
-    subject_scopes, error = _enum_list(args.get("subject_scopes"), "subject_scopes", SUBJECT_SCOPES)
-    if error:
-        return _err("retrieve_for_turn", "invalid_arguments", error)
-    importance_min, error = _importance_min(args.get("importance_min"))
+    about_roles, error = _enum_list(args.get("about_roles"), "about_roles", ABOUT_ROLES)
     if error:
         return _err("retrieve_for_turn", "invalid_arguments", error)
     time_hint, error = _time_hint(args.get("time_hint"))
@@ -147,34 +145,50 @@ def _dispatch_retrieve(
         return _err("retrieve_for_turn", error_status, error)
 
     filters: dict[str, Any] = {
-        "keywords": keywords,
+        "entity_anchors": entity_anchors,
+        "topic_terms": topic_terms,
         "source_layers": source_layers,
-        "categories": categories,
-        "subject_scopes": subject_scopes,
+        "memory_facets": memory_facets,
+        "about_roles": about_roles,
+        # Search every conversation owned by this user, while the current
+        # prompt's visible lineage is still excluded below. Namespace
+        # ownership remains a hard filter and cannot be widened by the model.
+        "cross_conversation": True,
     }
-    if importance_min is not None:
-        filters["importance_min"] = importance_min
     if time_hint:
         filters["time_hint"] = time_hint
     filters["include_explicit"] = include_explicit
     filters["kind_patterns"] = authorized_patterns
 
     try:
-        result = mem.retrieve_for_turn(current=current, query=query, **filters)
+        result = mem.retrieve_for_turn_structured(current=current, query=query, **filters)
     except ValueError as exc:
         return _err("retrieve_for_turn", "invalid_filter", str(exc) or "invalid_filter")
     except Exception:
         return _err("retrieve_for_turn", "failed", "internal_error")
-    return _ok("retrieve_for_turn", {"snippets": result, "count": len(result)})
+    payload = result.to_dict() if hasattr(result, "to_dict") else {"status": "failed", "reason": "invalid_result"}
+    snippets = list(getattr(result, "rendered_texts", ()) or ())
+    payload["snippets"] = snippets
+    payload["count"] = len(snippets)
+    return _ok("retrieve_for_turn", payload)
 
 
 def _dispatch_timeline(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
-    unknown = _unknown_keys(args, {"date_from", "date_to", "time_periods", "cross_conversation"})
+    unknown = _unknown_keys(
+        args,
+        {
+            "date_from",
+            "date_to",
+            "time_periods",
+            "anchor_source_id",
+            "before_turns",
+            "after_turns",
+            "cross_conversation",
+        },
+    )
     if unknown:
         return _err("read_timeline", "invalid_arguments", f"unknown_arguments:{unknown}")
     date_from = _required_string(args, "date_from")
-    if not date_from:
-        return _err("read_timeline", "invalid_arguments", "date_from_required")
     date_to = _optional_string(args.get("date_to"))
     time_periods, error = _string_list(args.get("time_periods"), "time_periods")
     if error:
@@ -182,10 +196,19 @@ def _dispatch_timeline(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
     cross = args.get("cross_conversation", False)
     if not isinstance(cross, bool):
         return _err("read_timeline", "invalid_arguments", "cross_conversation_must_be_boolean")
+    anchor_source_id = _optional_string(args.get("anchor_source_id"))
+    try:
+        before_turns = int(args.get("before_turns") or 0)
+        after_turns = int(args.get("after_turns") or 0)
+    except (TypeError, ValueError):
+        return _err("read_timeline", "invalid_arguments", "turn_window_must_be_integer")
     result = mem.read_timeline(
         date_from=date_from,
         date_to=date_to,
         time_periods=time_periods,
+        anchor_source_id=anchor_source_id,
+        before_turns=before_turns,
+        after_turns=after_turns,
         cross_conversation=cross,
     )
     if result.get("status") == "invalid_filter":
@@ -306,18 +329,6 @@ def _enum_list(value: Any, name: str, allowed: tuple[str, ...]) -> tuple[list[st
     return values, ""
 
 
-def _importance_min(value: Any) -> tuple[float | None, str]:
-    if value is None:
-        return None, ""
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None, "importance_min_must_be_number"
-    if not 0.0 <= number <= 1.0:
-        return None, "importance_min_must_be_between_0_and_1"
-    return number, ""
-
-
 def _time_hint(value: Any) -> tuple[dict[str, Any], str]:
     if value is None:
         return {}, ""
@@ -355,17 +366,6 @@ def _err(tool_name: str, status: str, reason: str, *, result: Any | None = None)
     if result is not None:
         payload["result"] = result
     return payload
-
-
-def _clean_categories(categories: Iterable[str]) -> list[str]:
-    out: list[str] = []
-    seen: set[str] = set()
-    for item in categories:
-        text = str(item or "").strip()
-        if text and text not in seen:
-            seen.add(text)
-            out.append(text)
-    return out
 
 
 def _tool_spec(name: str, description: str, parameters: dict[str, Any]) -> dict[str, Any]:
@@ -438,7 +438,10 @@ def _retrieve_description() -> str:
 
 
 def _timeline_description() -> str:
-    return "Exact raw timeline lookup for dates, date ranges, relative-time resolutions, and attribution questions."
+    return (
+        "Exact raw timeline lookup. Use a date/date range when time is known, or use a raw retrieval "
+        "source id as anchor to read complete nearby turns when one hit lacks context."
+    )
 
 
 def _material_description() -> str:
@@ -448,21 +451,34 @@ def _material_description() -> str:
     )
 
 
-def _retrieve_schema(categories: list[str]) -> dict[str, Any]:
-    category_items: dict[str, Any] = {"type": "string"}
-    if categories:
-        category_items["enum"] = categories
+def _retrieve_schema() -> dict[str, Any]:
     return {
         "type": "object",
         "additionalProperties": False,
         "required": ["query"],
         "properties": {
             "query": {"type": "string", "description": "Natural-language memory query."},
-            "keywords": {"type": "array", "items": {"type": "string"}, "description": "Reusable recall tags."},
+            "entity_anchors": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Exact names or aliases expected in the historical content. Omit when unsure.",
+            },
+            "topic_terms": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Actions, properties, or supporting topic terms; these do not replace query.",
+            },
             "source_layers": {"type": "array", "items": {"type": "string", "enum": list(SOURCE_LAYERS)}},
-            "categories": {"type": "array", "items": category_items},
-            "subject_scopes": {"type": "array", "items": {"type": "string", "enum": list(SUBJECT_SCOPES)}},
-            "importance_min": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+            "memory_facets": {
+                "type": "array",
+                "items": {"type": "string", "enum": list(MEMORY_FACETS)},
+                "description": "What kind of historical answer is needed. Omit rather than guess.",
+            },
+            "about_roles": {
+                "type": "array",
+                "items": {"type": "string", "enum": list(ABOUT_ROLES)},
+                "description": "Who or what the target historical content is about, not who spoke.",
+            },
             "time_hint": {
                 "type": "object",
                 "additionalProperties": False,
@@ -490,7 +506,7 @@ def _timeline_schema() -> dict[str, Any]:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["date_from"],
+        "required": [],
         "properties": {
             "date_from": {"type": "string", "description": "YYYY-MM-DD."},
             "date_to": {"type": "string", "description": "YYYY-MM-DD; omit for a single day."},
@@ -499,6 +515,12 @@ def _timeline_schema() -> dict[str, Any]:
                 "items": {"type": "string"},
                 "description": "Optional localized periods such as morning/afternoon/night.",
             },
+            "anchor_source_id": {
+                "type": "string",
+                "description": "Raw source_id returned by retrieve_for_turn; mutually exclusive with date fields.",
+            },
+            "before_turns": {"type": "integer", "minimum": 0},
+            "after_turns": {"type": "integer", "minimum": 0},
             "cross_conversation": {"type": "boolean", "description": "Only true if host policy allows it."},
         },
     }

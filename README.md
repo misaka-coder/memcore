@@ -7,11 +7,11 @@
 > 压缩。对外能力地图见 [`docs/public_capabilities_v1.md`](docs/public_capabilities_v1.md)。
 
 - **写侧**:working(原始对话)→ episodic(阶段摘要)→ semantic(长期事实)三层压缩 + 强化合并。
-- **读侧**:显式 `retrieve` / `read_timeline` 核心读工具 + 可选原生 `load_material` 分发 + 向量/关键词混合检索 + RRF + verifier + 有界语义放宽。`source_layers`、Namespace、可见性、时间和 kind 等硬边界不放宽。
+- **读侧**:显式 `retrieve` / `read_timeline` 核心读工具 + 可选原生 `load_material` 分发 + 向量/关键词混合检索 + RRF + verifier。raw 先于摘要和长期记忆占用结果位；facet/role 保持前置过滤，只有准确实体导致候选为零时才单独放宽实体条件，并返回 diagnostics。
 - **贯穿**:时间锚点(带时区)、命名空间硬隔离、可选 flavor 层、提示词注入防线。
 
 实现说明按以下公开文档维护：[`usage_flow_v1.md`](docs/usage_flow_v1.md)、
-[`unified_timeline_v2_design_v1.md`](docs/unified_timeline_v2_design_v1.md) 和
+[`memory_metadata_raw_retrieval_design_v1.md`](docs/memory_metadata_raw_retrieval_design_v1.md) 和
 [`model_prompt_playbook_v1.md`](docs/model_prompt_playbook_v1.md)。
 
 ## 当前进度
@@ -28,10 +28,9 @@
 - **切片 4(写侧)✅**:`compaction` 三层压缩(raw→摘要→语义)+ 主题重叠强化合并(注入 LLMClient,
   按 namespace 加锁,outbox 索引);`MemorySystem` 写侧 record/compact 接通。压缩 LLM 失败时不会提交空摘要,
   会返回 `summary_retry_pending` / `semantic_retry_pending`,并保留原记录供下一轮后台压缩重试。
-- **切片 5(读侧)✅**:`retrieval` —— 显式 retrieve 工具 → 混合检索 + RRF + `importance/categories/subject_scopes` 有界放宽 + 关系扩窗 → verifier 门;
+- **切片 5(读侧)✅**:`retrieval` —— 显式 retrieve 工具 → metadata 前置过滤 → raw/derived 分池混合检索 + RRF → verifier 门；原始 query 始终保留，`entity_anchors` 高权重，`topic_terms` 只作普通辅助；
   `build_prompt_context` 只拼可见三层,是否检索交给聊天模型调用工具决定。**读写侧全闭环。**
-- **时间线工具 ✅**:`read_timeline(date_from, date_to, time_periods)` —— 按时间精确读原始对话(不走向量),
-  与 `retrieve`(向量模糊检索)互补,构成核心读工具对。
+- **时间线工具 ✅**:`read_timeline(...)` 支持日期/时间段精确读取，也支持以 raw `source_id` 为锚点读取前后完整 turn；工具并行轮不会被截半，summary/semantic 和越权 source id 会结构化拒绝或返回空。
 - **embedding 三条路 + 自检 ✅**:`HuggingFaceEmbeddingProvider`(本地 BGE-M3)/ `HTTPEmbeddingProvider`(OpenAI 兼容 API,纯 stdlib 零依赖)/ `HashedEmbeddingProvider`(仅测试)。
   `verify_embedding()` 自检语义是否真有效(近义词应明显更近),hashed/弱模型会被响亮标记。**不捆绑任何模型权重。**
 - **outbox 自愈 ✅**:向量后端故障时记录仍安全落库(pending),`reindex_pending()` 恢复后补齐索引;
@@ -45,7 +44,7 @@
   再计算分数。安装 `memcore[speed]` 后向量以 float32 存储,语义 cosine 自动走可选 NumPy 批量计算。
 - **模型协作提示词 ✅**:标准输出契约与压缩链提示词已补充时间锚点、工具选择、群聊归因、metadata 标注规则。
   接入方提示词指南见 `docs/model_prompt_playbook_v1.md`。
-- **工具轨迹类别 ✅**:`append_action(...)` / `append_observation(...)` 把调用与结果追加到同一开放 turn，
+- **工具轨迹 ✅**:`append_action(...)` / `append_observation(...)` 把调用与结果追加到同一开放 turn，
   通过 `correlation_id` 支持并行和乱序返回；`record_tool_exchange(turn_id=...)` 只是这两个 V2 API 的薄适配。
   工具轨迹参与同一 token 生命周期，但压缩为独立 operation digest；普通检索仍默认排除，显式授权后可检索。
 - **材料轨迹类别 ✅**:材料引用/清理使用 typed standalone entry，或作为当前 turn 的 `material.*` intermediate。
@@ -129,7 +128,7 @@ future = mem.compact_due_background()          # 聊天链路推荐后台沉淀,
 原生工具循环示意:
 
 ```python
-tools = build_native_memory_tool_specs(categories=config.categories)
+tools = build_native_memory_tool_specs()
 
 tool_payload = dispatch_native_memory_tool(
     tool_name=tool_call.name,
@@ -211,8 +210,8 @@ memcore 是**纯机制**:它不含任何具体人格、领域调教或模型权�
 | memcore 提供(机制) | 接入方自备(你的资产) |
 |---|---|
 | 三层记忆、压缩、强化、时间锚点 | 具体**人格文本**(经 `persona_text` / `PromptOverrides` 运行时注入) |
-| 混合检索、verifier、放宽、核心读工具与原生工具分发辅助 | 你的**聊天模型**(`LLMClient` 适配器) |
-| 焊死提示词骨架 + 校验插槽 | **领域词表**(`categories`)与**调参**(窗口/阈值) |
+| raw-first 混合检索、verifier、可观测实体放宽、核心读工具与原生工具分发辅助 | 你的**聊天模型**(`LLMClient` 适配器) |
+| 统一 metadata 契约 + 提示词骨架 + 校验插槽 | **领域补充说明**与**调参**(窗口/阈值)；不能替换固定 facet/role 协议 |
 | embedding 接口 + 三路适配器 + 自检 | **embedding 模型**(本地 / API / 自有) |
 | 隔离、outbox 自愈、遗忘、评测台 | 领域**合规规则**(memcore 只保证记忆不越权变指令) |
 

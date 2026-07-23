@@ -117,7 +117,7 @@ def main() -> None:
                 semantic_text="当前可以使用 search 和 weather。",
                 provider_output_raw="当前可以使用 search 和 weather。",
                 annotation_status="accepted",
-                memory_annotation={"keywords": ["能力目录"]},
+                memory_annotation={"topic_terms": ["能力目录"]},
                 source_id="final-1",
                 provider_profile=OPENAI_PROFILE,
                 provider_projection={"role": "assistant", "content": "当前可以使用 search 和 weather。"},

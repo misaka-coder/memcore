@@ -50,7 +50,7 @@ def _shared_mem(conversation: str = "c1"):
 
 class NativeToolSpecs(unittest.TestCase):
     def test_openai_tool_specs_include_memory_and_material_tools(self) -> None:
-        tools = build_native_memory_tool_specs(categories=("preference", "material_trace"), tool_format="openai")
+        tools = build_native_memory_tool_specs(tool_format="openai")
 
         names = [tool["function"]["name"] for tool in tools]
 
@@ -59,19 +59,31 @@ class NativeToolSpecs(unittest.TestCase):
         self.assertTrue(retrieve["strict"])
         self.assertFalse(retrieve["parameters"]["additionalProperties"])
         self.assertEqual(
-            retrieve["parameters"]["properties"]["categories"]["items"]["enum"],
-            ["preference", "material_trace"],
+            retrieve["parameters"]["properties"]["memory_facets"]["items"]["enum"],
+            [
+                "profile",
+                "preference",
+                "viewpoint",
+                "relationship",
+                "event",
+                "state",
+                "plan",
+                "decision",
+                "constraint",
+                "knowledge",
+                "procedure",
+            ],
         )
         self.assertIn("include_explicit", retrieve["parameters"]["properties"])
         self.assertIn("kind_patterns", retrieve["parameters"]["properties"])
 
     def test_openai_strict_schema_makes_optional_fields_nullable_required(self) -> None:
-        tools = build_native_memory_tool_specs(categories=("preference",), tool_format="openai")
+        tools = build_native_memory_tool_specs(tool_format="openai")
         retrieve_schema = tools[0]["function"]["parameters"]
 
         self.assertEqual(retrieve_schema["required"], list(retrieve_schema["properties"]))
-        self.assertEqual(retrieve_schema["properties"]["keywords"]["type"], ["array", "null"])
-        self.assertEqual(retrieve_schema["properties"]["importance_min"]["type"], ["number", "null"])
+        self.assertEqual(retrieve_schema["properties"]["entity_anchors"]["type"], ["array", "null"])
+        self.assertEqual(retrieve_schema["properties"]["memory_facets"]["type"], ["array", "null"])
 
         time_hint = retrieve_schema["properties"]["time_hint"]
         self.assertEqual(time_hint["type"], ["object", "null"])
@@ -94,11 +106,14 @@ class NativeToolDispatch(unittest.TestCase):
         seen: list[dict] = []
 
         class FakeMem:
-            config = SimpleNamespace(categories=("preference",))
+            config = SimpleNamespace()
 
-            def retrieve_for_turn(self, **kwargs):
+            def retrieve_for_turn_structured(self, **kwargs):
                 seen.append(kwargs)
-                return ["event result"]
+                return SimpleNamespace(
+                    rendered_texts=("event result",),
+                    to_dict=lambda: {"status": "found", "matches": []},
+                )
 
         denied = dispatch_native_memory_tool(
             "retrieve_for_turn",
@@ -150,12 +165,16 @@ class NativeToolDispatch(unittest.TestCase):
             "跨会话隐藏 raw 可乐",
             timestamp=900,
             source_id="hidden",
-            memory_metadata={"categories": ["preference"], "keywords": ["可乐"], "subject_scopes": ["user"]},
+            memory_metadata={
+                "memory_facets": ["preference"],
+                "about_roles": ["user"],
+                "entity_anchors": ["可乐"],
+            },
         )
 
         out = dispatch_native_memory_tool(
             "retrieve_for_turn",
-            {"query": "可乐", "keywords": ["可乐"], "categories": ["preference"]},
+            {"query": "可乐", "entity_anchors": ["可乐"], "memory_facets": ["preference"]},
             mem=mem,
             current=current,
         )
@@ -166,20 +185,20 @@ class NativeToolDispatch(unittest.TestCase):
         self.assertNotIn("当前会话可见 raw 可乐", blob)
         store.close()
 
-    def test_retrieve_rejects_invalid_category_instead_of_broad_searching(self) -> None:
+    def test_retrieve_rejects_invalid_facet_instead_of_broad_searching(self) -> None:
         mem, store, _index, _emb = _shared_mem()
         current = mem.record_user_turn("我喜欢可乐", timestamp=1000, source_id="cur")
 
         out = dispatch_native_memory_tool(
             "retrieve_for_turn",
-            {"query": "可乐", "categories": ["not_a_category"]},
+            {"query": "可乐", "memory_facets": ["not_a_facet"]},
             mem=mem,
             current=current,
         )
 
         self.assertFalse(out["ok"])
         self.assertEqual(out["status"], "invalid_arguments")
-        self.assertIn("invalid_categories", out["reason"])
+        self.assertIn("invalid_memory_facets", out["reason"])
         store.close()
 
     def test_read_timeline_dispatches_and_reports_invalid_filter(self) -> None:

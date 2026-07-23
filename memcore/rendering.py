@@ -165,9 +165,8 @@ def render_speaker_label(row: dict[str, Any]) -> str:
 
 
 def _is_trace_event(row: dict[str, Any]) -> bool:
-    metadata = row.get("memory_metadata") if isinstance(row.get("memory_metadata"), dict) else {}
-    categories = metadata.get("categories") if isinstance(metadata, dict) else []
-    return bool({"event_trace", "tool_trace", "material_trace"} & {str(category) for category in (categories or [])})
+    kind_root = str(row.get("kind") or "").strip().lower().split(".", 1)[0]
+    return kind_root in {"event", "tool", "material", "skill"}
 
 
 def _format_tool_value(value: Any) -> str:

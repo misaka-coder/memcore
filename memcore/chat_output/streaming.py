@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from typing import Any
 
-from ..schema import DEFAULT_CATEGORIES
 from .parser import parse_chat_output
 from .schema import ChatOutputMode
 from .segmenter import (
@@ -28,7 +26,6 @@ class StreamingSpeechParser:
         self,
         *,
         mode: ChatOutputMode = "auto",
-        categories: Iterable[str] = DEFAULT_CATEGORIES,
         enable_flavor: bool = False,
         enable_sentence_segments: bool = True,
         min_segment_chars: int = 2,
@@ -36,7 +33,6 @@ class StreamingSpeechParser:
         max_segments: int | None = None,
     ) -> None:
         self.mode = _normalize_mode(mode)
-        self.categories = tuple(categories)
         self.enable_flavor = bool(enable_flavor)
         self.enable_sentence_segments = bool(enable_sentence_segments)
         self.min_segment_chars = max(1, int(min_segment_chars))
@@ -83,7 +79,6 @@ class StreamingSpeechParser:
         result = parse_chat_output(
             raw_output,
             mode=final_mode,
-            categories=self.categories,
             enable_flavor=self.enable_flavor,
             enable_sentence_segments=self.enable_sentence_segments,
             min_segment_chars=self.min_segment_chars,
