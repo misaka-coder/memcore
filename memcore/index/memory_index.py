@@ -157,7 +157,7 @@ class InMemoryVectorIndex(VectorIndex):
         self._lock = threading.RLock()  # 后台压缩线程会写入,保证线程安全
 
     def upsert(self, entries: list[dict[str, Any]]) -> None:
-        prepared = []
+        pending: list[tuple[str, str, dict[str, Any]]] = []
         for entry in entries:
             source_id = str(entry.get("source_id") or "").strip()
             if not source_id:
@@ -165,8 +165,18 @@ class InMemoryVectorIndex(VectorIndex):
             text = str(entry.get("text") or "")
             metadata = dict(entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {})
             metadata["source_id"] = source_id
-            vector = _compact_vector(self.embedding.embed_text(text))
-            # embed 在锁外算(可能较慢),只在写 dict 时加锁。
+            pending.append((source_id, text, metadata))
+        if not pending:
+            return
+
+        # Remote providers should receive one document batch rather than one
+        # request per timeline entry. Embedding stays outside the index lock.
+        vectors = self.embedding.embed_documents([text for _, text, _ in pending])
+        if len(vectors) != len(pending):
+            raise RuntimeError(f"embedding provider returned {len(vectors)} document vectors for {len(pending)} inputs")
+        prepared = []
+        for (source_id, text, metadata), raw_vector in zip(pending, vectors):
+            vector = _compact_vector(raw_vector)
             prepared.append(
                 (
                     source_id,
@@ -191,7 +201,7 @@ class InMemoryVectorIndex(VectorIndex):
         n_results: int = 8,
         exclude_source_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
-        query_vec = _compact_vector(self.embedding.embed_text(str(query_text or "")))
+        query_vec = _compact_vector(self.embedding.embed_query(str(query_text or "")))
         query_norm = _vector_norm(query_vec)
         excluded = {str(source_id) for source_id in (exclude_source_ids or [])}
         with self._lock:

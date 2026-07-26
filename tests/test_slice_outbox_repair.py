@@ -32,6 +32,16 @@ class FlakyIndex(InMemoryVectorIndex):
         super().upsert(entries)
 
 
+class BatchRecordingIndex(InMemoryVectorIndex):
+    def __init__(self, *, embedding):
+        super().__init__(embedding=embedding)
+        self.batch_sizes: list[int] = []
+
+    def upsert(self, entries):
+        self.batch_sizes.append(len(entries))
+        super().upsert(entries)
+
+
 class OutboxResilience(unittest.TestCase):
     def setUp(self) -> None:
         self.store = SQLiteMemoryStore(":memory:")
@@ -185,6 +195,24 @@ class OutboxResilience(unittest.TestCase):
             n_results=10,
         )
         self.assertEqual({hit["source_id"] for hit in hits}, {"raw1", "sum1", "sem1"})
+
+    def test_reindex_all_preserves_batch_calls_for_remote_providers(self) -> None:
+        ns = Namespace(user_id="u1", conversation_id="c1")
+        for index in range(5):
+            self.store.add_message(
+                namespace=ns,
+                role="user",
+                content=f"记忆 {index}",
+                timestamp=1000 + index,
+                source_id=f"raw-{index}",
+            )
+        recording_index = BatchRecordingIndex(embedding=self.emb)
+        mem = self._mem(namespace=ns, index=recording_index)
+
+        out = mem.reindex_all(batch_size=2)
+
+        self.assertEqual(out, {"scanned": 5, "reindexed": 5, "failed": 0})
+        self.assertEqual(recording_index.batch_sizes, [2, 2, 1])
 
     def test_reindex_all_respects_hard_namespace(self) -> None:
         ns = Namespace(user_id="u1", conversation_id="c1")

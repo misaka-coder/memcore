@@ -32,6 +32,9 @@
   `build_prompt_context` 只拼可见三层,是否检索交给聊天模型调用工具决定。**读写侧全闭环。**
 - **时间线工具 ✅**:`read_timeline(...)` 支持日期/时间段精确读取，也支持以 raw `source_id` 为锚点读取前后完整 turn；工具并行轮不会被截半，summary/semantic 和越权 source id 会结构化拒绝或返回空。
 - **embedding 三条路 + 自检 ✅**:`HuggingFaceEmbeddingProvider`(本地 BGE-M3)/ `HTTPEmbeddingProvider`(OpenAI 兼容 API,纯 stdlib 零依赖)/ `HashedEmbeddingProvider`(仅测试)。
+  `EmbeddingProvider` 同时提供 `embed_query/embed_queries` 与
+  `embed_document/embed_documents`；对称模型默认复用旧 `embed_text(s)`，Jina 等非对称模型可分别实现 query/passage，内存与 Chroma 索引会走正确通道。
+  `RoleAwareHTTPEmbeddingProvider` 接受宿主提供的 query/document 请求体扩展，不内置厂商 task 名；全量重建与 pending 修复按批调用远程 provider。
   `verify_embedding()` 自检语义是否真有效(近义词应明显更近),hashed/弱模型会被响亮标记。**不捆绑任何模型权重。**
 - **outbox 自愈 ✅**:向量后端故障时记录仍安全落库(pending),`reindex_pending()` 恢复后补齐索引;
   `reindex_all()` 可从 SQLite 真相源补建/热加载当前 hard namespace 的三层索引,记录/压缩都不被向量故障阻断。

@@ -98,7 +98,7 @@ class ChromaVectorIndex(VectorIndex):
         self._collection.upsert(
             ids=ids,
             documents=docs,
-            embeddings=self.embedding.embed_texts(docs),
+            embeddings=self.embedding.embed_documents(docs),
             metadatas=metas,
         )
 
@@ -111,7 +111,7 @@ class ChromaVectorIndex(VectorIndex):
         exclude_source_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         result = self._collection.query(
-            query_embeddings=self.embedding.embed_texts([str(query_text or "")]),
+            query_embeddings=[self.embedding.embed_query(str(query_text or ""))],
             n_results=max(1, int(n_results)),
             where=_to_chroma_where(_with_source_excludes(where, exclude_source_ids)),
             include=["documents", "metadatas", "distances"],

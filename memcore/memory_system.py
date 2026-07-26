@@ -1102,16 +1102,14 @@ class MemorySystem:
             "也不要把『首次留下记录』夸张成你能证明的现实起点。"
         )
 
-    def reindex_pending(self, *, limit: int = 100) -> dict[str, int]:
+    def reindex_pending(self, *, limit: int = 100, batch_size: int = 64) -> dict[str, int]:
         """outbox 自愈:把 index_status=pending 的记录补做向量 upsert。可定期/启动时调用。"""
         pending = self.store.list_pending_index(limit=limit)
         repaired = failed = 0
-        for rec in pending:
-            try:
-                self._reindex_record(rec)
-                repaired += 1
-            except Exception:
-                failed += 1
+        for batch in self._record_batches(pending, batch_size=batch_size):
+            batch_repaired, batch_failed = self._reindex_batch(batch)
+            repaired += batch_repaired
+            failed += batch_failed
         return {"scanned": len(pending), "repaired": repaired, "failed": failed}
 
     def reindex_all(
@@ -1120,6 +1118,7 @@ class MemorySystem:
         namespace: Namespace | None = None,
         limit: int | None = None,
         current_conversation_only: bool = False,
+        batch_size: int = 64,
     ) -> dict[str, int]:
         """从 SQLite 真相源补建/热加载三层向量索引。
 
@@ -1135,16 +1134,55 @@ class MemorySystem:
             with_conversation=current_conversation_only,
         )
         reindexed = failed = 0
-        for rec in records:
-            try:
-                self._reindex_record(rec)
-                reindexed += 1
-            except Exception:
-                source_id = self._record_index_id(rec)
+        for batch in self._record_batches(records, batch_size=batch_size):
+            batch_reindexed, batch_failed = self._reindex_batch(batch)
+            reindexed += batch_reindexed
+            failed += batch_failed
+        return {"scanned": len(records), "reindexed": reindexed, "failed": failed}
+
+    @staticmethod
+    def _record_batches(records: list[dict[str, Any]], *, batch_size: int):
+        size = max(1, int(batch_size or 1))
+        for start in range(0, len(records), size):
+            yield records[start : start + size]
+
+    def _reindex_batch(self, records: list[dict[str, Any]]) -> tuple[int, int]:
+        indexable: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        completed = 0
+        for record in records:
+            entry = self._build_index_entry(record)
+            source_id = str(entry.get("source_id") or "").strip()
+            if not source_id:
+                continue
+            if str(record.get("retrieval_visibility") or "") == RetrievalVisibility.NEVER.value:
+                self.index.delete([source_id])
+                self.store.set_index_status(source_id, "skipped")
+                completed += 1
+                continue
+            indexable.append((record, entry))
+        if not indexable:
+            return completed, 0
+        try:
+            self.index.upsert([entry for _, entry in indexable])
+        except Exception:
+            if len(indexable) > 1:
+                midpoint = len(indexable) // 2
+                left_completed, left_failed = self._reindex_batch([record for record, _ in indexable[:midpoint]])
+                right_completed, right_failed = self._reindex_batch([record for record, _ in indexable[midpoint:]])
+                return completed + left_completed + right_completed, left_failed + right_failed
+            for record, entry in indexable:
+                source_id = str(entry.get("source_id") or self._record_index_id(record)).strip()
                 if source_id:
                     self.store.set_index_status(source_id, "pending")
-                failed += 1
-        return {"scanned": len(records), "reindexed": reindexed, "failed": failed}
+            return completed, len(indexable)
+        for _, entry in indexable:
+            self.store.set_index_state(
+                str(entry["source_id"]),
+                "indexed",
+                index_schema_version=INDEX_SCHEMA_VERSION,
+                index_key=INDEX_SCHEMA_KEY,
+            )
+        return completed + len(indexable), 0
 
     @staticmethod
     def _record_index_id(record: dict[str, Any]) -> str:

@@ -1,7 +1,7 @@
 from .base import EmbeddingProvider
 from .hashed import HashedEmbeddingProvider
 from .huggingface import HuggingFaceEmbeddingProvider
-from .http import HTTPEmbeddingProvider
+from .http import HTTPEmbeddingProvider, RoleAwareHTTPEmbeddingProvider
 from .verify import verify_embedding
 
 __all__ = [
@@ -9,5 +9,6 @@ __all__ = [
     "HashedEmbeddingProvider",
     "HuggingFaceEmbeddingProvider",
     "HTTPEmbeddingProvider",
+    "RoleAwareHTTPEmbeddingProvider",
     "verify_embedding",
 ]

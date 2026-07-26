@@ -117,6 +117,28 @@ A production host must provide or choose:
 - Store/index lifecycle. SQLite is the source of truth; vector indexes are
   search acceleration.
 
+`EmbeddingProvider` keeps `embed_text()` / `embed_texts()` as the symmetric
+compatibility API and also exposes role-aware methods:
+
+- `embed_query()` / `embed_queries()` for retrieval queries;
+- `embed_document()` / `embed_documents()` for indexed memory passages.
+
+Symmetric models such as BGE-M3 may use the inherited defaults. Providers with
+query/passage task adapters should override the role-aware methods and keep
+their provider-specific task names inside the adapter. MemCore indexes call the
+document batch method during upsert/reindex and the query method during search,
+so remote providers do not need one HTTP request per memory entry. If task
+selection, output dimension, normalization, or model revision changes the
+vector space, reflect that in the provider's `version`/`dimension`; the
+resulting `collection_key()` must change so incompatible vectors are rebuilt
+rather than mixed.
+
+For OpenAI-compatible endpoints whose query and passage requests need different
+fields, use `RoleAwareHTTPEmbeddingProvider` and pass those field mappings from
+the host adapter. MemCore deliberately does not name or hard-code a vendor's
+task strings. `reindex_all(..., batch_size=...)` and
+`reindex_pending(..., batch_size=...)` preserve remote batch calls.
+
 ## Retrieval Tools To Expose
 
 Expose memory tools to the final chat model:

@@ -8,11 +8,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import urllib.error
 import urllib.request
-from typing import Iterable
+from typing import Any, Iterable, Mapping
 
 from .base import EmbeddingProvider
+
+_PROTECTED_BODY_FIELDS = frozenset({"input", "model"})
 
 
 class HTTPEmbeddingProvider(EmbeddingProvider):
@@ -62,14 +66,128 @@ class HTTPEmbeddingProvider(EmbeddingProvider):
 
     def _call_api(self, texts: list[str]) -> list[list[float]]:
         """POST {base_url}/embeddings(OpenAI 兼容)。测试时可覆盖此方法,避免真实网络。"""
-        body = json.dumps({"input": texts, "model": self.model}).encode("utf-8")
+        return self._request_api({"input": texts, "model": self.model})
+
+    def _request_api(self, payload: Mapping[str, Any]) -> list[list[float]]:
+        body = json.dumps(dict(payload), ensure_ascii=False).encode("utf-8")
         request = urllib.request.Request(
             f"{self.base_url}/embeddings",
             data=body,
             method="POST",
             headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(request, timeout=self.timeout) as resp:  # noqa: S310 (受控 URL)
-            payload = json.loads(resp.read().decode("utf-8"))
-        data = payload.get("data") or []
-        return [list(item.get("embedding") or []) for item in data]
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as resp:  # noqa: S310 (受控 URL)
+                response_payload = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(f"embedding_http_error:{int(exc.code)}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError("embedding_transport_error") from exc
+        except (TimeoutError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise RuntimeError("embedding_invalid_response") from exc
+        data = response_payload.get("data") if isinstance(response_payload, dict) else None
+        if not isinstance(data, list):
+            raise RuntimeError("embedding_invalid_response:data_required")
+        ordered = sorted(
+            enumerate(data),
+            key=lambda pair: (
+                int(pair[1].get("index"))
+                if isinstance(pair[1], dict) and isinstance(pair[1].get("index"), int)
+                else pair[0]
+            ),
+        )
+        return [list(item.get("embedding") or []) for _, item in ordered if isinstance(item, dict)]
+
+
+class RoleAwareHTTPEmbeddingProvider(HTTPEmbeddingProvider):
+    """OpenAI-compatible HTTP provider with configurable query/document bodies."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        model: str,
+        dimension: int,
+        timeout: float = 30.0,
+        name: str | None = None,
+        common_body: Mapping[str, Any] | None = None,
+        query_body: Mapping[str, Any] | None = None,
+        document_body: Mapping[str, Any] | None = None,
+    ) -> None:
+        self.common_body = self._validated_body(common_body, label="common_body")
+        self.query_body = self._validated_body(query_body, label="query_body")
+        self.document_body = self._validated_body(document_body, label="document_body")
+        super().__init__(
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            dimension=dimension,
+            timeout=timeout,
+            name=name,
+        )
+        identity = json.dumps(
+            {
+                "common": self.common_body,
+                "query": self.query_body,
+                "document": self.document_body,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        self.version = f"http-role-v1-{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:12]}"
+
+    @staticmethod
+    def _validated_body(body: Mapping[str, Any] | None, *, label: str) -> dict[str, Any]:
+        normalized = dict(body or {})
+        forbidden = sorted(_PROTECTED_BODY_FIELDS.intersection(normalized))
+        if forbidden:
+            raise ValueError(f"{label} cannot override protected fields: {', '.join(forbidden)}")
+        return normalized
+
+    def embed_text(self, text: str) -> list[float]:
+        return self.embed_document(text)
+
+    def embed_texts(self, texts: Iterable[str]) -> list[list[float]]:
+        return self.embed_documents(texts)
+
+    def embed_query(self, text: str) -> list[float]:
+        vectors = self.embed_queries([text])
+        if len(vectors) != 1:
+            raise RuntimeError(f"embedding provider returned {len(vectors)} query vectors for 1 input")
+        return vectors[0]
+
+    def embed_queries(self, texts: Iterable[str]) -> list[list[float]]:
+        return self._embed_role(texts, self.query_body)
+
+    def embed_document(self, text: str) -> list[float]:
+        vectors = self.embed_documents([text])
+        if len(vectors) != 1:
+            raise RuntimeError(f"embedding provider returned {len(vectors)} document vectors for 1 input")
+        return vectors[0]
+
+    def embed_documents(self, texts: Iterable[str]) -> list[list[float]]:
+        return self._embed_role(texts, self.document_body)
+
+    def _embed_role(self, texts: Iterable[str], role_body: Mapping[str, Any]) -> list[list[float]]:
+        items = [str(text or "") for text in texts]
+        if not items:
+            return []
+        vectors = self._request_api(
+            {
+                "input": items,
+                "model": self.model,
+                **self.common_body,
+                **dict(role_body),
+            }
+        )
+        if len(vectors) != len(items):
+            raise RuntimeError(f"embedding API returned {len(vectors)} vectors for {len(items)} inputs")
+        for vector in vectors:
+            if len(vector) != self.dimension:
+                raise RuntimeError(
+                    f"embedding dimension mismatch: got {len(vector)}, expected {self.dimension} "
+                    "(check the configured output dimension and model)"
+                )
+        return vectors

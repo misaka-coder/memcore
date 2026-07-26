@@ -30,7 +30,7 @@ from .chat_output import (
 from .embedding.base import EmbeddingProvider
 from .embedding.hashed import HashedEmbeddingProvider
 from .embedding.huggingface import HuggingFaceEmbeddingProvider
-from .embedding.http import HTTPEmbeddingProvider
+from .embedding.http import HTTPEmbeddingProvider, RoleAwareHTTPEmbeddingProvider
 from .embedding.verify import verify_embedding
 from .errors import ConfigError, MemcoreError, NamespaceError, PromptError, SchemaError
 from .prompts import PromptOverrides
@@ -177,6 +177,7 @@ __all__ = [
     "HashedEmbeddingProvider",
     "HuggingFaceEmbeddingProvider",
     "HTTPEmbeddingProvider",
+    "RoleAwareHTTPEmbeddingProvider",
     "verify_embedding",
     "TokenCounter",
     # Unified Timeline V2

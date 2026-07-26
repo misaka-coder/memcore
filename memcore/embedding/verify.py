@@ -33,9 +33,14 @@ def verify_embedding(
     """近义对相似度应显著高于无关对。返回结构化报告;ok=False 表示语义可能已降级。"""
     anchor, near = similar
     _, far = dissimilar
-    vectors = provider.embed_texts([anchor, near, far])
-    sim = _cosine(vectors[0], vectors[1])
-    dis = _cosine(vectors[0], vectors[2])
+    document_vectors = provider.embed_documents([anchor])
+    if len(document_vectors) != 1:
+        raise RuntimeError(f"embedding provider returned {len(document_vectors)} document vectors for 1 input")
+    query_vectors = provider.embed_queries([near, far])
+    if len(query_vectors) != 2:
+        raise RuntimeError(f"embedding provider returned {len(query_vectors)} query vectors for 2 inputs")
+    sim = _cosine(document_vectors[0], query_vectors[0])
+    dis = _cosine(document_vectors[0], query_vectors[1])
     gap = sim - dis
     ok = sim > 0.0 and gap > margin
     return {

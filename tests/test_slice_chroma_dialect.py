@@ -11,9 +11,39 @@ import shutil
 import tempfile
 import unittest
 
+from memcore.embedding.base import EmbeddingProvider
+from memcore.index.chroma_index import ChromaVectorIndex
 from memcore.index.chroma_index import _to_chroma_where
 
 _HAS_CHROMA = importlib.util.find_spec("chromadb") is not None
+
+
+class _RoleAwareEmbedding(EmbeddingProvider):
+    @property
+    def dimension(self) -> int:
+        return 2
+
+    def embed_text(self, text: str) -> list[float]:
+        return [0.0, 0.0]
+
+    def embed_documents(self, texts) -> list[list[float]]:
+        return [[1.0, 0.0] for _ in texts]
+
+    def embed_query(self, text: str) -> list[float]:
+        return [0.0, 1.0]
+
+
+class _FakeCollection:
+    def __init__(self) -> None:
+        self.upsert_payload = {}
+        self.query_payload = {}
+
+    def upsert(self, **kwargs) -> None:
+        self.upsert_payload = kwargs
+
+    def query(self, **kwargs):
+        self.query_payload = kwargs
+        return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
 
 
 class WhereTranslation(unittest.TestCase):
@@ -40,6 +70,17 @@ class WhereTranslation(unittest.TestCase):
             out,
             {"$and": [{"user_id": "u1"}, {"timestamp": {"$gte": 50}}, {"timestamp": {"$lte": 150}}]},
         )
+
+    def test_chroma_uses_document_and_query_embedding_roles(self) -> None:
+        index = ChromaVectorIndex.__new__(ChromaVectorIndex)
+        index.embedding = _RoleAwareEmbedding()
+        index._collection = _FakeCollection()
+
+        index.upsert([{"source_id": "m1", "text": "历史文档", "metadata": {"user_id": "u1"}}])
+        index.semantic_search(query_text="查询问题", where={"user_id": "u1"})
+
+        self.assertEqual(index._collection.upsert_payload["embeddings"], [[1.0, 0.0]])
+        self.assertEqual(index._collection.query_payload["query_embeddings"], [[0.0, 1.0]])
 
     def test_source_exclude_nin_kept_as_operator_clause(self) -> None:
         out = _to_chroma_where({"user_id": "u1", "source_id": {"$nin": ["m1", "m2"]}})
