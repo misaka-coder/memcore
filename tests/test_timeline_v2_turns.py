@@ -245,6 +245,7 @@ class BasicTurnCompletionTests(TurnLifecycleBase):
         self.assertEqual(result.updated_targets[0].memory_metadata["memory_facets"], ["preference"])
         self.assertEqual(result.final_entry.annotation_status, AnnotationStatus.DERIVED_TURN_FINAL)
         self.assertEqual(result.final_entry.retrieval_visibility, RetrievalVisibility.DEFAULT)
+        self.assertEqual(result.final_entry.kind, "message.assistant")
         self.assertEqual(result.final_entry.reply_to_source_id, "stimulus-1")
         self.assertIn("provider_output_raw", result.final_entry.payload)
         self.assertEqual(result.final_entry.index_status, "indexed")
@@ -264,6 +265,30 @@ class BasicTurnCompletionTests(TurnLifecycleBase):
         self.assertEqual(
             [entry.source_id for entry in self.store.get_turn_entries(namespace=self.namespace, turn_id="turn-1")],
             ["stimulus-1", "final-1"],
+        )
+
+    def test_complete_turn_preserves_host_defined_final_kind(self) -> None:
+        handle = self.mem.begin_turn(
+            stimuli=[_stimulus("语音输入", source_id="voice-stimulus", kind="message.user.voice")],
+            turn_id="turn-voice",
+        )
+
+        result = self.mem.complete_turn(
+            turn_id=handle.turn_id,
+            semantic_text="语音回复",
+            provider_output_raw="语音回复",
+            memory_annotation={},
+            annotation_status="accepted",
+            timestamp=150,
+            source_id="voice-final",
+            kind="message.assistant.voice",
+        )
+
+        self.assertTrue(result.completed)
+        self.assertEqual(result.final_entry.kind, "message.assistant.voice")
+        self.assertEqual(
+            self.store.get_entry(namespace=self.namespace, source_id="voice-final").kind,
+            "message.assistant.voice",
         )
 
     def test_missing_annotation_stays_explicit_instead_of_becoming_empty_accepted(self) -> None:
