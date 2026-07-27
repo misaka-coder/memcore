@@ -128,6 +128,12 @@ future = mem.compact_due_background()          # 聊天链路推荐后台沉淀,
 # 可忽略 future 做 fire-and-forget;测试/脚本可 future.result() 读取压缩统计
 ```
 
+`complete_turn()` 默认写入 `message.assistant`。语音、具身或其他宿主定义的
+typed final 可显式传入开放 namespaced kind，例如
+`kind="message.assistant.voice"`。普通 assistant final 继续使用原始纯文本
+provider 投影；typed final 会保留 kind 和结构化 payload，使交付、打断等宿主
+状态在后续模型上下文中仍然可见。
+
 原生工具循环示意:
 
 ```python
