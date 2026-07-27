@@ -783,10 +783,15 @@ class ProjectionAdapter:
     def _render(self, entry: TimelineEntry) -> RendererResult:
         return self.renderer_registry.render(entry, timezone=self.timezone)
 
-    @staticmethod
-    def _assistant_final_text(entry: TimelineEntry) -> str:
+    def _assistant_final_text(self, entry: TimelineEntry) -> str:
         raw = entry.payload.get("provider_output_raw") if isinstance(entry.payload, dict) else ""
-        return str(raw if raw is not None and str(raw) else entry.semantic_text)
+        if entry.kind == "message.assistant":
+            return str(raw if raw is not None and str(raw) else entry.semantic_text)
+        projected_entry = replace(
+            entry,
+            payload={key: value for key, value in dict(entry.payload).items() if key != "provider_output_raw"},
+        )
+        return self._render(projected_entry).text
 
     @staticmethod
     def _assistant_intermediate_text(entry: TimelineEntry) -> str:

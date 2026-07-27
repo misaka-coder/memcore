@@ -351,6 +351,46 @@ class ProviderAdapterTests(ProjectionBase):
         repeated = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)
         self.assertEqual(projection.payloads, repeated.payloads)
 
+    def test_typed_assistant_final_keeps_structured_host_state_in_projection(self) -> None:
+        handle = self.mem.begin_turn(
+            stimuli=[
+                TimelineEntryInput(
+                    source_id="voice-user",
+                    kind="message.user.voice",
+                    origin=EntryOrigin.USER,
+                    turn_role=TurnRole.STIMULUS,
+                    semantic_text="继续说。",
+                    payload={"text": "继续说。", "voice_turn_id": "voice-turn-1"},
+                )
+            ],
+            turn_id="typed-final-turn",
+        )
+        self.mem.complete_turn(
+            turn_id=handle.turn_id,
+            semantic_text="好，我接着说。",
+            provider_output_raw="",
+            memory_annotation={},
+            annotation_status="accepted",
+            source_id="voice-assistant",
+            kind="message.assistant.voice",
+            payload={
+                "voice_turn_id": "voice-turn-1",
+                "delivery_status": "interrupted",
+                "delivered_units": [0],
+                "interrupted_units": [1],
+            },
+        )
+
+        payloads = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE).payloads
+
+        self.assertIn("message.user.voice", payloads[0]["content"])
+        self.assertIn("message.assistant.voice", payloads[1]["content"])
+        self.assertIn("content:\n", payloads[1]["content"])
+        self.assertIn("接着说", payloads[1]["content"])
+        self.assertIn('"delivery_status":"interrupted"', payloads[1]["content"])
+        self.assertIn('"interrupted_units":[1]', payloads[1]["content"])
+        self.assertNotIn("provider_output_raw", payloads[1]["content"])
+
     def test_anthropic_parallel_tools_round_trip_without_openai_shape_reuse(self) -> None:
         self._build_tool_turn()
         projection = self.mem.build_context_projection(provider_profile=ANTHROPIC_PROFILE)
