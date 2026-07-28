@@ -26,6 +26,24 @@ class SpeechSegmenter(unittest.TestCase):
     def test_newline_is_strong_boundary(self) -> None:
         self.assertEqual(segment_speech("第一句\n第二句。"), ["第一句", "第二句。"])
 
+    def test_numbered_list_marker_stays_with_item(self) -> None:
+        self.assertEqual(
+            segment_speech("1. 先检查文件。2. 再执行转换。"),
+            ["1. 先检查文件。", "2. 再执行转换。"],
+        )
+
+    def test_title_punctuation_is_not_an_outer_boundary(self) -> None:
+        self.assertEqual(
+            segment_speech("《孤独摇滚！》很好看。下一句。"),
+            ["《孤独摇滚！》很好看。", "下一句。"],
+        )
+
+    def test_nested_quote_and_bracket_punctuation_stays_inside(self) -> None:
+        self.assertEqual(
+            segment_speech("她说：“我在看《孤独摇滚！》。”然后笑了。"),
+            ["她说：“我在看《孤独摇滚！》。”然后笑了。"],
+        )
+
 
 class ChatOutputParser(unittest.TestCase):
     def test_memcore_json_extracts_speech_and_coerces_metadata(self) -> None:
@@ -178,6 +196,31 @@ class StreamingOutputParser(unittest.TestCase):
         self.assertEqual(final["type"], "final")
         self.assertEqual(final["payload"]["status"], "plain_text")
         self.assertEqual(final["payload"]["speech"], "哈啊？！真的吗。")
+
+    def test_plain_stream_keeps_title_punctuation_across_chunks(self) -> None:
+        stream = StreamingSpeechParser(mode="plain")
+        events = stream.feed("我在看《孤独摇滚！")
+        self.assertEqual([event for event in events if event["type"] == "speech_segment"], [])
+
+        events += stream.feed("》这部作品很好看。下")
+        events += stream.feed("一句。")
+        events += stream.finish()
+
+        self.assertEqual(
+            [event["text"] for event in events if event["type"] == "speech_segment"],
+            ["我在看《孤独摇滚！》这部作品很好看。", "下一句。"],
+        )
+
+    def test_plain_stream_keeps_numbered_marker_across_chunks(self) -> None:
+        stream = StreamingSpeechParser(mode="plain")
+        events = stream.feed("1.")
+        events += stream.feed(" 先检查文件。")
+        events += stream.finish()
+
+        self.assertEqual(
+            [event["text"] for event in events if event["type"] == "speech_segment"],
+            ["1. 先检查文件。"],
+        )
 
     def test_memcore_json_stream_extracts_speech_and_final_metadata(self) -> None:
         stream = StreamingSpeechParser(mode="memcore_json")

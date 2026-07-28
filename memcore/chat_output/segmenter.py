@@ -10,6 +10,18 @@ from typing import Any
 
 _END_PUNCT = set("。！？!?")
 _CLOSERS = set("\"'”’)]}）】》」』")
+_OPEN_TO_CLOSE = {
+    "(": ")",
+    "[": "]",
+    "{": "}",
+    "（": "）",
+    "【": "】",
+    "《": "》",
+    "「": "」",
+    "『": "』",
+    "“": "”",
+    "‘": "’",
+}
 _ABBREVIATIONS = {
     "e.g",
     "i.e",
@@ -90,6 +102,8 @@ def _clean_segment(value: Any) -> str:
 
 def _is_sentence_end(text: str, index: int) -> bool:
     char = text[index]
+    if _is_inside_protected_span(text, index):
+        return False
     if char in _END_PUNCT:
         return True
     if char == "…":
@@ -106,10 +120,69 @@ def _is_period_sentence_end(text: str, index: int) -> bool:
         return False
     if prev_char.isalnum() and next_char.isalnum():
         return False
+    if _is_numbered_list_marker(text, index):
+        return False
     token = _token_ending_at(text, index).lower().rstrip(".")
     if token in _ABBREVIATIONS:
         return False
     return True
+
+
+def _is_inside_protected_span(text: str, index: int) -> bool:
+    """Return whether ``index`` sits inside paired title/quote/bracket text.
+
+    Inner punctuation in values such as ``《孤独摇滚！》`` or ``“好吧。”`` is
+    not an outer delivery boundary.  This is intentionally syntax-oriented;
+    it does not try to infer sentence semantics from the surrounding words.
+    """
+
+    stack: list[str] = []
+    ascii_quote_open = False
+    escaped = False
+    for char in text[:index]:
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char == '"':
+            ascii_quote_open = not ascii_quote_open
+            continue
+        if ascii_quote_open:
+            continue
+        if char in _OPEN_TO_CLOSE:
+            stack.append(_OPEN_TO_CLOSE[char])
+            continue
+        if stack and char == stack[-1]:
+            stack.pop()
+    return ascii_quote_open or bool(stack)
+
+
+def _is_numbered_list_marker(text: str, index: int) -> bool:
+    """Keep a line-leading marker such as ``1. item`` with its item text."""
+
+    digit_start = index
+    while digit_start > 0 and text[digit_start - 1].isdigit():
+        digit_start -= 1
+    if digit_start == index:
+        return False
+
+    line_start = text.rfind("\n", 0, digit_start) + 1
+    line_prefix = text[line_start:digit_start]
+    if line_prefix.strip():
+        boundary_index = digit_start - 1
+        while boundary_index >= line_start and text[boundary_index].isspace():
+            boundary_index -= 1
+        while boundary_index >= line_start and text[boundary_index] in _CLOSERS:
+            boundary_index -= 1
+        if boundary_index >= line_start and text[boundary_index] not in _END_PUNCT and text[boundary_index] != "…":
+            return False
+
+    next_index = index + 1
+    while next_index < len(text) and text[next_index] in " \t":
+        next_index += 1
+    return next_index < len(text) and text[next_index] != "\n"
 
 
 def _token_ending_at(text: str, index: int) -> str:
