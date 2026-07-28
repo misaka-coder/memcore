@@ -182,7 +182,11 @@ def _is_numbered_list_marker(text: str, index: int) -> bool:
     next_index = index + 1
     while next_index < len(text) and text[next_index] in " \t":
         next_index += 1
-    return next_index < len(text) and text[next_index] != "\n"
+    # A provider may stream ``1.``, its following space, and the item text in
+    # three different deltas.  Keep a syntactically valid line-leading marker
+    # pending while its body is still unknown.  Static/final segmentation will
+    # still flush a genuinely standalone ``1.`` unchanged.
+    return next_index >= len(text) or text[next_index] != "\n"
 
 
 def _token_ending_at(text: str, index: int) -> str:

@@ -222,6 +222,18 @@ class StreamingOutputParser(unittest.TestCase):
             ["1. 先检查文件。"],
         )
 
+    def test_plain_stream_keeps_numbered_marker_across_character_deltas(self) -> None:
+        stream = StreamingSpeechParser(mode="plain")
+        events = []
+        for character in "1. 先检查文件。2. 再执行转换。":
+            events += stream.feed(character)
+        events += stream.finish()
+
+        self.assertEqual(
+            [event["text"] for event in events if event["type"] == "speech_segment"],
+            ["1. 先检查文件。", "2. 再执行转换。"],
+        )
+
     def test_memcore_json_stream_extracts_speech_and_final_metadata(self) -> None:
         stream = StreamingSpeechParser(mode="memcore_json")
         events = []
