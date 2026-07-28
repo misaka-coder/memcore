@@ -605,6 +605,40 @@ class SQLiteMemoryStore(MemoryStore):
             )
             return TurnAbortResult(status="aborted", turn_id=normalized, reason=close_reason)
 
+    def abort_stale_open_turns(
+        self,
+        *,
+        namespace: Namespace,
+        opened_before: int,
+        reason: str,
+        closed_at: int,
+    ) -> tuple[TurnAbortResult, ...]:
+        cutoff = max(0, int(opened_before or 0))
+        closed = max(0, int(closed_at or time.time()))
+        close_reason = str(reason or "stale_open_turn_recovered").strip()[:160] or "stale_open_turn_recovered"
+        scope_clause, scope_params = self._scope_clause(namespace, with_conversation=True)
+        with self._lock, self._immediate_transaction():
+            rows = self._conn.execute(
+                f"""
+                SELECT turn_id
+                FROM turns
+                WHERE {scope_clause} AND status = 'open' AND opened_at < ?
+                ORDER BY opened_at, turn_id
+                """,
+                (*scope_params, cutoff),
+            ).fetchall()
+            turn_ids = tuple(str(row["turn_id"] or "") for row in rows if str(row["turn_id"] or ""))
+            for turn_id in turn_ids:
+                self._conn.execute(
+                    """
+                    UPDATE turns
+                    SET status = 'aborted', closed_at = ?, close_reason = ?, row_version = row_version + 1
+                    WHERE turn_id = ? AND status = 'open'
+                    """,
+                    (closed, close_reason, turn_id),
+                )
+        return tuple(TurnAbortResult(status="aborted", turn_id=turn_id, reason=close_reason) for turn_id in turn_ids)
+
     def save_turn_projections(
         self,
         *,

@@ -464,6 +464,36 @@ class MemorySystem:
         except NotImplementedError as exc:
             raise SchemaError("store_timeline_v2_unsupported") from exc
 
+    def recover_stale_open_turns(
+        self,
+        *,
+        max_age_seconds: int,
+        now: int | None = None,
+        reason: str = "stale_open_turn_recovered",
+    ) -> tuple[TurnAbortResult, ...]:
+        """Abort abandoned turns older than a host-selected safety window.
+
+        Hosts should still abort a turn immediately when their model or
+        delivery path fails. This recovery boundary handles process crashes
+        and forced shutdowns that prevent that normal ``finally`` path from
+        running. Recovery is conversation-scoped and never crosses the
+        current namespace.
+        """
+
+        max_age = int(max_age_seconds or 0)
+        if max_age <= 0:
+            raise ValueError("max_age_seconds must be positive")
+        recovered_at = int(now or time.time())
+        try:
+            return self.store.abort_stale_open_turns(
+                namespace=self.namespace,
+                opened_before=max(0, recovered_at - max_age),
+                reason=str(reason or "stale_open_turn_recovered"),
+                closed_at=recovered_at,
+            )
+        except NotImplementedError as exc:
+            raise SchemaError("store_timeline_v2_unsupported") from exc
+
     def build_context_projection(self, *, provider_profile: str) -> ContextProjection:
         """Build and freeze this conversation's provider-visible append-only history."""
 

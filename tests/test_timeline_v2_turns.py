@@ -728,6 +728,64 @@ class AbortIsolationAndOutboxTests(TurnLifecycleBase):
         finally:
             other.close()
 
+    def test_stale_open_turn_recovery_is_bounded_and_conversation_scoped(self) -> None:
+        stale = self.mem.begin_turn(
+            stimuli=[_stimulus("stale", source_id="stale-source")],
+            turn_id="turn-stale",
+            opened_at=100,
+        )
+        fresh = self.mem.begin_turn(
+            stimuli=[_stimulus("fresh", source_id="fresh-source")],
+            turn_id="turn-fresh",
+            opened_at=240,
+        )
+        other = MemorySystem(
+            llm=_NoopLLM(),
+            namespace=Namespace(
+                user_id="user",
+                tenant_id="tenant",
+                domain_id="domain",
+                conversation_id="other-conversation",
+            ),
+            timezone="Asia/Shanghai",
+            store=self.store,
+            index=self.index,
+            embedding=self.embedding,
+        )
+        try:
+            other_turn = other.begin_turn(
+                stimuli=[_stimulus("other", source_id="other-source")],
+                turn_id="turn-other",
+                opened_at=90,
+            )
+            recovered = self.mem.recover_stale_open_turns(
+                max_age_seconds=100,
+                now=250,
+                reason="host_crash_recovery",
+            )
+            self.assertEqual([item.turn_id for item in recovered], [stale.turn_id])
+            self.assertEqual(recovered[0].reason, "host_crash_recovery")
+            self.assertEqual(
+                self.store.get_turn(namespace=self.namespace, turn_id=stale.turn_id).status,
+                TurnStatus.ABORTED,
+            )
+            self.assertEqual(
+                self.store.get_turn(namespace=self.namespace, turn_id=fresh.turn_id).status,
+                TurnStatus.OPEN,
+            )
+            self.assertEqual(
+                self.store.get_turn(namespace=other.namespace, turn_id=other_turn.turn_id).status,
+                TurnStatus.OPEN,
+            )
+            self.assertEqual(
+                self.mem.recover_stale_open_turns(max_age_seconds=100, now=250),
+                (),
+            )
+            with self.assertRaisesRegex(ValueError, "max_age_seconds must be positive"):
+                self.mem.recover_stale_open_turns(max_age_seconds=0, now=250)
+        finally:
+            other.close()
+
     def test_index_failure_keeps_completed_sql_facts_pending(self) -> None:
         store = SQLiteMemoryStore(":memory:")
         mem = MemorySystem(

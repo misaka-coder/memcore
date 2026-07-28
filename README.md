@@ -128,6 +128,16 @@ future = mem.compact_due_background()          # 聊天链路推荐后台沉淀,
 # 可忽略 future 做 fire-and-forget;测试/脚本可 future.result() 读取压缩统计
 ```
 
+宿主应在模型或交付异常的 `finally` 路径立即调用 `abort_turn()`。为处理进程崩溃、
+强制关机等无法执行 `finally` 的情况，启动或新一轮开始前可按产品超时策略调用：
+
+```python
+recovered = mem.recover_stale_open_turns(max_age_seconds=1800)
+```
+
+该操作只会原子终止当前 conversation namespace 内早于截止时间的 `open` turn，
+不会删除消息、摘要或已完成轮次。超时窗口由宿主选择；不能用它代替正常异常路径的即时 abort。
+
 `complete_turn()` 默认写入 `message.assistant`。语音、具身或其他宿主定义的
 typed final 可显式传入开放 namespaced kind，例如
 `kind="message.assistant.voice"`。普通 assistant final 继续使用原始纯文本

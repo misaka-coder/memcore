@@ -103,6 +103,14 @@ For tests, scripts, or deterministic shutdown, use `compact_due_sync()`.
 For live chat, prefer `compact_due_background()` so summarization does not block
 the visible reply.
 
+Wrap the host model/delivery lifecycle in `try/finally` and call
+`abort_turn()` whenever an opened turn cannot be completed. On startup or
+before opening a new turn, hosts may additionally call
+`recover_stale_open_turns(max_age_seconds=...)` with a product-selected timeout
+to recover turns abandoned by a process crash or forced shutdown. Recovery is
+atomic and conversation-scoped; it does not delete timeline entries or replace
+the immediate abort path.
+
 If the host dynamically selects a provider, pass the actual projection profile
 used by the completed request, for example
 `mem.compact_due_background(provider_profile="openai_chat")`. Omitting it keeps

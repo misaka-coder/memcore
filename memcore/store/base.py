@@ -96,6 +96,17 @@ class MemoryStore(ABC):
     def abort_turn(self, *, namespace: Namespace, turn_id: str, reason: str, closed_at: int) -> TurnAbortResult:
         raise NotImplementedError
 
+    def abort_stale_open_turns(
+        self,
+        *,
+        namespace: Namespace,
+        opened_before: int,
+        reason: str,
+        closed_at: int,
+    ) -> tuple[TurnAbortResult, ...]:
+        """Atomically abort stale open turns inside one conversation namespace."""
+        raise NotImplementedError
+
     def save_turn_projections(
         self,
         *,
