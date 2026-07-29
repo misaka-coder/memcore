@@ -22,7 +22,7 @@ from .text_utils import normalize_text
 from .time_anchor import TIME_PERIOD_LABELS, timestamp_to_datetime_weekday_label
 from .timeline import TimelineEntry, TimelineEntryInput, TurnRole
 
-PROJECTION_VERSION = 1
+PROJECTION_VERSION = 2
 CANONICAL_PROFILE = "canonical_user_assistant"
 OPENAI_PROFILE = "openai_chat"
 ANTHROPIC_PROFILE = "anthropic_messages"
@@ -787,11 +787,21 @@ class ProjectionAdapter:
         raw = entry.payload.get("provider_output_raw") if isinstance(entry.payload, dict) else ""
         if entry.kind == "message.assistant":
             return str(raw if raw is not None and str(raw) else entry.semantic_text)
-        projected_entry = replace(
-            entry,
-            payload={key: value for key, value in dict(entry.payload).items() if key != "provider_output_raw"},
+        host_state, _ = _sanitize_value(
+            {
+                "kind": entry.kind,
+                "data": {key: value for key, value in dict(entry.payload).items() if key != "provider_output_raw"},
+            }
         )
-        return self._render(projected_entry).text
+        return json.dumps(
+            {
+                "speech": str(entry.semantic_text or ""),
+                "host_state": host_state,
+            },
+            ensure_ascii=False,
+            sort_keys=False,
+            separators=(",", ":"),
+        )
 
     @staticmethod
     def _assistant_intermediate_text(entry: TimelineEntry) -> str:

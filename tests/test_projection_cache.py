@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 from typing import Any
 
@@ -351,7 +352,7 @@ class ProviderAdapterTests(ProjectionBase):
         repeated = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)
         self.assertEqual(projection.payloads, repeated.payloads)
 
-    def test_typed_assistant_final_keeps_structured_host_state_in_projection(self) -> None:
+    def test_typed_assistant_final_keeps_speech_authoritative_and_nests_host_state(self) -> None:
         handle = self.mem.begin_turn(
             stimuli=[
                 TimelineEntryInput(
@@ -384,12 +385,16 @@ class ProviderAdapterTests(ProjectionBase):
         payloads = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE).payloads
 
         self.assertIn("message.user.voice", payloads[0]["content"])
-        self.assertIn("message.assistant.voice", payloads[1]["content"])
-        self.assertIn("content:\n", payloads[1]["content"])
-        self.assertIn("接着说", payloads[1]["content"])
-        self.assertIn('"delivery_status":"interrupted"', payloads[1]["content"])
-        self.assertIn('"interrupted_units":[1]', payloads[1]["content"])
+        assistant_content = json.loads(payloads[1]["content"])
+        self.assertEqual(assistant_content["speech"], "好，我接着说。")
+        self.assertEqual(assistant_content["host_state"]["kind"], "message.assistant.voice")
+        self.assertEqual(assistant_content["host_state"]["data"]["delivery_status"], "interrupted")
+        self.assertEqual(assistant_content["host_state"]["data"]["interrupted_units"], [1])
         self.assertNotIn("provider_output_raw", payloads[1]["content"])
+
+        anthropic = self.mem.build_context_projection(provider_profile=ANTHROPIC_PROFILE).payloads
+        anthropic_content = json.loads(anthropic[1]["content"][0]["text"])
+        self.assertEqual(anthropic_content, assistant_content)
 
     def test_anthropic_parallel_tools_round_trip_without_openai_shape_reuse(self) -> None:
         self._build_tool_turn()

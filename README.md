@@ -141,8 +141,9 @@ recovered = mem.recover_stale_open_turns(max_age_seconds=1800)
 `complete_turn()` 默认写入 `message.assistant`。语音、具身或其他宿主定义的
 typed final 可显式传入开放 namespaced kind，例如
 `kind="message.assistant.voice"`。普通 assistant final 继续使用原始纯文本
-provider 投影；typed final 会保留 kind 和结构化 payload，使交付、打断等宿主
-状态在后续模型上下文中仍然可见。
+provider 投影；typed final 会把自然回复保留为顶层 `speech`，并把 kind 与结构化
+payload 收进 `host_state`。这样交付、打断等宿主状态在后续模型上下文中仍然可见，
+又不会让模型把内部状态字段误认成下一轮最终回复格式。
 
 原生工具循环示意:
 

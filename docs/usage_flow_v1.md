@@ -96,8 +96,9 @@ mem.compact_due_background()
 
 `kind` 默认为 `message.assistant`。宿主若完成的是语音等 typed turn，可传
 `kind="message.assistant.voice"` 以及对应的小型结构化 `payload`。MemCore 不解释
-业务字段，但会在 provider projection 中保留非默认 final 的 kind 和 payload；
-默认文本 final 的既有纯文本投影不变。
+业务字段，但会在 provider projection 中把自然回复保留为顶层 `speech`，把非默认
+final 的 kind 和 payload 收进 `host_state`；默认文本 final 的既有纯文本投影不变。
+这个边界让模型既能看到打断/交付状态，又不会把内部状态对象误当成下一轮回复契约。
 
 For tests, scripts, or deterministic shutdown, use `compact_due_sync()`.
 For live chat, prefer `compact_due_background()` so summarization does not block
