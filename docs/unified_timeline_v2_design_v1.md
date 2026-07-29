@@ -100,6 +100,8 @@ renderer_id / renderer_version
 
 `origin` 和 `turn_role` 是 MemCore 的语义，不等于 provider role。一个工具结果即使因兼容性通过 provider `user` role 返回，它仍然是 `origin=environment`、`turn_role=observation`，绝不能因此被当成用户原话。
 
+`actor / target_actor` 会进入通用时间线渲染，宿主可用开放的 namespaced `kind`（例如旁观消息）区分消息语义，而不需要把渠道字段塞进 MemCore。说话人与明确对象不能在清洗 provider 控制片段时一起丢失。
+
 没有触发模型回复的外部事实也可以作为 standalone entry 追加，`turn_id/turn_role` 留空并按自身策略决定 visibility；只有进入模型循环的输入才创建 turn。助手在工具前发出的非终态说明使用 `turn_role=intermediate`，不能冒充 final，也不要求像 action 一样必须有 correlation。
 
 ## 4. 轮次与记忆标注归属

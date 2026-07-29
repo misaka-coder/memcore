@@ -151,7 +151,7 @@ def _sanitize_speaker_part(value: Any) -> str:
 
 
 def render_speaker_label(row: dict[str, Any]) -> str:
-    """渲染 role + actor 显示名,让群聊/多方场景不丢"谁说的"。"""
+    """渲染 role、说话人和明确对象,保留多方对话的归属与寻址。"""
     role = _sanitize_speaker_part(row.get("role"))
     actor_name = _sanitize_speaker_part(row.get("actor_display_name"))
     actor_id = _sanitize_speaker_part(row.get("actor_id"))
@@ -160,8 +160,16 @@ def render_speaker_label(row: dict[str, Any]) -> str:
     else:
         actor = actor_name or actor_id
     if role and actor:
-        return f"{role}({actor})"
-    return role or actor
+        source = f"{role}({actor})"
+    else:
+        source = role or actor
+    target_name = _sanitize_speaker_part(row.get("target_actor_display_name"))
+    target_id = _sanitize_speaker_part(row.get("target_actor_id"))
+    if target_name and target_id and target_name != target_id:
+        target = f"{target_name};id={target_id}"
+    else:
+        target = target_name or target_id
+    return f"{source} -> {target}" if source and target else source or target
 
 
 def _is_trace_event(row: dict[str, Any]) -> bool:

@@ -160,6 +160,38 @@ class Rendering(unittest.TestCase):
 
         self.assertIn("user(张三;id=qq-1): 我下周三要复盘基金组合", out)
 
+    def test_raw_rendering_keeps_observed_and_addressed_message_semantics(self) -> None:
+        rows = [
+            {
+                "role": "user.observed",
+                "actor_display_name": "张三",
+                "actor_id": "qq-1",
+                "content": "这是群聊背景，不是当前请求",
+                "timestamp": _ts(2026, 4, 10, 9),
+                "time_of_day": "morning",
+            },
+            {
+                "role": "user",
+                "actor_display_name": "李四",
+                "actor_id": "qq-2",
+                "target_actor_id": "assistant",
+                "content": "这句明确对你说",
+                "timestamp": _ts(2026, 4, 10, 9, 1),
+                "time_of_day": "morning",
+            },
+        ]
+
+        out = render_raw_snippet(rows, tz="Asia/Shanghai")
+
+        self.assertIn(
+            "user.observed(张三;id=qq-1): 这是群聊背景,不是当前请求",
+            out,
+        )
+        self.assertIn(
+            "user(李四;id=qq-2) -> assistant: 这句明确对你说",
+            out,
+        )
+
     def test_actor_label_is_sanitized_before_prompt_rendering(self) -> None:
         rows = [
             {
