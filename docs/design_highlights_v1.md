@@ -18,6 +18,11 @@ memcore 把记忆分成:
 
 价值:近期细节不丢,长期画像不靠无限堆 raw,上下文窗口压力可控。
 
+写侧也保持逐层证据可见：raw → episodic 使用与聊天上下文一致的时间、发言人
+与明确目标对象渲染；episodic → semantic 会继续提供时间范围、阶段/事件类型、
+关键事件、核心事实和 memory metadata；长期强化同时看到稳定事实、反复话题、
+重要人物与待续线索。后一级不会只拿一行模糊摘要猜前一级遗漏的主体或状态。
+
 ### 2. Token 差值窗口 + 完整关系边界
 
 raw 达到 `raw_token_trigger` 后按 `raw_token_batch_ratio` 规划旧前缀，实际切点只能落在完整 terminal turn/relation component；episodic → semantic 仍保持批次小于触发线。

@@ -729,8 +729,8 @@ class Compaction:
         call = self._call_json(
             TaskType.REINFORCEMENT,
             *build_reinforcement_prompts(
-                existing_text=_render_semantic_text(target),
-                incoming_text=_render_semantic_text(incoming),
+                existing_text=_render_semantic_text(target, tz=self.timezone),
+                incoming_text=_render_semantic_text(incoming, tz=self.timezone),
                 overrides=self.overrides,
                 enable_flavor=self.config.enable_flavor,
             ),
@@ -834,10 +834,35 @@ class Compaction:
         for s in batch:
             time_label = self._summary_time_label(s)
             period = TIME_PERIOD_LABELS.get(str(s.get("time_of_day") or ""), "")
-            head = " | ".join(p for p in (time_label, period) if p)
-            prefix = f"[{head}] " if head else ""
-            facts = "; ".join(s.get("core_facts") or [])
-            lines.append(f"- {prefix}{normalize_text(s.get('diary_summary'))} | 事实: {facts}")
+            period_label = normalize_text(s.get("period_label"))
+            event_type = normalize_text(s.get("event_type"))
+            head = " | ".join(
+                part
+                for part in (
+                    time_label,
+                    period,
+                    f"阶段:{period_label}" if period_label else "",
+                    f"类型:{event_type}" if event_type else "",
+                )
+                if part
+            )
+            lines.append(f"- [{head}]" if head else "- 阶段摘要")
+            for key, label in (
+                ("diary_summary", "阶段回忆"),
+                ("key_events", "关键事件"),
+                ("core_facts", "核心事实"),
+            ):
+                values = (
+                    [normalize_text(s.get(key))]
+                    if key == "diary_summary"
+                    else [normalize_text(item) for item in (s.get(key) or [])]
+                )
+                rendered = "; ".join(item for item in values if item)
+                if rendered:
+                    lines.append(f"  {label}: {rendered}")
+            metadata = _source_memory_metadata(s)
+            if metadata:
+                lines.append("  memory_metadata: " + canonical_json_bytes(metadata).decode("utf-8"))
         return "\n".join(lines)
 
     def _summary_time_label(self, summary: dict[str, Any]) -> str:
@@ -969,8 +994,51 @@ def _overlap_score(candidate: dict[str, Any], incoming: dict[str, Any]) -> int:
     return len(shared_entities) + proposition_overlap
 
 
-def _render_semantic_text(record: dict[str, Any]) -> str:
-    parts = [str(record.get("semantic_summary") or "")]
-    parts += [str(x) for x in (record.get("stable_facts") or [])]
-    parts += [str(x) for x in (record.get("recurring_topics") or [])]
-    return " ".join(p for p in parts if p)
+def _source_memory_metadata(record: dict[str, Any]) -> dict[str, Any]:
+    raw = record.get("memory_metadata")
+    if not isinstance(raw, dict):
+        return {}
+    metadata: dict[str, Any] = {}
+    turn_intent = normalize_text(raw.get("turn_intent"))
+    if turn_intent:
+        metadata["turn_intent"] = turn_intent
+    for key in (
+        "memory_facets",
+        "about_roles",
+        "entity_anchors",
+        "topic_terms",
+        "mood_tags",
+    ):
+        values = _str_list(raw.get(key))
+        if values:
+            metadata[key] = values
+    priority = normalize_text(raw.get("retrieval_priority"))
+    if priority in RETRIEVAL_PRIORITIES:
+        metadata["retrieval_priority"] = priority
+    return metadata
+
+
+def _render_semantic_text(record: dict[str, Any], *, tz: str) -> str:
+    start = _positive_ts(record.get("period_start_ts"))
+    end = _positive_ts(record.get("period_end_ts")) or _positive_ts(record.get("timestamp"))
+    time_label = format_time_range_label(start_ts=start, end_ts=end, tz=tz)
+    lines = [f"时间范围: {time_label}" if time_label else "时间范围: 未提供"]
+    for key, label in (
+        ("semantic_summary", "长期印象"),
+        ("stable_facts", "稳定事实"),
+        ("recurring_topics", "反复话题"),
+        ("important_people", "重要人物"),
+        ("open_loops", "待续线索"),
+    ):
+        values = (
+            [normalize_text(record.get(key))]
+            if key == "semantic_summary"
+            else [normalize_text(item) for item in (record.get(key) or [])]
+        )
+        rendered = "; ".join(item for item in values if item)
+        if rendered:
+            lines.append(f"{label}: {rendered}")
+    metadata = _source_memory_metadata(record)
+    if metadata:
+        lines.append("memory_metadata: " + canonical_json_bytes(metadata).decode("utf-8"))
+    return "\n".join(lines)

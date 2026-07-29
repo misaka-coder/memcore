@@ -127,6 +127,7 @@ def _complete_turn(
     assistant_text: str = "回答",
     timestamp: int = 1000,
     actor: Actor | None = None,
+    target_actor: Actor | None = None,
 ) -> str:
     turn_id = f"turn-{number}"
     mem.begin_turn(
@@ -142,6 +143,7 @@ def _complete_turn(
                 payload={"text": user_text},
                 timestamp=timestamp,
                 actor=actor,
+                target_actor=target_actor,
                 compatibility_role="user",
             )
         ],
@@ -641,13 +643,17 @@ class SummaryCycleViaFacade(unittest.TestCase):
             assistant_text="到时一起复盘",
             timestamp=1000,
             actor=Actor(stable_id="qq-1", display_name="张三"),
+            target_actor=Actor(stable_id="assistant"),
         )
 
         mem.compact_due_sync()
 
         summary_requests = [req for req in llm.requests if req.task_type == TaskType.SUMMARY]
         self.assertEqual(len(summary_requests), 1)
-        self.assertIn("user(张三;id=qq-1): 我下周三要复盘基金组合", summary_requests[0].user_prompt)
+        self.assertIn(
+            "user(张三;id=qq-1) -> assistant: 我下周三要复盘基金组合",
+            summary_requests[0].user_prompt,
+        )
 
 
 class SemanticAndReinforcement(unittest.TestCase):
@@ -705,6 +711,120 @@ class SemanticAndReinforcement(unittest.TestCase):
         self.assertEqual(recent[0]["reinforcement_count"], 3)
         self.assertEqual(recent[0]["source_summary_ids"], ["ep0", "ep1", "ep2"])
         self.assertEqual(recent[0]["index_status"], "indexed")
+
+    def test_semantic_prompt_keeps_full_episode_evidence(self) -> None:
+        llm = CapturingLLM()
+        compaction = Compaction(
+            store=self.store,
+            index=self.index,
+            llm=llm,
+            config=self.cfg,
+            timezone="Asia/Shanghai",
+        )
+        self.store.add_summary(
+            namespace=self.ns,
+            record={
+                "summary_id": "ep-rich",
+                "timestamp": _ts(2026, 7, 29, 13, 20),
+                "period_start_ts": _ts(2026, 7, 29, 13, 10),
+                "period_end_ts": _ts(2026, 7, 29, 13, 20),
+                "period_label": "群聊讨论",
+                "event_type": "计划",
+                "diary_summary": "张三向我提出了基金复盘计划。",
+                "key_events": ["张三计划下周三复盘基金组合"],
+                "core_facts": ["复盘计划由张三提出"],
+                "memory_metadata": {
+                    "memory_facets": ["plan"],
+                    "about_roles": ["third_party"],
+                    "entity_anchors": ["张三", "基金组合"],
+                    "topic_terms": ["复盘"],
+                    "retrieval_priority": "high",
+                },
+            },
+        )
+        self.store.add_summary(
+            namespace=self.ns,
+            record={
+                "summary_id": "ep-trigger",
+                "timestamp": _ts(2026, 7, 29, 13, 30),
+                "diary_summary": "随后继续确认时间。",
+            },
+        )
+
+        compaction.run_due(namespace=self.ns)
+
+        requests = [request for request in llm.requests if request.task_type == TaskType.SEMANTIC]
+        self.assertEqual(len(requests), 1)
+        prompt = requests[0].user_prompt
+        self.assertIn("阶段:群聊讨论", prompt)
+        self.assertIn("类型:计划", prompt)
+        self.assertIn("关键事件: 张三计划下周三复盘基金组合", prompt)
+        self.assertIn("核心事实: 复盘计划由张三提出", prompt)
+        self.assertIn('"entity_anchors":["张三","基金组合"]', prompt)
+        self.assertIn('"about_roles":["third_party"]', prompt)
+
+    def test_reinforcement_prompt_keeps_people_open_loops_and_metadata(self) -> None:
+        llm = CapturingLLM()
+        compaction = Compaction(
+            store=self.store,
+            index=self.index,
+            llm=llm,
+            config=self.cfg,
+            timezone="Asia/Shanghai",
+        )
+        target = {
+            "semantic_id": "semantic-plan",
+            "timestamp": _ts(2026, 7, 20, 12),
+            "period_start_ts": _ts(2026, 7, 1, 9),
+            "period_end_ts": _ts(2026, 7, 20, 12),
+            "importance": 0.8,
+            "semantic_summary": "张三持续推进基金复盘。",
+            "stable_facts": ["张三负责基金复盘"],
+            "recurring_topics": ["基金复盘"],
+            "important_people": ["张三"],
+            "open_loops": ["等待张三提交复盘结论"],
+            "memory_metadata": {
+                "memory_facets": ["plan"],
+                "about_roles": ["third_party"],
+                "entity_anchors": ["张三", "基金组合"],
+                "topic_terms": ["复盘"],
+                "retrieval_priority": "high",
+            },
+            "source_summary_ids": ["ep-old"],
+            "reinforcement_count": 1,
+        }
+        incoming = {
+            "timestamp": _ts(2026, 7, 29, 13),
+            "period_start_ts": _ts(2026, 7, 29, 12),
+            "period_end_ts": _ts(2026, 7, 29, 13),
+            "date_label": "2026-07-29",
+            "time_of_day": "afternoon",
+            "importance": 0.9,
+            "semantic_summary": "张三提交了新的基金复盘材料。",
+            "stable_facts": ["张三已经提交复盘材料"],
+            "recurring_topics": ["基金复盘"],
+            "important_people": ["张三"],
+            "open_loops": ["等待确认复盘结论"],
+            "memory_metadata": {
+                "memory_facets": ["plan"],
+                "about_roles": ["third_party"],
+                "entity_anchors": ["张三", "基金组合"],
+                "topic_terms": ["复盘"],
+                "retrieval_priority": "high",
+            },
+            "semantic_tags": ["张三", "基金组合", "复盘"],
+            "source_summary_ids": ["ep-new"],
+        }
+
+        compaction._merge_reinforcement(target, incoming)
+
+        requests = [request for request in llm.requests if request.task_type == TaskType.REINFORCEMENT]
+        self.assertEqual(len(requests), 1)
+        prompt = requests[0].user_prompt
+        self.assertIn("重要人物: 张三", prompt)
+        self.assertIn("待续线索: 等待张三提交复盘结论", prompt)
+        self.assertIn("待续线索: 等待确认复盘结论", prompt)
+        self.assertIn('"entity_anchors":["张三","基金组合"]', prompt)
 
     def test_semantic_lineage_keeps_more_than_eight_source_summaries(self) -> None:
         config = MemoryConfig(episodic_compact_trigger_count=10, episodic_compact_batch_size=9)
