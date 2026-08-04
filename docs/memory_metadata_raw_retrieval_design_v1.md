@@ -340,9 +340,24 @@ semantic_summary → 只按当前长期记忆内容使用
 
 ## 7. 时间线工具配合
 
-`read_timeline` 保留两种简单入口。
+`read_timeline` 保留三种互斥入口。
 
-### 7.1 精确日期模式
+### 7.1 精确时间范围模式
+
+用户明确给出小时或分钟时，直接使用本地时间或 ISO 8601，不要求模型计算 epoch：
+
+```json
+{
+  "time_range": {
+    "start_at": "2026-07-22 11:00",
+    "end_at": "2026-07-22 12:00"
+  }
+}
+```
+
+`start_at` 包含、`end_at` 不包含；无显式偏移时使用 `MemorySystem.timezone`。
+
+### 7.2 日期/粗时段兼容模式
 
 用于用户明确给出昨天、上周二、某个日期或时间段：
 
@@ -354,7 +369,9 @@ semantic_summary → 只按当前长期记忆内容使用
 }
 ```
 
-### 7.2 Raw 锚点扩窗模式
+旧日期字段会归一成 timestamp 起止范围，再进入与精确模式相同的 Store 查询路径。
+
+### 7.3 Raw 锚点扩窗模式
 
 用于语义检索已经找到相关 raw，但一轮内容不足以看清前因后果：
 
@@ -772,17 +789,18 @@ SQLite 选择算法固定如下：
 7. 不因 `is_summarized=1` 排除旧 raw，因为时间线工具本来就是精确读取原始记录；
 8. 不在 Store 层加入 token 裁剪。
 
-`MemorySystem.read_timeline()` 改成日期模式与 anchor 模式互斥：
+`MemorySystem.read_timeline()` 的精确时间、旧日期和 anchor 模式互斥：
 
 ```python
 read_timeline(
+    time_range=None,
     date_from="", date_to="", time_periods=None,
     anchor_source_id="", before_turns=0, after_turns=0,
     cross_conversation=False,
 )
 ```
 
-同时传日期和 anchor 返回 `invalid_filter/timeline_modes_are_mutually_exclusive`；两个模式都不传返回 `invalid_filter/timeline_selector_required`。
+同时传多个模式返回 `invalid_filter/timeline_modes_are_mutually_exclusive`；三个模式都不传返回 `invalid_filter/timeline_selector_required`。
 
 ## 17. 索引与检索执行细节
 
@@ -921,9 +939,9 @@ Akane 回填不是新增第二套 memory API。下列位置是 active MemCore �
 | `capability_registry.RETRIEVE_MEMORY_TOOL_SPEC` / `READ_MEMORY_TIMELINE_TOOL_SPEC` | 从 `build_native_memory_tool_specs(tool_format="plain", include_material_tool=False)` 读取 description/schema，再换成 Akane 的 capability id、权限与 visible client 配置 | schema `thin adapter`；MemCore 是唯一字段权威 |
 | `tool_runtime` 的两个 `*_INPUT_SCHEMA` | 删除，`ToolMetadata` 与 handler 均引用 capability registry 中的 package-backed schema | `deleted` |
 | `RetrieveMemoryToolHandler.normalize_call()` | 只接收 MemCore 新字段并做形状归一化；不翻译 `keywords/categories/subject_scopes/importance_min` | `thin adapter`，旧参数不双读 |
-| `ReadMemoryTimelineToolHandler.normalize_call()` | 透传日期模式或 raw anchor 模式；两者冲突交给 MemCore 返回结构化 `invalid_filter` | `thin adapter` |
+| `ReadMemoryTimelineToolHandler.normalize_call()` | 透传精确 `time_range`、旧日期别名或 raw anchor 模式；冲突交给 MemCore 返回结构化 `invalid_filter` | `thin adapter` |
 | `MemcoreManager.retrieve_memory()` / `shadow_retrieve_memory()` | 透传 `query/entity_anchors/topic_terms/source_layers/memory_facets/about_roles/time_hint/include_explicit/kind_patterns` | `thin adapter`；不做旧枚举翻译，不加隐藏结果限制 |
-| `MemcoreManager.read_memory_timeline()` | 透传 `date_from/date_to/time_periods` 或 `anchor_source_id/before_turns/after_turns` | `thin adapter` |
+| `MemcoreManager.read_memory_timeline()` | 透传 `time_range`、旧 `date_from/date_to/time_periods` 或 `anchor_source_id/before_turns/after_turns` | `thin adapter` |
 | `MemcoreManager._build_system()` | 不再读取 `DEFAULT_CATEGORIES` 或传 `MemoryConfig.categories`；结果 token budget 默认 `0` | 旧 category 配置 `deleted` |
 | 事件、工具与材料写入点 | 依赖 `kind/origin/turn_role/retrieval_policy/retrieval_visibility` 表达协议事实；`memory_metadata` 仅在确有可检索语义标注时填写新契约 | 旧 `event_trace/tool_trace/material_trace` category `deleted` |
 | `prompt_blocks.py` | 注入 `build_memory_metadata_instruction()` 和 MemCore native tool schema，不再手写字段解释 | `thin adapter` |

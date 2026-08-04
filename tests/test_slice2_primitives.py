@@ -25,6 +25,7 @@ from memcore.rendering import (
 from memcore.time_anchor import (
     format_time_range_label,
     infer_time_of_day,
+    normalize_timeline_time_selector,
     render_relative_time_anchor_line,
     timestamp_to_weekday_label,
 )
@@ -62,6 +63,26 @@ class TimeAnchor(unittest.TestCase):
         self.assertTrue(render_relative_time_anchor_line(text="昨天聊到的事", time_range_label="2026-04-10"))
         self.assertTrue(render_relative_time_anchor_line(text="上周二聊到的事", time_range_label="2026-04-10 周五"))
         self.assertEqual(render_relative_time_anchor_line(text="复习微积分", time_range_label="2026-04-10"), "")
+
+    def test_exact_selector_rejects_ambiguous_or_nonexistent_local_wall_time(self) -> None:
+        with self.assertRaisesRegex(ValueError, "nonexistent_local_time"):
+            normalize_timeline_time_selector(
+                timezone="America/New_York",
+                time_range={"start_at": "2026-03-08 02:30", "end_at": "2026-03-08 03:30"},
+            )
+        with self.assertRaisesRegex(ValueError, "ambiguous_local_time_requires_offset"):
+            normalize_timeline_time_selector(
+                timezone="America/New_York",
+                time_range={"start_at": "2026-11-01 01:15", "end_at": "2026-11-01 02:15"},
+            )
+
+    def test_exact_selector_accepts_offset_for_ambiguous_wall_time(self) -> None:
+        selector = normalize_timeline_time_selector(
+            timezone="America/New_York",
+            time_range={"start_at": "2026-11-01T01:15:00-04:00", "end_at": "2026-11-01T01:45:00-04:00"},
+        )
+        self.assertEqual(selector.start_at, "2026-11-01T01:15:00-04:00")
+        self.assertEqual(selector.end_at, "2026-11-01T01:45:00-04:00")
 
 
 class Rendering(unittest.TestCase):

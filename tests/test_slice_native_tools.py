@@ -76,6 +76,12 @@ class NativeToolSpecs(unittest.TestCase):
         )
         self.assertIn("include_explicit", retrieve["parameters"]["properties"])
         self.assertIn("kind_patterns", retrieve["parameters"]["properties"])
+        timeline = tools[1]["function"]
+        self.assertIn("time_range", timeline["parameters"]["properties"])
+        self.assertEqual(
+            timeline["parameters"]["properties"]["time_range"]["required"],
+            ["start_at", "end_at"],
+        )
 
     def test_openai_strict_schema_makes_optional_fields_nullable_required(self) -> None:
         tools = build_native_memory_tool_specs(tool_format="openai")
@@ -216,6 +222,26 @@ class NativeToolDispatch(unittest.TestCase):
         self.assertEqual(ok["result"]["message_count"], 1)
         self.assertFalse(bad["ok"])
         self.assertEqual(bad["status"], "invalid_filter")
+        store.close()
+
+    def test_read_timeline_dispatches_exact_time_range_without_unknown_entity(self) -> None:
+        mem, store, _index, _emb = _shared_mem()
+        mem.record_user_turn("上午无关消息", timestamp=_ts(2026, 4, 10, 8), source_id="early")
+        mem.record_user_turn("我们俩一起来玩的", timestamp=_ts(2026, 4, 10, 11, 47), source_id="target")
+
+        out = dispatch_native_memory_tool(
+            "read_timeline",
+            {
+                "time_range": {
+                    "start_at": "2026-04-10 11:00",
+                    "end_at": "2026-04-10 12:00",
+                }
+            },
+            mem=mem,
+        )
+
+        self.assertTrue(out["ok"])
+        self.assertEqual([row["source_id"] for row in out["result"]["messages"]], ["target"])
         store.close()
 
     def test_load_material_uses_host_loader(self) -> None:

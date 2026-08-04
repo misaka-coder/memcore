@@ -65,6 +65,43 @@ class Timeline(unittest.TestCase):
         out = mem.read_timeline(date_from="2026-04-10", time_periods=["晚上"])  # 中文别名
         self.assertEqual([m["content"] for m in out["messages"]], ["晚上说的"])
 
+    def test_exact_local_time_range_reads_only_requested_minutes(self) -> None:
+        mem = self._mem("c1")
+        mem.record_user_turn("上午较早的大段记录" * 3000, timestamp=_ts(2026, 4, 10, 8, 19))
+        mem.record_user_turn("十点五十九", timestamp=_ts(2026, 4, 10, 10, 59))
+        mem.record_user_turn("我们俩一起来玩的", timestamp=_ts(2026, 4, 10, 11, 47))
+        mem.record_user_turn("十二点边界", timestamp=_ts(2026, 4, 10, 12, 0))
+
+        out = mem.read_timeline(
+            time_range={
+                "start_at": "2026-04-10 11:00",
+                "end_at": "2026-04-10 12:00",
+            }
+        )
+
+        self.assertEqual([m["content"] for m in out["messages"]], ["我们俩一起来玩的"])
+        self.assertEqual(out["selector_mode"], "time_range")
+        self.assertEqual(out["time_range"]["start_at"], "2026-04-10T11:00:00+08:00")
+        self.assertEqual(out["time_range"]["end_at"], "2026-04-10T12:00:00+08:00")
+
+    def test_exact_time_range_accepts_explicit_offset_and_crosses_date(self) -> None:
+        mem = self._mem("c1")
+        mem.record_user_turn("范围之前", timestamp=_ts(2026, 4, 10, 22, 59))
+        mem.record_user_turn("范围内一", timestamp=_ts(2026, 4, 10, 23, 30))
+        mem.record_user_turn("范围内二", timestamp=_ts(2026, 4, 11, 0, 30))
+        mem.record_user_turn("范围之后", timestamp=_ts(2026, 4, 11, 1, 0))
+
+        out = mem.read_timeline(
+            time_range={
+                "start_at": "2026-04-10T15:00:00Z",
+                "end_at": "2026-04-10T17:00:00Z",
+            }
+        )
+
+        self.assertEqual([m["content"] for m in out["messages"]], ["范围内一", "范围内二"])
+        self.assertEqual(out["time_range"]["start_at"], "2026-04-10T23:00:00+08:00")
+        self.assertEqual(out["time_range"]["end_at"], "2026-04-11T01:00:00+08:00")
+
     def test_empty_range(self) -> None:
         mem = self._mem("c1")
         mem.record_user_turn("有话", timestamp=_ts(2026, 4, 10, 9))
@@ -145,6 +182,26 @@ class TimelineStrictFilters(unittest.TestCase):
         out = self.mem.read_timeline(date_from="2026-04-10", time_periods=["中午"])
         self.assertEqual(out["status"], "invalid_filter")
         self.assertIn("中午", out["reason"])
+
+    def test_exact_time_range_rejects_missing_or_reversed_boundaries(self) -> None:
+        missing = self.mem.read_timeline(time_range={"start_at": "2026-04-10 11:00"})
+        reversed_range = self.mem.read_timeline(
+            time_range={"start_at": "2026-04-10 12:00", "end_at": "2026-04-10 11:00"}
+        )
+
+        self.assertEqual(missing["status"], "invalid_filter")
+        self.assertEqual(missing["reason"], "time_range_end_at_required")
+        self.assertEqual(reversed_range["status"], "invalid_filter")
+        self.assertEqual(reversed_range["reason"], "time_range_start_must_be_before_end")
+
+    def test_exact_time_range_is_mutually_exclusive_with_legacy_and_anchor_modes(self) -> None:
+        exact = {"start_at": "2026-04-10 08:00", "end_at": "2026-04-10 10:00"}
+
+        mixed_legacy = self.mem.read_timeline(time_range=exact, date_from="2026-04-10")
+        mixed_anchor = self.mem.read_timeline(time_range=exact, anchor_source_id="missing")
+
+        self.assertEqual(mixed_legacy["reason"], "timeline_modes_are_mutually_exclusive")
+        self.assertEqual(mixed_anchor["reason"], "timeline_modes_are_mutually_exclusive")
 
 
 class PromptOverridesTypeCheck(unittest.TestCase):

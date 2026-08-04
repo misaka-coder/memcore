@@ -2316,24 +2316,24 @@ class SQLiteMemoryStore(MemoryStore):
             ).fetchone()
         return int(row["m"]) if row is not None and row["m"] is not None else None
 
-    def get_messages_by_date_range(
+    def get_messages_by_time_range(
         self,
         *,
         namespace: Namespace,
-        date_from: str = "",
-        date_to: str = "",
+        start_ts: int | None = None,
+        end_ts: int | None = None,
         time_periods: list[str] | None = None,
         cross_conversation: bool = False,
     ) -> list[dict[str, Any]]:
         scope_clause, params = self._scope_clause(namespace, with_conversation=not cross_conversation)
         clause = scope_clause
         params = list(params)
-        if date_from:
-            clause += " AND date_label >= ?"
-            params.append(str(date_from))
-        if date_to:
-            clause += " AND date_label <= ?"
-            params.append(str(date_to))
+        if start_ts is not None:
+            clause += " AND timestamp >= ?"
+            params.append(int(start_ts))
+        if end_ts is not None:
+            clause += " AND timestamp < ?"
+            params.append(int(end_ts))
         periods = [str(p) for p in (time_periods or []) if str(p or "").strip()]
         if periods:
             clause += f" AND time_of_day IN ({','.join('?' for _ in periods)})"
@@ -2341,7 +2341,8 @@ class SQLiteMemoryStore(MemoryStore):
         with self._lock:
             rows = self._conn.execute(
                 # 按真实时间戳排序:seq_no 是写入序且按会话重置,回填/跨会话会乱序。
-                f"SELECT * FROM messages WHERE {clause} ORDER BY timestamp ASC, conversation_id, seq_no",
+                f"SELECT * FROM messages WHERE {clause} "
+                "ORDER BY timestamp ASC, conversation_id ASC, seq_no ASC, source_id ASC",
                 params,
             ).fetchall()
         return [self._row_to_record(r, "messages") for r in rows]

@@ -1516,6 +1516,7 @@ class MemorySystem:
     def read_timeline(
         self,
         *,
+        time_range: dict[str, Any] | None = None,
         date_from: str = "",
         date_to: str = "",
         time_periods: list[str] | None = None,
@@ -1524,32 +1525,25 @@ class MemorySystem:
         after_turns: int = 0,
         cross_conversation: bool = False,
     ) -> dict[str, Any]:
-        """时间线工具:按日期或 raw anchor 精确读原始对话,不走向量。
+        """时间线工具:按绝对时间范围、旧日期别名或 raw anchor 精确读原始对话。
 
-        date_to 省略时等于 date_from(单日)。time_periods 接受上午/下午/晚上/凌晨等别名。
-        两种模式互斥；非法参数结构化报 invalid_filter，绝不静默放宽。
+        ``time_range`` 接受 start_at/end_at ISO 或本地时间字符串。旧日期字段归一到
+        同一 timestamp 查询路径。时间/anchor 模式互斥；非法参数绝不静默放宽。
         """
-        from datetime import date
-
         from .rendering import render_timeline
-        from .time_anchor import normalize_time_periods
+        from .time_anchor import normalize_timeline_time_selector
 
         def _invalid(reason: str) -> dict[str, Any]:
             return {"status": "invalid_filter", "reason": reason, "messages": [], "message_count": 0, "text": ""}
 
-        def _is_iso_date(value: str) -> bool:
-            try:
-                date.fromisoformat(value)
-                return True
-            except ValueError:
-                return False
-
         start = str(date_from or "").strip()
         anchor_id = str(anchor_source_id or "").strip()
-        has_date_mode = bool(start or str(date_to or "").strip() or list(time_periods or []))
-        if anchor_id and has_date_mode:
+        has_exact_mode = time_range is not None
+        has_legacy_mode = bool(start or str(date_to or "").strip() or list(time_periods or []))
+        selector_count = int(bool(anchor_id)) + int(has_exact_mode) + int(has_legacy_mode)
+        if selector_count > 1:
             return _invalid("timeline_modes_are_mutually_exclusive")
-        if not anchor_id and not has_date_mode:
+        if selector_count == 0:
             return _invalid("timeline_selector_required")
         if anchor_id:
             if cross_conversation:
@@ -1595,33 +1589,37 @@ class MemorySystem:
                 "text": render_timeline(messages, tz=self.timezone),
             }
 
-        end = str(date_to or "").strip() or start
-        if not _is_iso_date(start) or not _is_iso_date(end):
-            return _invalid("date_must_be_YYYY-MM-DD")
-        if start > end:
-            return _invalid("date_from_after_date_to")
-
-        raw_periods = [str(p).strip() for p in (time_periods or []) if str(p or "").strip()]
-        unknown = [p for p in raw_periods if not normalize_time_periods([p])]
-        if unknown:
-            return _invalid(f"unknown_time_periods:{unknown}")
-        periods = normalize_time_periods(raw_periods)
-        messages = self.store.get_messages_by_date_range(
+        try:
+            selector = normalize_timeline_time_selector(
+                timezone=self.timezone,
+                time_range=time_range,
+                date_from=start,
+                date_to=str(date_to or "").strip(),
+                time_periods=time_periods,
+            )
+        except (TypeError, ValueError) as exc:
+            return _invalid(str(exc) or "invalid_time_selector")
+        periods = list(selector.time_periods)
+        messages = self.store.get_messages_by_time_range(
             namespace=self.namespace,
-            date_from=start,
-            date_to=end,
+            start_ts=selector.start_ts,
+            end_ts=selector.end_ts,
             time_periods=periods,
             cross_conversation=cross_conversation,
         )
-        return {
+        result = {
             "status": "ok" if messages else "empty",
-            "date_from": start,
-            "date_to": end,
+            "selector_mode": selector.mode,
+            "time_range": selector.to_dict(),
             "time_periods": periods,
             "message_count": len(messages),
             "messages": messages,
             "text": render_timeline(messages, tz=self.timezone),
         }
+        if selector.mode == "date":
+            result["date_from"] = start
+            result["date_to"] = str(date_to or "").strip() or start
+        return result
 
     def forget_namespace(self, namespace: Namespace | None = None) -> dict[str, Any]:
         """定向遗忘:删除 store 记录,并尽力同步清 VectorIndex;失败时结构化报告 partial。"""

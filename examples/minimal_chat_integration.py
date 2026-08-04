@@ -234,8 +234,8 @@ def main() -> None:
             def retrieve_memory(query: str, **filters: Any) -> list[str]:
                 return mem.retrieve_for_turn(current=cur, query=query, **filters)
 
-            def read_timeline(date_from: str, **filters: Any) -> dict[str, Any]:
-                return mem.read_timeline(date_from=date_from, **filters)
+            def read_timeline(**filters: Any) -> dict[str, Any]:
+                return mem.read_timeline(**filters)
 
             retrieved = retrieve_memory(
                 "用户喜欢喝什么",
@@ -244,7 +244,10 @@ def main() -> None:
                 memory_facets=["preference"],
                 about_roles=["user"],
             )
-            timeline = read_timeline("2026-04-10", cross_conversation=True)
+            timeline = read_timeline(
+                time_range={"start_at": "2026-04-10 09:30", "end_at": "2026-04-10 10:30"},
+                cross_conversation=True,
+            )
             output_contract = build_chat_output_contract_prompt(
                 enable_flavor=config.enable_flavor,
                 enable_sentence_segments=True,

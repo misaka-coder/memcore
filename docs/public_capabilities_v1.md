@@ -81,7 +81,7 @@ V2 使用实际 provider projection 的 token 预算规划完整 turn。这是�
 ### 4. 两种互补的记忆读取工具
 
 - `retrieve_for_turn`：面向偏好、计划、关系、人物、主题和长期事实的模糊检索；
-- `read_timeline`：既可按日期/时间段读取，也可把 raw 检索命中扩成前后完整 turn；
+- `read_timeline`：既可按 `start_at/end_at` 精确到小时/分钟读取，也可按旧日期/粗时段读取，或把 raw 检索命中扩成前后完整 turn；
 - `load_material`：只负责调用宿主提供的材料 loader，不保存文件本体；
 - 普通检索只接纳 `retrieval_visibility=default` 的记录；没有有效 annotation 的
   standalone 事件、operation 和 material 轨迹默认是 `explicit`，不会混入普通候选；

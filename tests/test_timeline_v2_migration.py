@@ -398,7 +398,7 @@ class V1MigrationTests(unittest.TestCase):
             self.assertEqual(second.schema_version, CURRENT_SCHEMA_VERSION)
             self.assertEqual(
                 len(
-                    second.get_messages_by_date_range(
+                    second.get_messages_by_time_range(
                         namespace=Namespace(
                             user_id="user", tenant_id="tenant", domain_id="domain", conversation_id="conversation"
                         )

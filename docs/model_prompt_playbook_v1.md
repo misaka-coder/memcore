@@ -9,7 +9,7 @@ memcore 不替宿主写完整人格 prompt,但建议把下面这些规则拼到�
 ```text
 你可以看到 memcore 提供的可见三层记忆,并可使用记忆工具:
 - retrieve_for_turn: 按语义/关键词/metadata 模糊检索长期或历史记忆,并排除当前 prompt 已经可见的记忆与本轮消息。
-- read_timeline: 按日期/时间段精确读取原始对话；也可用 retrieve 返回的 raw source_id 读取前后完整轮次。
+- read_timeline: 按 ISO 或本地 `start_at/end_at` 精确到小时/分钟读取原始对话，无需计算 epoch；也可按旧日期/粗时段读取，或用 retrieve 返回的 raw source_id 读取前后完整轮次。
 - load_material: 若宿主支持图片/文件,按 file_id 读取当前可用的原文件、OCR、视觉描述、文档 chunks 或清理状态。
 
 把工具当作你的可用能力和结构化信息通道,不是摆设。凡是答案依赖未在当前 prompt 中明确可见的事实、旧记忆、精确时间线、人物归因、承诺、偏好、关系或平台事件时,请主动调用合适的工具求证。一次工具结果不够时,可以根据结果继续调用工具补查,直到足以回答或确认没有明确记录。
@@ -79,8 +79,8 @@ memcore 会把 raw、summary、semantic、timeline 渲染成带日期和星期�
 retrieve_for_turn(query, entity_anchors?, topic_terms?, source_layers?, memory_facets?, about_roles?, time_hint?)
 用于模糊检索。query 始终参与检索；准确实体使用 entity_anchors，动作/属性/主题使用 topic_terms。memory_facets/about_roles 会在相似度计算前裁剪候选。
 
-read_timeline(date_from?, date_to?, time_periods?, anchor_source_id?, before_turns?, after_turns?)
-日期模式精确读取某天或日期范围；anchor 模式从一条 raw 命中扩展前后完整 turn。两种模式互斥。
+read_timeline(time_range?, date_from?, date_to?, time_periods?, anchor_source_id?, before_turns?, after_turns?)
+time_range 使用 start_at/end_at 做起点包含、终点不包含的精确读取；日期模式读取整天或粗时段；anchor 模式从一条 raw 命中扩展前后完整 turn。三种模式互斥。
 
 load_material(file_id, kind?, preferred_source?, purpose?)
 用于读取宿主保存的图片/附件/PDF 当前可用内容或状态。先从可见 raw、`read_timeline` 或宿主授权的 `retrieve_for_turn(include_explicit=true, kind_patterns=["material.*"])` 找到 file_id,再调用它。
@@ -91,6 +91,7 @@ load_material(file_id, kind?, preferred_source?, purpose?)
 | 用户意图 | 推荐工具 |
 |---|---|
 | “昨天晚上我说了什么?” | `read_timeline(date_from=昨天日期,time_periods=["night"])` |
+| “昨天 11 点到 12 点和我一起来的是谁?” | `read_timeline(time_range={"start_at":"昨天日期 11:00","end_at":"昨天日期 12:00"})`；从原话识别人名，不猜未知 entity anchor |
 | “我之前是不是说过喜欢可乐?” | `retrieve_for_turn(query="喜欢 可乐", entity_anchors=["可乐"], memory_facets=["preference"], about_roles=["user"])` |
 | “上周二那件事后来怎么样了?” | 先用时间锚点算日期,再 `read_timeline`;必要时补 `retrieve_for_turn` |
 | “谁负责基金复盘?” | 群聊场景优先带人物/计划关键词 `retrieve_for_turn`,必要时读时间线 |
@@ -215,7 +216,7 @@ derived_status: ocr_ready
 - `turn_intent`: 只有当前内容在查询历史记忆时写 `memory_query`；它不表示想检索的历史内容类别。
 - `memory_facets`: 内容未来能回答哪类问题，从 `profile / preference / viewpoint / relationship / event / state / plan / decision / constraint / knowledge / procedure` 中选择。不确定就留空，不要猜一个大桶。
 - `about_roles`: 内容主要在陈述 `user / assistant / third_party / external` 中的谁或什么，不表示谁参加了对话，也不自动等于发言者。
-- `entity_anchors`: 只填明确出现或能够确定的准确名称、项目名和别名，如 `Fable / 雅可比猜想 / NVDA`；不要机械补宽泛上位词。
+- `entity_anchors`: 只填问题和上下文中已经明确知道的准确名称、项目名和别名，如 `Fable / 雅可比猜想 / NVDA`；正在询问“是谁”的未知对象不是 anchor，不要猜测答案后填写，也不要机械补宽泛上位词。
 - `topic_terms`: 填动作、属性和辅助主题短词，如 `反例 / 风险 / 无糖`；不要写整句或短句。
 - `retrieval_priority`: 未来重新找回的价值，使用 `low / normal / high / critical`。它不决定是否入库，也不会让低值 raw 消失。
 - `mood_tags`: 只有 `enable_flavor=True` 时才写;关闭时必须空数组。

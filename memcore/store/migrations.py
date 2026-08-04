@@ -87,6 +87,14 @@ LATEST_SCHEMA_STATEMENTS = (
     )
     """,
     """
+    CREATE INDEX IF NOT EXISTS idx_messages_scope_timestamp
+    ON messages(tenant_id, user_id, domain_id, conversation_id, timestamp, seq_no, source_id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_messages_hard_scope_timestamp
+    ON messages(tenant_id, user_id, domain_id, timestamp, conversation_id, seq_no, source_id)
+    """,
+    """
     CREATE TABLE IF NOT EXISTS summaries (
         summary_id TEXT PRIMARY KEY,
         tenant_id TEXT NOT NULL DEFAULT '',

@@ -159,7 +159,7 @@ Expose memory tools to the final chat model:
 
 - `retrieve_for_turn(current=cur, ...)` for fuzzy preferences, plans, people,
   topics, and long-term facts.
-- `read_timeline(...)` for exact date/time questions, or for expanding a raw
+- `read_timeline(time_range={"start_at": ..., "end_at": ...})` for exact hour/minute questions without calculating epoch; legacy date fields remain available for whole-day/coarse-period reads, or use it for expanding a raw
   retrieval `source_id` into complete nearby turns without cutting a tool loop in half.
 
 If the host supports images/files, also expose `load_material(file_id, kind?,

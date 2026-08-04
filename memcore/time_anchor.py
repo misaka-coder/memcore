@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import date, datetime, time, timedelta, timezone as datetime_timezone
+from typing import Any
 from zoneinfo import ZoneInfo
 
 # 时间段标签(中文展示用)
@@ -92,6 +94,26 @@ _PERIOD_ALIASES = {
 }
 
 
+@dataclass(frozen=True)
+class TimelineTimeSelector:
+    """Normalized, timezone-explicit bounds for deterministic raw timeline reads."""
+
+    start_ts: int
+    end_ts: int
+    start_at: str
+    end_at: str
+    time_periods: tuple[str, ...] = ()
+    mode: str = "time_range"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "start_at": self.start_at,
+            "end_at": self.end_at,
+            "start_ts": self.start_ts,
+            "end_ts": self.end_ts,
+        }
+
+
 def normalize_time_periods(values: object) -> list[str]:
     """把上午/下午/night 等别名归一成规范时间段,按一天顺序去重。"""
     if not isinstance(values, (list, tuple)):
@@ -102,6 +124,114 @@ def normalize_time_periods(values: object) -> list[str]:
         if canonical:
             seen.add(canonical)
     return [p for p in TIME_PERIOD_ORDER if p in seen]
+
+
+def normalize_timeline_time_selector(
+    *,
+    timezone: str,
+    time_range: object = None,
+    date_from: str = "",
+    date_to: str = "",
+    time_periods: list[str] | None = None,
+) -> TimelineTimeSelector:
+    """Normalize exact or legacy timeline selectors into one timestamp-bounded contract.
+
+    Exact bounds accept ISO 8601 strings with an explicit offset, or local wall
+    time strings interpreted using ``timezone``. Legacy date/period arguments
+    are aliases that enter the same timestamp SQL path.
+    """
+
+    zone = ZoneInfo(str(timezone))
+    has_exact = time_range is not None
+    has_legacy = bool(str(date_from or "").strip() or str(date_to or "").strip() or list(time_periods or []))
+    if has_exact and has_legacy:
+        raise ValueError("timeline_modes_are_mutually_exclusive")
+
+    if has_exact:
+        if not isinstance(time_range, dict):
+            raise ValueError("time_range_must_be_object")
+        unknown = sorted(str(key) for key in time_range if str(key) not in {"start_at", "end_at"})
+        if unknown:
+            raise ValueError(f"unknown_time_range_keys:{unknown}")
+        start_raw = _required_time_range_text(time_range, "start_at")
+        end_raw = _required_time_range_text(time_range, "end_at")
+        start = _parse_timeline_datetime(start_raw, field="start_at", zone=zone)
+        end = _parse_timeline_datetime(end_raw, field="end_at", zone=zone)
+        if start >= end:
+            raise ValueError("time_range_start_must_be_before_end")
+        return TimelineTimeSelector(
+            start_ts=int(start.timestamp()),
+            end_ts=int(end.timestamp()),
+            start_at=start.isoformat(timespec="seconds"),
+            end_at=end.isoformat(timespec="seconds"),
+        )
+
+    start_text = str(date_from or "").strip()
+    end_text = str(date_to or "").strip() or start_text
+    if not start_text:
+        raise ValueError("timeline_selector_required")
+    try:
+        start_date = date.fromisoformat(start_text)
+        end_date = date.fromisoformat(end_text)
+    except ValueError as exc:
+        raise ValueError("date_must_be_YYYY-MM-DD") from exc
+    if start_date > end_date:
+        raise ValueError("date_from_after_date_to")
+
+    raw_periods = [str(value).strip() for value in (time_periods or []) if str(value or "").strip()]
+    unknown_periods = [value for value in raw_periods if not normalize_time_periods([value])]
+    if unknown_periods:
+        raise ValueError(f"unknown_time_periods:{unknown_periods}")
+    periods = tuple(normalize_time_periods(raw_periods))
+    start = _localize_wall_time(datetime.combine(start_date, time.min), zone=zone, field="date_from")
+    exclusive_end = _localize_wall_time(
+        datetime.combine(end_date + timedelta(days=1), time.min), zone=zone, field="date_to"
+    )
+    return TimelineTimeSelector(
+        start_ts=int(start.timestamp()),
+        end_ts=int(exclusive_end.timestamp()),
+        start_at=start.isoformat(timespec="seconds"),
+        end_at=exclusive_end.isoformat(timespec="seconds"),
+        time_periods=periods,
+        mode="date",
+    )
+
+
+def _required_time_range_text(value: dict[object, object], field: str) -> str:
+    raw = value.get(field)
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        raise ValueError(f"time_range_{field}_required")
+    if not isinstance(raw, str):
+        raise ValueError(f"time_range_{field}_must_be_string")
+    return raw.strip()
+
+
+def _parse_timeline_datetime(value: str, *, field: str, zone: ZoneInfo) -> datetime:
+    normalized = value[:-1] + "+00:00" if value.endswith(("Z", "z")) else value
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise ValueError(f"time_range_{field}_invalid") from exc
+    if parsed.microsecond:
+        raise ValueError(f"time_range_{field}_fractional_seconds_unsupported")
+    if parsed.tzinfo is None:
+        return _localize_wall_time(parsed, zone=zone, field=field)
+    return parsed.astimezone(zone)
+
+
+def _localize_wall_time(value: datetime, *, zone: ZoneInfo, field: str) -> datetime:
+    candidates: list[datetime] = []
+    for fold in (0, 1):
+        candidate = value.replace(tzinfo=zone, fold=fold)
+        round_trip = candidate.astimezone(datetime_timezone.utc).astimezone(zone)
+        if round_trip.replace(tzinfo=None) == value and round_trip.fold == fold:
+            candidates.append(candidate)
+    distinct_offsets = {candidate.utcoffset() for candidate in candidates}
+    if not candidates:
+        raise ValueError(f"time_range_{field}_nonexistent_local_time")
+    if len(distinct_offsets) > 1:
+        raise ValueError(f"time_range_{field}_ambiguous_local_time_requires_offset")
+    return candidates[0]
 
 
 def _dt(timestamp: float, tz: str) -> datetime:

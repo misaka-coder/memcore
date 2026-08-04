@@ -188,6 +188,7 @@ Use this for exact date/time questions.
 
 Recommended tool parameters:
 
+- `time_range: {start_at, end_at}` optional — exact start-inclusive/end-exclusive ISO 8601 or local date-time range
 - `date_from: YYYY-MM-DD`
 - `date_to: YYYY-MM-DD` optional
 - `time_periods: list[str]` optional, such as morning/afternoon/night or localized aliases supported by the host
@@ -206,7 +207,7 @@ Recommended tool parameters:
 
 Tell the chat model:
 
-- Use `read_timeline` for "yesterday", "last Tuesday", "that night", exact date ranges.
+- Use `read_timeline` for "yesterday", "last Tuesday", "that night", and exact hour/minute ranges.
 - Use `retrieve_for_turn` for preferences, plans, long-term facts, people, topics, and fuzzy recall.
 - Use `load_material` for historical image/file/PDF content only after a visible or retrieved material anchor provides the `file_id`. If no anchor or retained derived content exists, say the evidence is unavailable instead of guessing.
 

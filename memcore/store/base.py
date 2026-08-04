@@ -322,18 +322,19 @@ class MemoryStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_messages_by_date_range(
+    def get_messages_by_time_range(
         self,
         *,
         namespace: Namespace,
-        date_from: str = "",
-        date_to: str = "",
+        start_ts: int | None = None,
+        end_ts: int | None = None,
         time_periods: list[str] | None = None,
         cross_conversation: bool = False,
     ) -> list[dict[str, Any]]:
-        """按时间精确读原始对话(时间线工具,不走向量)。date_label 用 YYYY-MM-DD,最早在前。
+        """按 UTC timestamp 范围精确读原始时间线(不走向量),最早在前。
 
-        cross_conversation=False(默认):仅当前会话;True:该用户全部会话。time_periods 应已归一化。
+        ``start_ts`` 包含、``end_ts`` 不包含。cross_conversation=False(默认):
+        仅当前会话;True:该用户全部会话。time_periods 应已归一化。
         """
         raise NotImplementedError
 

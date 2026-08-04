@@ -177,6 +177,7 @@ def _dispatch_timeline(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
     unknown = _unknown_keys(
         args,
         {
+            "time_range",
             "date_from",
             "date_to",
             "time_periods",
@@ -188,6 +189,9 @@ def _dispatch_timeline(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
     )
     if unknown:
         return _err("read_timeline", "invalid_arguments", f"unknown_arguments:{unknown}")
+    time_range, error = _timeline_time_range(args.get("time_range"))
+    if error:
+        return _err("read_timeline", "invalid_arguments", error)
     date_from = _required_string(args, "date_from")
     date_to = _optional_string(args.get("date_to"))
     time_periods, error = _string_list(args.get("time_periods"), "time_periods")
@@ -203,6 +207,7 @@ def _dispatch_timeline(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
     except (TypeError, ValueError):
         return _err("read_timeline", "invalid_arguments", "turn_window_must_be_integer")
     result = mem.read_timeline(
+        time_range=time_range,
         date_from=date_from,
         date_to=date_to,
         time_periods=time_periods,
@@ -353,6 +358,25 @@ def _time_hint(value: Any) -> tuple[dict[str, Any], str]:
     return out, ""
 
 
+def _timeline_time_range(value: Any) -> tuple[dict[str, str] | None, str]:
+    if value is None:
+        return None, ""
+    if not isinstance(value, dict):
+        return None, "time_range_must_be_object"
+    unknown = _unknown_keys(value, {"start_at", "end_at"})
+    if unknown:
+        return None, f"unknown_time_range_keys:{unknown}"
+    out: dict[str, str] = {}
+    for key in ("start_at", "end_at"):
+        raw = value.get(key)
+        if raw is None:
+            continue
+        if not isinstance(raw, str):
+            return None, f"time_range_{key}_must_be_string"
+        out[key] = raw.strip()
+    return out, ""
+
+
 def _unknown_keys(args: dict[str, Any], allowed: set[str]) -> list[str]:
     return sorted(str(key) for key in args if str(key) not in allowed)
 
@@ -439,8 +463,9 @@ def _retrieve_description() -> str:
 
 def _timeline_description() -> str:
     return (
-        "Exact raw timeline lookup. Use a date/date range when time is known, or use a raw retrieval "
-        "source id as anchor to read complete nearby turns when one hit lacks context."
+        "Exact raw timeline lookup. When concrete hours or minutes are known, pass time_range.start_at/end_at "
+        "as ISO 8601 or local date-time strings; no Unix timestamp calculation is needed. Legacy date fields remain "
+        "available for whole-day or coarse-period reads. A raw retrieval source id can anchor complete nearby turns."
     )
 
 
@@ -461,7 +486,7 @@ def _retrieve_schema() -> dict[str, Any]:
             "entity_anchors": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Exact names or aliases expected in the historical content. Omit when unsure.",
+                "description": "Only exact entities already known from the question/context. Never guess an unknown answer entity; omit when unsure.",
             },
             "topic_terms": {
                 "type": "array",
@@ -508,6 +533,22 @@ def _timeline_schema() -> dict[str, Any]:
         "additionalProperties": False,
         "required": [],
         "properties": {
+            "time_range": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["start_at", "end_at"],
+                "description": "Exact start-inclusive/end-exclusive range. Omit unknown answer entities; read the raw range instead.",
+                "properties": {
+                    "start_at": {
+                        "type": "string",
+                        "description": "ISO 8601 or local YYYY-MM-DD HH:MM[:SS].",
+                    },
+                    "end_at": {
+                        "type": "string",
+                        "description": "Exclusive ISO 8601 or local YYYY-MM-DD HH:MM[:SS].",
+                    },
+                },
+            },
             "date_from": {"type": "string", "description": "YYYY-MM-DD."},
             "date_to": {"type": "string", "description": "YYYY-MM-DD; omit for a single day."},
             "time_periods": {

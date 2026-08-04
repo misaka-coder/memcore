@@ -30,7 +30,7 @@
   会返回 `summary_retry_pending` / `semantic_retry_pending`,并保留原记录供下一轮后台压缩重试。
 - **切片 5(读侧)✅**:`retrieval` —— 显式 retrieve 工具 → metadata 前置过滤 → raw/derived 分池混合检索 + RRF → verifier 门；原始 query 始终保留，`entity_anchors` 高权重，`topic_terms` 只作普通辅助；
   `build_prompt_context` 只拼可见三层,是否检索交给聊天模型调用工具决定。**读写侧全闭环。**
-- **时间线工具 ✅**:`read_timeline(...)` 支持日期/时间段精确读取，也支持以 raw `source_id` 为锚点读取前后完整 turn；工具并行轮不会被截半，summary/semantic 和越权 source id 会结构化拒绝或返回空。
+- **时间线工具 ✅**:`read_timeline(...)` 支持无需 epoch 的 `time_range.start_at/end_at` 小时/分钟级读取，旧日期/时间段字段归一到同一 timestamp 路径，也支持以 raw `source_id` 为锚点读取前后完整 turn；工具并行轮不会被截半，summary/semantic 和越权 source id 会结构化拒绝或返回空。
 - **embedding 三条路 + 自检 ✅**:`HuggingFaceEmbeddingProvider`(本地 BGE-M3)/ `HTTPEmbeddingProvider`(OpenAI 兼容 API,纯 stdlib 零依赖)/ `HashedEmbeddingProvider`(仅测试)。
   `EmbeddingProvider` 同时提供 `embed_query/embed_queries` 与
   `embed_document/embed_documents`；对称模型默认复用旧 `embed_text(s)`，Jina 等非对称模型可分别实现 query/passage，内存与 Chroma 索引会走正确通道。
