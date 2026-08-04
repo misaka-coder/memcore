@@ -92,8 +92,14 @@ def _match_field(value: Any, cond: Any) -> bool:
         if op == "$gte":
             if not _compare(value, expected, lambda left, right: left >= right):
                 return False
+        elif op == "$gt":
+            if not _compare(value, expected, lambda left, right: left > right):
+                return False
         elif op == "$lte":
             if not _compare(value, expected, lambda left, right: left <= right):
+                return False
+        elif op == "$lt":
+            if not _compare(value, expected, lambda left, right: left < right):
                 return False
         elif op == "$in":
             allowed = set(expected or [])

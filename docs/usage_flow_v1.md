@@ -158,7 +158,10 @@ task strings. `reindex_all(..., batch_size=...)` and
 Expose memory tools to the final chat model:
 
 - `retrieve_for_turn(current=cur, ...)` for fuzzy preferences, plans, people,
-  topics, and long-term facts.
+  topics, and long-term facts. When exact time is useful to narrow a fuzzy
+  event search, pass local/ISO `time_hint={"start_at": ..., "end_at": ...}`;
+  MemCore normalizes it with the same timezone rules as `read_timeline` and
+  filters candidates before vector/BM25 ranking.
 - `read_timeline(time_range={"start_at": ..., "end_at": ...}, projection="conversation")` for exact hour/minute questions without calculating epoch; legacy date fields remain available for whole-day/coarse-period reads, or use it for expanding a raw retrieval `source_id` into complete nearby turns. The default view keeps dialogue/events full and returns reloadable compact evidence for operations/materials.
 - If the caller explicitly supplied a page token budget and `coverage.complete=false`, continue with `read_timeline(cursor=coverage.next_cursor)` only. Omitted/zero budget means MemCore performs no hidden result pagination.
 - `read_entry(source_id=..., detail="full")` expands one compact raw evidence block in the current authorized conversation.
@@ -254,6 +257,9 @@ retrieval tool uses the same fields:
 - `memory_facets` describes which future question the content can answer.
 - `about_roles` describes who or what the content is about, not who spoke.
 - `entity_anchors` contains only exact names/aliases; `topic_terms` contains supporting actions or themes.
+- An identity or answer currently being asked for is not an `entity_anchor`.
+  Pass only known names plus known relationships/topics/time; never guess the
+  missing answer to make a retrieval call.
 - `turn_intent="memory_query"` marks the current turn as asking about memory; it is not a target history facet.
 - Tool/event/material identity stays in typed timeline fields, not in metadata facets.
 

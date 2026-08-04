@@ -78,7 +78,7 @@ memcore 会把 raw、summary、semantic、timeline 渲染成带日期和星期�
 
 ```text
 retrieve_for_turn(query, entity_anchors?, topic_terms?, source_layers?, memory_facets?, about_roles?, time_hint?)
-用于模糊检索。query 始终参与检索；准确实体使用 entity_anchors，动作/属性/主题使用 topic_terms。memory_facets/about_roles 会在相似度计算前裁剪候选。
+用于模糊检索。query 始终参与检索；准确且已知的实体使用 entity_anchors，正在询问的未知人物/答案不能先猜成 anchor；动作、关系、属性和主题使用 topic_terms。已知具体时间时可传 time_hint={start_at,end_at}，使用与 read_timeline 相同的本地/ISO 时间规则，并在相似度计算前硬过滤；memory_facets/about_roles 也会在评分前裁剪候选。
 
 read_timeline(time_range?, date_from?, date_to?, time_periods?, anchor_source_id?, before_turns?, after_turns?, projection?, page_token_budget?, cursor?)
 time_range 使用 start_at/end_at 做起点包含、终点不包含的精确读取；日期模式读取整天或粗时段；anchor 模式从一条 raw 命中扩展前后完整 turn。conversation/full/tools 决定读取密度。默认不分页；只有调用者显式提供页面预算时才返回 continuation。若 coverage.complete=false，下一次只传 cursor，选择器、投影和预算都已封装其中。
@@ -96,6 +96,7 @@ load_material(file_id, kind?, preferred_source?, purpose?)
 |---|---|
 | “昨天晚上我说了什么?” | `read_timeline(date_from=昨天日期,time_periods=["night"])` |
 | “昨天 11 点到 12 点和我一起来的是谁?” | `read_timeline(time_range={"start_at":"昨天日期 11:00","end_at":"昨天日期 12:00"})`；从原话识别人名，不猜未知 entity anchor |
+| “大约那一小时、和 misaka 同行的人是谁，但还需按关系模糊找?” | `retrieve_for_turn(query="和 misaka 一起来玩的另一个人", entity_anchors=["misaka"], topic_terms=["同行","一起来玩"], time_hint={"start_at":"日期 11:00","end_at":"日期 12:00"})`；不填写未知答案的人名 |
 | “我之前是不是说过喜欢可乐?” | `retrieve_for_turn(query="喜欢 可乐", entity_anchors=["可乐"], memory_facets=["preference"], about_roles=["user"])` |
 | “上周二那件事后来怎么样了?” | 先用时间锚点算日期,再 `read_timeline`;必要时补 `retrieve_for_turn` |
 | “谁负责基金复盘?” | 群聊场景优先带人物/计划关键词 `retrieve_for_turn`,必要时读时间线 |

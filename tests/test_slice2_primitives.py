@@ -25,6 +25,7 @@ from memcore.rendering import (
 from memcore.time_anchor import (
     format_time_range_label,
     infer_time_of_day,
+    normalize_retrieval_time_hint,
     normalize_timeline_time_selector,
     render_relative_time_anchor_line,
     timestamp_to_weekday_label,
@@ -83,6 +84,41 @@ class TimeAnchor(unittest.TestCase):
         )
         self.assertEqual(selector.start_at, "2026-11-01T01:15:00-04:00")
         self.assertEqual(selector.end_at, "2026-11-01T01:45:00-04:00")
+
+    def test_retrieval_time_hint_reuses_exact_local_time_selector(self) -> None:
+        hint = normalize_retrieval_time_hint(
+            timezone="Asia/Shanghai",
+            value={
+                "start_at": "2026-08-03 11:00",
+                "end_at": "2026-08-03 12:00",
+            },
+        )
+
+        self.assertEqual(hint["start_at"], "2026-08-03T11:00:00+08:00")
+        self.assertEqual(hint["end_at"], "2026-08-03T12:00:00+08:00")
+        self.assertEqual(hint["start_ts"], _ts(2026, 8, 3, 11))
+        self.assertEqual(hint["end_ts"], _ts(2026, 8, 3, 12))
+
+    def test_retrieval_time_hint_rejects_mixed_exact_and_legacy_modes(self) -> None:
+        with self.assertRaisesRegex(ValueError, "time_hint_modes_are_mutually_exclusive"):
+            normalize_retrieval_time_hint(
+                timezone="Asia/Shanghai",
+                value={
+                    "start_at": "2026-08-03 11:00",
+                    "end_at": "2026-08-03 12:00",
+                    "date_label": "2026-08-03",
+                },
+            )
+
+    def test_retrieval_legacy_date_period_enters_same_timestamp_contract(self) -> None:
+        hint = normalize_retrieval_time_hint(
+            timezone="Asia/Shanghai",
+            value={"date_label": "2026-08-03", "time_of_day": "上午"},
+        )
+
+        self.assertEqual(hint["start_ts"], _ts(2026, 8, 3, 0))
+        self.assertEqual(hint["end_ts"], _ts(2026, 8, 4, 0))
+        self.assertEqual(hint["time_periods"], ["morning"])
 
 
 class Rendering(unittest.TestCase):

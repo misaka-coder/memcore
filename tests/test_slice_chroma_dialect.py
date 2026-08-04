@@ -64,6 +64,10 @@ class WhereTranslation(unittest.TestCase):
         out = _to_chroma_where({"timestamp": {"$gte": 50, "$lte": 150}})
         self.assertEqual(out, {"$and": [{"timestamp": {"$gte": 50}}, {"timestamp": {"$lte": 150}}]})
 
+    def test_start_inclusive_end_exclusive_range_is_preserved(self) -> None:
+        out = _to_chroma_where({"timestamp": {"$gte": 50, "$lt": 150}})
+        self.assertEqual(out, {"$and": [{"timestamp": {"$gte": 50}}, {"timestamp": {"$lt": 150}}]})
+
     def test_mixed_scalar_and_range(self) -> None:
         out = _to_chroma_where({"user_id": "u1", "timestamp": {"$gte": 50, "$lte": 150}})
         self.assertEqual(

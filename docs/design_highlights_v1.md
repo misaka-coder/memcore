@@ -53,7 +53,7 @@ memcore 不每轮额外调用一个 router LLM 判断要不要搜。
 
 ### 6. metadata 前置过滤
 
-`memory_facets / about_roles / entity_anchors / source_layers / time_hint` 会下推到 index 的 `where`。
+`memory_facets / about_roles / entity_anchors / source_layers / time_hint` 会下推到 index 的 `where`。精确 `time_hint.start_at/end_at` 与时间线共用显式时区解析，按起点包含、终点不包含的 timestamp 条件在 dense/BM25 前裁剪候选；模型只需传已知实体、关系和时间，不需要预知待查询答案。
 
 价值:先裁候选,再算向量/BM25。模型传入 `memory_facets=["preference"]`、`about_roles=["user"]` 时,系统只和满足条件的记忆计算相似度,不是全量算完再后置过滤。
 

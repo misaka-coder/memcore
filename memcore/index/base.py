@@ -25,7 +25,11 @@ class VectorIndex(ABC):
         n_results: int = 8,
         exclude_source_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
-        """向量相似检索;where 为硬过滤(隔离 + 时间),exclude 为候选前排除。返回含 source_id / semantic_score。"""
+        """向量相似检索;where 为硬过滤(隔离 + 时间),exclude 为候选前排除。
+
+        时间范围使用 ``$gte`` 起点包含和 ``$lt`` 终点不包含；后端必须在
+        计算相似度前应用 where。返回含 source_id / semantic_score。
+        """
         raise NotImplementedError
 
     @abstractmethod
@@ -39,7 +43,11 @@ class VectorIndex(ABC):
         n_results: int = 8,
         exclude_source_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
-        """关键词/BM25 检索(文本含多维标签),exclude 为候选前排除;返回含 source_id / tag_score。"""
+        """关键词/BM25 检索(文本含多维标签),exclude 为候选前排除。
+
+        与 semantic_search 使用同一 where（包括 ``$gte/$lt`` 时间范围），
+        并在建立候选文档集合前应用。返回含 source_id / tag_score。
+        """
         raise NotImplementedError
 
     def count_candidates(

@@ -329,6 +329,78 @@ class ExplicitRetrieve(unittest.TestCase):
         )
         store.close()
 
+    def test_retrieve_for_turn_finds_unknown_companion_from_known_time_and_relationship(self) -> None:
+        store, index, emb = _shared_backends()
+        cfg = MemoryConfig(enable_verifier=False)
+        live = _mem(store, index, emb, conversation="live", config=cfg)
+        history = _mem(store, index, emb, conversation="history", config=cfg)
+        history.record_user_turn(
+            "misaka 和王五早些时候讨论过同行安排。",
+            timestamp=_ts(2026, 8, 3, 10, 30),
+            source_id="outside-range",
+            memory_metadata={
+                "memory_facets": ["relationship"],
+                "about_roles": ["third_party"],
+                "entity_anchors": ["misaka", "王五"],
+                "topic_terms": ["同行", "一起来玩"],
+            },
+        )
+        history.record_user_turn(
+            "misaka 引用前文说：我们俩一块来玩的；同行的人是李嘉图。",
+            timestamp=_ts(2026, 8, 3, 11, 47),
+            source_id="target-raw",
+            memory_metadata={
+                "memory_facets": ["relationship"],
+                "about_roles": ["third_party"],
+                "entity_anchors": ["misaka", "李嘉图"],
+                "topic_terms": ["同行", "一起来玩"],
+            },
+        )
+        history.record_user_turn(
+            "misaka 和赵六在十二点后又聊了一次同行安排。",
+            timestamp=_ts(2026, 8, 3, 12, 0),
+            source_id="exclusive-end",
+            memory_metadata={
+                "memory_facets": ["relationship"],
+                "about_roles": ["third_party"],
+                "entity_anchors": ["misaka", "赵六"],
+                "topic_terms": ["同行", "一起来玩"],
+            },
+        )
+        current = live.record_user_turn(
+            "昨天十一点到十二点，和我一起来的那个人是谁？",
+            timestamp=_ts(2026, 8, 4, 21, 0),
+            source_id="current-question",
+        )
+
+        result = live.retrieve_for_turn_structured(
+            current=current,
+            query="和 misaka 一起来玩的另一个人是谁",
+            entity_anchors=["misaka"],
+            topic_terms=["一起来玩", "同行"],
+            memory_facets=["relationship"],
+            about_roles=["third_party"],
+            time_hint={
+                "start_at": "2026-08-03 11:00",
+                "end_at": "2026-08-03 12:00",
+            },
+        )
+
+        self.assertEqual(result.status, "found")
+        self.assertEqual(result.matches[0].source_id, "target-raw")
+        blob = "\n".join(result.rendered_texts)
+        self.assertIn("李嘉图", blob)
+        self.assertNotIn("王五", blob)
+        self.assertNotIn("赵六", blob)
+        self.assertEqual(result.effective_filters["entity_anchors"], ["misaka"])
+        self.assertEqual(
+            result.effective_filters["time_hint"]["start_at"],
+            "2026-08-03T11:00:00+08:00",
+        )
+        history.close()
+        live.close()
+        store.close()
+
     def test_raw_results_fill_limit_before_derived_results(self) -> None:
         store, index, emb = _shared_backends()
         mem = _mem(store, index, emb, conversation="c1", config=MemoryConfig(enable_verifier=False))

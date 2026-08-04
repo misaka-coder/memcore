@@ -80,7 +80,7 @@ V2 使用实际 provider projection 的 token 预算规划完整 turn。这是�
 
 ### 4. 两种互补的记忆读取工具
 
-- `retrieve_for_turn`：面向偏好、计划、关系、人物、主题和长期事实的模糊检索；
+- `retrieve_for_turn`：面向偏好、计划、关系、人物、主题和长期事实的模糊检索；支持用本地/ISO `time_hint.start_at/end_at` 在评分前硬过滤，并允许只凭已知人物、关系和时间发现未知答案；
 - `read_timeline`：既可按 `start_at/end_at` 精确到小时/分钟读取，也可按旧日期/粗时段读取，或把 raw 检索命中扩成前后完整 turn；`conversation/full/tools` 决定证据密度，显式页面预算才会产生完整单元 cursor；
 - `read_entry`：按当前会话 raw source_id 展开完整或紧凑条目；
 - `load_material`：只负责调用宿主提供的材料 loader，不保存文件本体；

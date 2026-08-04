@@ -397,10 +397,24 @@ def _time_hint(value: Any) -> tuple[dict[str, Any], str]:
         return {}, ""
     if not isinstance(value, dict):
         return {}, "time_hint_must_be_object"
-    unknown = _unknown_keys(value, {"date_label", "time_of_day", "start_ts", "end_ts"})
+    unknown = _unknown_keys(value, {"start_at", "end_at", "date_label", "time_of_day", "start_ts", "end_ts"})
     if unknown:
         return {}, f"unknown_time_hint_keys:{unknown}"
+    has_exact = any(value.get(key) is not None for key in ("start_at", "end_at"))
+    has_dated = any(str(value.get(key) or "").strip() for key in ("date_label", "time_of_day"))
+    has_epoch = any(value.get(key) is not None for key in ("start_ts", "end_ts"))
+    if sum((has_exact, has_dated, has_epoch)) > 1:
+        return {}, "time_hint_modes_are_mutually_exclusive"
     out: dict[str, Any] = {}
+    if has_exact:
+        for key in ("start_at", "end_at"):
+            raw = value.get(key)
+            if raw is None or (isinstance(raw, str) and not raw.strip()):
+                return {}, f"time_hint_{key}_required"
+            if not isinstance(raw, str):
+                return {}, f"time_hint_{key}_must_be_string"
+            out[key] = raw.strip()
+        return out, ""
     for key in ("date_label", "time_of_day"):
         text = str(value.get(key) or "").strip()
         if text:
@@ -411,8 +425,8 @@ def _time_hint(value: Any) -> tuple[dict[str, Any], str]:
                 out[key] = int(value[key])
             except (TypeError, ValueError):
                 return {}, f"{key}_must_be_int"
-    if out.get("start_ts") is not None and out.get("end_ts") is not None and out["start_ts"] > out["end_ts"]:
-        return {}, "time_hint_start_after_end"
+    if out.get("start_ts") is not None and out.get("end_ts") is not None and out["start_ts"] >= out["end_ts"]:
+        return {}, "time_hint_start_must_be_before_end"
     return out, ""
 
 
@@ -515,7 +529,10 @@ def _retrieve_description() -> str:
     return (
         "Fuzzy memory search for preferences, plans, people, old facts, relationships, "
         "promises, and material/tool trace anchors. Excludes visible context for the current turn. "
-        "Use include_explicit with a precise kind_patterns value only when tool, event, skill, or material records are needed."
+        "Pass only entities already known from the question or context; a person or answer being asked for is not an "
+        "entity anchor and must not be guessed. When a concrete local/ISO time is known, use time_hint.start_at/end_at; "
+        "time is hard-filtered before semantic or keyword ranking. Use include_explicit with a precise kind_patterns "
+        "value only when tool, event, skill, or material records are needed."
     )
 
 
@@ -574,11 +591,26 @@ def _retrieve_schema() -> dict[str, Any]:
             "time_hint": {
                 "type": "object",
                 "additionalProperties": False,
+                "description": "Known time evidence only. Prefer exact local/ISO start_at/end_at; start is inclusive and end is exclusive.",
                 "properties": {
+                    "start_at": {
+                        "type": "string",
+                        "description": "Exact inclusive local or ISO 8601 start. Use MemorySystem timezone when no offset is present.",
+                    },
+                    "end_at": {
+                        "type": "string",
+                        "description": "Exact exclusive local or ISO 8601 end. Use MemorySystem timezone when no offset is present.",
+                    },
                     "date_label": {"type": "string", "description": "YYYY-MM-DD date label."},
                     "time_of_day": {"type": "string", "description": "morning/afternoon/night/midnight if known."},
-                    "start_ts": {"type": "integer"},
-                    "end_ts": {"type": "integer"},
+                    "start_ts": {
+                        "type": "integer",
+                        "description": "Legacy inclusive epoch alias; models should prefer start_at.",
+                    },
+                    "end_ts": {
+                        "type": "integer",
+                        "description": "Legacy exclusive epoch alias; models should prefer end_at.",
+                    },
                 },
             },
             "include_explicit": {

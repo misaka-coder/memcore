@@ -100,7 +100,8 @@ class NativeToolSpecs(unittest.TestCase):
         time_hint = retrieve_schema["properties"]["time_hint"]
         self.assertEqual(time_hint["type"], ["object", "null"])
         self.assertEqual(time_hint["required"], list(time_hint["properties"]))
-        self.assertEqual(time_hint["properties"]["date_label"]["type"], ["string", "null"])
+        self.assertEqual(time_hint["properties"]["start_at"]["type"], ["string", "null"])
+        self.assertEqual(time_hint["properties"]["end_at"]["type"], ["string", "null"])
 
     def test_provider_formats_are_available(self) -> None:
         plain = build_native_memory_tool_specs(tool_format="plain", include_material_tool=False)
@@ -197,6 +198,53 @@ class NativeToolDispatch(unittest.TestCase):
         self.assertNotIn("当前会话可见 raw 可乐", blob)
         store.close()
 
+    def test_retrieve_dispatch_accepts_local_exact_time_without_unknown_entity(self) -> None:
+        mem, store, index, emb = _shared_mem(conversation="live")
+        history = MemorySystem(
+            llm=ToolLLM(),
+            namespace=Namespace(user_id="u1", conversation_id="history"),
+            timezone="Asia/Shanghai",
+            store=store,
+            index=index,
+            embedding=emb,
+            config=mem.config,
+        )
+        history.record_user_turn(
+            "misaka 和李嘉图一起来玩的",
+            timestamp=_ts(2026, 8, 3, 11, 47),
+            source_id="target",
+            memory_metadata={
+                "entity_anchors": ["misaka", "李嘉图"],
+                "topic_terms": ["同行", "一起来玩"],
+                "memory_facets": ["relationship"],
+                "about_roles": ["third_party"],
+            },
+        )
+        current = mem.record_user_turn("同行的人是谁", timestamp=_ts(2026, 8, 4, 20), source_id="cur")
+
+        out = dispatch_native_memory_tool(
+            "retrieve_for_turn",
+            {
+                "query": "和 misaka 一起来玩的另一个人是谁",
+                "entity_anchors": ["misaka"],
+                "topic_terms": ["同行", "一起来玩"],
+                "memory_facets": ["relationship"],
+                "about_roles": ["third_party"],
+                "time_hint": {
+                    "start_at": "2026-08-03 11:00",
+                    "end_at": "2026-08-03 12:00",
+                },
+            },
+            mem=mem,
+            current=current,
+        )
+
+        self.assertTrue(out["ok"])
+        self.assertIn("李嘉图", "\n".join(out["result"]["snippets"]))
+        history.close()
+        mem.close()
+        store.close()
+
     def test_retrieve_rejects_invalid_facet_instead_of_broad_searching(self) -> None:
         mem, store, _index, _emb = _shared_mem()
         current = mem.record_user_turn("我喜欢可乐", timestamp=1000, source_id="cur")
@@ -211,6 +259,29 @@ class NativeToolDispatch(unittest.TestCase):
         self.assertFalse(out["ok"])
         self.assertEqual(out["status"], "invalid_arguments")
         self.assertIn("invalid_memory_facets", out["reason"])
+        store.close()
+
+    def test_retrieve_rejects_mixed_time_hint_modes_before_dispatch(self) -> None:
+        mem, store, _index, _emb = _shared_mem()
+        current = mem.record_user_turn("同行的人是谁", timestamp=1000, source_id="cur")
+
+        out = dispatch_native_memory_tool(
+            "retrieve_for_turn",
+            {
+                "query": "同行的人是谁",
+                "time_hint": {
+                    "start_at": "2026-08-03 11:00",
+                    "end_at": "2026-08-03 12:00",
+                    "date_label": "2026-08-03",
+                },
+            },
+            mem=mem,
+            current=current,
+        )
+
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["status"], "invalid_arguments")
+        self.assertEqual(out["reason"], "time_hint_modes_are_mutually_exclusive")
         store.close()
 
     def test_read_timeline_dispatches_and_reports_invalid_filter(self) -> None:

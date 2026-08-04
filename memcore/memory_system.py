@@ -1496,6 +1496,7 @@ class MemorySystem:
         **filters: Any,
     ) -> RetrievalResult:
         """Structured retrieval with every prompt-visible source excluded before scoring."""
+        filters.setdefault("cross_conversation", True)
         exclude_ids = {str(item).strip() for item in (exclude_source_ids or ()) if str(item or "").strip()}
         now_ts = int((current or {}).get("timestamp") or 0)
         try:

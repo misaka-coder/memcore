@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass, field, replace
-from datetime import date
 from typing import Any, Mapping
 
 from .config import MemoryConfig
@@ -27,6 +26,7 @@ from .rendering import render_raw_snippet, render_semantic_snippet, render_summa
 from .store.base import LineageClosure, MemoryStore
 from .schema import ABOUT_ROLES, MEMORY_FACETS
 from .timeline import TimelineEntry, TurnRole
+from .time_anchor import normalize_retrieval_time_hint
 from .token_counter import TokenCounter
 
 _ACCEPTED_DEFAULT_STATUSES = (
@@ -426,35 +426,8 @@ class ReadPipeline:
             relation=RelationExpansionPlan(result_token_budget=result_token_budget),
         )
 
-    @staticmethod
-    def _normalize_time_hint(value: Mapping[str, Any]) -> dict[str, Any]:
-        if value is None:
-            return {}
-        if not isinstance(value, Mapping):
-            raise ValueError("invalid_time_hint")
-        allowed = {"date_label", "end_ts", "start_ts", "time_of_day"}
-        if set(value) - allowed:
-            raise ValueError("invalid_time_hint")
-        result: dict[str, Any] = {}
-        if value.get("date_label"):
-            label = str(value["date_label"])
-            try:
-                date.fromisoformat(label)
-            except ValueError as exc:
-                raise ValueError("invalid_time_hint") from exc
-            result["date_label"] = label
-        if value.get("time_of_day"):
-            result["time_of_day"] = str(value["time_of_day"])
-        for key in ("start_ts", "end_ts"):
-            if value.get(key) is not None:
-                try:
-                    result[key] = int(value[key])
-                except (TypeError, ValueError) as exc:
-                    raise ValueError("invalid_time_hint") from exc
-        if result.get("start_ts") is not None and result.get("end_ts") is not None:
-            if result["start_ts"] > result["end_ts"]:
-                raise ValueError("invalid_time_hint")
-        return result
+    def _normalize_time_hint(self, value: Mapping[str, Any]) -> dict[str, Any]:
+        return normalize_retrieval_time_hint(timezone=self.timezone, value=value)
 
     def _build_hard_where(self, *, namespace: Namespace, request: RetrievalRequest) -> dict[str, Any]:
         tenant, user, domain = namespace.hard_key()
@@ -471,15 +444,14 @@ class ReadPipeline:
         if not request.cross_conversation:
             where["conversation_id"] = namespace.conversation_id or ""
         hint = request.time_hint
-        if hint.get("date_label"):
-            where["date_label"] = hint["date_label"]
-        if hint.get("time_of_day"):
-            where["time_of_day"] = hint["time_of_day"]
+        periods = list(hint.get("time_periods") or [])
+        if periods:
+            where["time_of_day"] = periods[0] if len(periods) == 1 else {"$in": periods}
         timestamp: dict[str, int] = {}
         if hint.get("start_ts") is not None:
             timestamp["$gte"] = int(hint["start_ts"])
         if hint.get("end_ts") is not None:
-            timestamp["$lte"] = int(hint["end_ts"])
+            timestamp["$lt"] = int(hint["end_ts"])
         if timestamp:
             where["timestamp"] = timestamp
 
@@ -853,14 +825,13 @@ class ReadPipeline:
         if layer != "raw" and str(record.get("lineage_status") or "") != "valid":
             return False
         hint = hard.time_hint
-        if hint.get("date_label") and str(record.get("date_label") or "") != hint["date_label"]:
-            return False
-        if hint.get("time_of_day") and str(record.get("time_of_day") or "") != hint["time_of_day"]:
+        periods = set(hint.get("time_periods") or ())
+        if periods and str(record.get("time_of_day") or "") not in periods:
             return False
         timestamp = int(record.get("timestamp") or 0)
         if hint.get("start_ts") is not None and timestamp < int(hint["start_ts"]):
             return False
-        return not (hint.get("end_ts") is not None and timestamp > int(hint["end_ts"]))
+        return not (hint.get("end_ts") is not None and timestamp >= int(hint["end_ts"]))
 
     @staticmethod
     def _kind_matches(kind: str, pattern: str) -> bool:

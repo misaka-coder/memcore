@@ -124,7 +124,7 @@ def metadata_filter_key(prefix: str, value: str) -> str:
 
 - 顶层普通字段和 `$and/$or` 同时出现时,整体仍是 AND。
 - `$and` / `$or` 支持递归子 where。
-- 字段操作符继续支持 `$gte`, `$lte`, `$in`, `$nin`, `$ne`。
+- 字段操作符继续支持 `$gt`, `$gte`, `$lt`, `$lte`, `$in`, `$nin`, `$ne`；精确时间范围使用 `$gte` 起点包含与 `$lt` 终点不包含。
 - `InMemoryVectorIndex._match_where()` 改成递归匹配。
 - `ChromaVectorIndex._to_chroma_where()` 改成递归翻译,并继续处理 Chroma 对多条件 `$and` 和单字段多操作符的限制。
 

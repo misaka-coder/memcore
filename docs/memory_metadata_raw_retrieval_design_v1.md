@@ -313,6 +313,26 @@ tool provenance / source lineage / material status
 
 当前消息可以是 `turn_intent=memory_query`，但检索目标不能因此被过滤成 memory_query。
 
+当已知具体时间有助于缩小模糊事件检索时，`retrieve_for_turn` 使用与时间线相同的
+本地/ISO 时间输入；省略偏移时按 `MemorySystem.timezone` 解释，并在 dense/BM25
+评分前执行起点包含、终点不包含的硬过滤：
+
+```json
+{
+  "query": "和 misaka 一起来玩的另一个人是谁",
+  "entity_anchors": ["misaka"],
+  "topic_terms": ["同行", "一起来玩"],
+  "time_hint": {
+    "start_at": "2026-08-03 11:00",
+    "end_at": "2026-08-03 12:00"
+  }
+}
+```
+
+“另一个人”是待查询答案，不得先猜成 `entity_anchors`。准确时间范围足够小时仍应
+优先 `read_timeline` 直接读取原话；时间、人物或事件位置只有部分已知时，再由
+`retrieve_for_turn` 使用已知证据发现候选。
+
 ### 6.2 候选与评分顺序
 
 ```text

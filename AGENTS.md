@@ -180,6 +180,12 @@ Recommended tool parameters:
 - `importance_min: float`
 - `time_hint: dict`
 
+For exact fuzzy-retrieval bounds, use `time_hint={"start_at": ..., "end_at": ...}`
+with local or ISO 8601 strings. MemCore applies `MemorySystem.timezone` when an
+offset is omitted and hard-filters the index before dense/BM25 ranking. Legacy
+`date_label/time_of_day/start_ts/end_ts` inputs remain aliases; do not mix time
+selector modes.
+
 Metadata filters are prefilters: memcore narrows candidates before vector/BM25 scoring.
 
 ### `read_timeline`
@@ -214,6 +220,9 @@ Tell the chat model:
 - If timeline coverage is incomplete, call `read_timeline(cursor=next_cursor)`; do not repeat or alter the selector.
 - Use `read_entry(source_id, detail="full")` when a compact operation/material evidence block is relevant.
 - Use `retrieve_for_turn` for preferences, plans, long-term facts, people, topics, and fuzzy recall.
+- Pass only already-known names in `entity_anchors`. A person or answer being
+  asked for is unknown evidence, not an anchor; use known people, relations,
+  topics, and time instead of guessing it.
 - Use `load_material` for historical image/file/PDF content only after a visible or retrieved material anchor provides the `file_id`. If no anchor or retained derived content exists, say the evidence is unavailable instead of guessing.
 
 For provider-native tool loops, prefer `build_native_memory_tool_specs(...)` and

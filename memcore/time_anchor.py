@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone as datetime_timezone
 from typing import Any
@@ -195,6 +196,79 @@ def normalize_timeline_time_selector(
         time_periods=periods,
         mode="date",
     )
+
+
+def normalize_retrieval_time_hint(*, timezone: str, value: object = None) -> dict[str, Any]:
+    """Normalize fuzzy-retrieval time hints through the timeline selector.
+
+    The model-facing exact form is ``{start_at, end_at}``. Legacy
+    ``date_label/time_of_day`` and epoch ``start_ts/end_ts`` remain accepted as
+    aliases, but selector modes cannot be mixed. Exact and dated hints use the
+    same timezone/DST rules as :func:`normalize_timeline_time_selector`.
+    """
+
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError("time_hint_must_be_object")
+    if not value:
+        return {}
+    allowed = {"start_at", "end_at", "date_label", "time_of_day", "start_ts", "end_ts"}
+    unknown = sorted(str(key) for key in value if str(key) not in allowed)
+    if unknown:
+        raise ValueError(f"unknown_time_hint_keys:{unknown}")
+
+    has_exact = any(key in value and value.get(key) is not None for key in ("start_at", "end_at"))
+    has_dated = any(str(value.get(key) or "").strip() for key in ("date_label", "time_of_day"))
+    has_epoch = any(key in value and value.get(key) is not None for key in ("start_ts", "end_ts"))
+    if sum((has_exact, has_dated, has_epoch)) > 1:
+        raise ValueError("time_hint_modes_are_mutually_exclusive")
+
+    if has_exact:
+        selector = normalize_timeline_time_selector(
+            timezone=timezone,
+            time_range={"start_at": value.get("start_at"), "end_at": value.get("end_at")},
+        )
+        return selector.to_dict()
+
+    if has_dated:
+        date_label = str(value.get("date_label") or "").strip()
+        time_of_day = str(value.get("time_of_day") or "").strip()
+        periods: list[str] = []
+        if time_of_day:
+            periods = normalize_time_periods([time_of_day])
+            if not periods:
+                raise ValueError(f"unknown_time_periods:{[time_of_day]}")
+        if not date_label:
+            return {"time_periods": periods}
+        selector = normalize_timeline_time_selector(
+            timezone=timezone,
+            date_from=date_label,
+            date_to=date_label,
+            time_periods=periods,
+        )
+        result = selector.to_dict()
+        if selector.time_periods:
+            result["time_periods"] = list(selector.time_periods)
+        return result
+
+    if has_epoch:
+        result: dict[str, Any] = {}
+        for key in ("start_ts", "end_ts"):
+            raw = value.get(key)
+            if raw is None:
+                continue
+            if isinstance(raw, bool):
+                raise ValueError(f"time_hint_{key}_must_be_integer")
+            try:
+                result[key] = int(raw)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"time_hint_{key}_must_be_integer") from exc
+        if "start_ts" in result and "end_ts" in result and result["start_ts"] >= result["end_ts"]:
+            raise ValueError("time_hint_start_must_be_before_end")
+        return result
+
+    return {}
 
 
 def _required_time_range_text(value: dict[object, object], field: str) -> str:

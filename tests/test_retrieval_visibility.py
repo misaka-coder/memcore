@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from memcore import (
     ConfigError,
@@ -545,6 +547,55 @@ class HardFilterPlanningTests(unittest.TestCase):
                         for clause in where["$and"]
                     )
                 )
+        finally:
+            mem.close()
+            store.close()
+
+    def test_exact_time_hint_is_in_both_index_queries_before_scoring(self) -> None:
+        store = SQLiteMemoryStore(":memory:")
+        embedding = HashedEmbeddingProvider()
+        index = WhereSpyIndex()
+        mem = _memory(store, index, embedding)
+        try:
+            result = mem.retrieve_structured(
+                "misaka 和谁同行",
+                entity_anchors=["misaka"],
+                topic_terms=["同行"],
+                time_hint={
+                    "start_at": "2026-08-03 11:00",
+                    "end_at": "2026-08-03 12:00",
+                },
+            )
+
+            self.assertEqual(result.status, "empty")
+            start_ts = int(datetime(2026, 8, 3, 11, tzinfo=ZoneInfo("Asia/Shanghai")).timestamp())
+            end_ts = int(datetime(2026, 8, 3, 12, tzinfo=ZoneInfo("Asia/Shanghai")).timestamp())
+            expected = {"$gte": start_ts, "$lt": end_ts}
+            self.assertTrue(index.semantic_wheres)
+            self.assertEqual(index.semantic_wheres, index.keyword_wheres)
+            self.assertTrue(all(where["timestamp"] == expected for where in index.semantic_wheres))
+        finally:
+            mem.close()
+            store.close()
+
+    def test_invalid_exact_time_hint_never_degrades_to_an_unfiltered_search(self) -> None:
+        store = SQLiteMemoryStore(":memory:")
+        embedding = HashedEmbeddingProvider()
+        index = WhereSpyIndex()
+        mem = _memory(store, index, embedding)
+        try:
+            result = mem.retrieve_structured(
+                "misaka 和谁同行",
+                time_hint={
+                    "start_at": "2026-08-03 12:00",
+                    "end_at": "2026-08-03 11:00",
+                },
+            )
+
+            self.assertEqual(result.status, "invalid")
+            self.assertEqual(result.reason, "time_range_start_must_be_before_end")
+            self.assertEqual(index.semantic_wheres, [])
+            self.assertEqual(index.keyword_wheres, [])
         finally:
             mem.close()
             store.close()
