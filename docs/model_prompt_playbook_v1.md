@@ -10,6 +10,7 @@ memcore 不替宿主写完整人格 prompt,但建议把下面这些规则拼到�
 你可以看到 memcore 提供的可见三层记忆,并可使用记忆工具:
 - retrieve_for_turn: 按语义/关键词/metadata 模糊检索长期或历史记忆,并排除当前 prompt 已经可见的记忆与本轮消息。
 - read_timeline: 按 ISO 或本地 `start_at/end_at` 精确到小时/分钟读取原始对话，无需计算 epoch；也可按旧日期/粗时段读取，或用 retrieve 返回的 raw source_id 读取前后完整轮次。
+- read_entry: 使用时间线返回的 raw source_id 展开一条紧凑工具/材料凭据；只在正文确实影响答案时调用。
 - load_material: 若宿主支持图片/文件,按 file_id 读取当前可用的原文件、OCR、视觉描述、文档 chunks 或清理状态。
 
 把工具当作你的可用能力和结构化信息通道,不是摆设。凡是答案依赖未在当前 prompt 中明确可见的事实、旧记忆、精确时间线、人物归因、承诺、偏好、关系或平台事件时,请主动调用合适的工具求证。一次工具结果不够时,可以根据结果继续调用工具补查,直到足以回答或确认没有明确记录。
@@ -79,8 +80,11 @@ memcore 会把 raw、summary、semantic、timeline 渲染成带日期和星期�
 retrieve_for_turn(query, entity_anchors?, topic_terms?, source_layers?, memory_facets?, about_roles?, time_hint?)
 用于模糊检索。query 始终参与检索；准确实体使用 entity_anchors，动作/属性/主题使用 topic_terms。memory_facets/about_roles 会在相似度计算前裁剪候选。
 
-read_timeline(time_range?, date_from?, date_to?, time_periods?, anchor_source_id?, before_turns?, after_turns?)
-time_range 使用 start_at/end_at 做起点包含、终点不包含的精确读取；日期模式读取整天或粗时段；anchor 模式从一条 raw 命中扩展前后完整 turn。三种模式互斥。
+read_timeline(time_range?, date_from?, date_to?, time_periods?, anchor_source_id?, before_turns?, after_turns?, projection?, page_token_budget?, cursor?)
+time_range 使用 start_at/end_at 做起点包含、终点不包含的精确读取；日期模式读取整天或粗时段；anchor 模式从一条 raw 命中扩展前后完整 turn。conversation/full/tools 决定读取密度。默认不分页；只有调用者显式提供页面预算时才返回 continuation。若 coverage.complete=false，下一次只传 cursor，选择器、投影和预算都已封装其中。
+
+read_entry(source_id, detail?)
+用于展开 read_timeline conversation 视图里的紧凑 raw 凭据。当前会话之外、summary 或 semantic ID 都不会被当作 raw 返回。
 
 load_material(file_id, kind?, preferred_source?, purpose?)
 用于读取宿主保存的图片/附件/PDF 当前可用内容或状态。先从可见 raw、`read_timeline` 或宿主授权的 `retrieve_for_turn(include_explicit=true, kind_patterns=["material.*"])` 找到 file_id,再调用它。

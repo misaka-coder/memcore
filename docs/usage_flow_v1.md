@@ -159,8 +159,9 @@ Expose memory tools to the final chat model:
 
 - `retrieve_for_turn(current=cur, ...)` for fuzzy preferences, plans, people,
   topics, and long-term facts.
-- `read_timeline(time_range={"start_at": ..., "end_at": ...})` for exact hour/minute questions without calculating epoch; legacy date fields remain available for whole-day/coarse-period reads, or use it for expanding a raw
-  retrieval `source_id` into complete nearby turns without cutting a tool loop in half.
+- `read_timeline(time_range={"start_at": ..., "end_at": ...}, projection="conversation")` for exact hour/minute questions without calculating epoch; legacy date fields remain available for whole-day/coarse-period reads, or use it for expanding a raw retrieval `source_id` into complete nearby turns. The default view keeps dialogue/events full and returns reloadable compact evidence for operations/materials.
+- If the caller explicitly supplied a page token budget and `coverage.complete=false`, continue with `read_timeline(cursor=coverage.next_cursor)` only. Omitted/zero budget means MemCore performs no hidden result pagination.
+- `read_entry(source_id=..., detail="full")` expands one compact raw evidence block in the current authorized conversation.
 
 If the host supports images/files, also expose `load_material(file_id, kind?,
 preferred_source?, purpose?)` as a provider-native tool backed by host

@@ -193,6 +193,9 @@ Recommended tool parameters:
 - `date_to: YYYY-MM-DD` optional
 - `time_periods: list[str]` optional, such as morning/afternoon/night or localized aliases supported by the host
 - `cross_conversation: bool` only if the product allows it
+- `projection: conversation|full|tools` optional; conversation is the normal evidence view
+- `page_token_budget: int` optional; zero/omitted means no MemCore pagination
+- `cursor: str` optional; when present, send the cursor alone because selector/view/budget are embedded
 
 ### `load_material` optional
 
@@ -208,6 +211,8 @@ Recommended tool parameters:
 Tell the chat model:
 
 - Use `read_timeline` for "yesterday", "last Tuesday", "that night", and exact hour/minute ranges.
+- If timeline coverage is incomplete, call `read_timeline(cursor=next_cursor)`; do not repeat or alter the selector.
+- Use `read_entry(source_id, detail="full")` when a compact operation/material evidence block is relevant.
 - Use `retrieve_for_turn` for preferences, plans, long-term facts, people, topics, and fuzzy recall.
 - Use `load_material` for historical image/file/PDF content only after a visible or retrieved material anchor provides the `file_id`. If no anchor or retained derived content exists, say the evidence is unavailable instead of guessing.
 

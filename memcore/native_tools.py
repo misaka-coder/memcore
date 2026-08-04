@@ -17,7 +17,14 @@ from .schema import ABOUT_ROLES, MEMORY_FACETS
 
 SOURCE_LAYERS: tuple[str, ...] = ("raw", "summary", "semantic_summary")
 MATERIAL_SOURCE_PREFERENCES: tuple[str, ...] = ("auto", "original", "derived")
-NATIVE_MEMORY_TOOL_NAMES: tuple[str, ...] = ("retrieve_for_turn", "read_timeline", "load_material")
+ENTRY_DETAILS: tuple[str, ...] = ("full", "compact")
+TIMELINE_PROJECTIONS: tuple[str, ...] = ("conversation", "full", "tools")
+NATIVE_MEMORY_TOOL_NAMES: tuple[str, ...] = (
+    "retrieve_for_turn",
+    "read_timeline",
+    "read_entry",
+    "load_material",
+)
 
 MaterialLoader = Callable[[dict[str, Any]], Any]
 
@@ -48,6 +55,7 @@ def build_native_memory_tool_specs(
     tools = [
         _tool_spec("retrieve_for_turn", _retrieve_description(), _retrieve_schema()),
         _tool_spec("read_timeline", _timeline_description(), _timeline_schema()),
+        _tool_spec("read_entry", _entry_description(), _entry_schema()),
     ]
     if include_material_tool:
         tools.append(_tool_spec("load_material", _material_description(), _material_schema()))
@@ -78,6 +86,8 @@ def dispatch_native_memory_tool(
         return _dispatch_retrieve(args, mem=mem, current=current, policy=policy or ToolDispatchPolicy())
     if name == "read_timeline":
         return _dispatch_timeline(args, mem=mem)
+    if name == "read_entry":
+        return _dispatch_entry(args, mem=mem)
     if name == "load_material":
         return _dispatch_material(args, material_loader=material_loader)
     return _err(name, "unknown_tool", f"unsupported_tool:{name}")
@@ -185,6 +195,9 @@ def _dispatch_timeline(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
             "before_turns",
             "after_turns",
             "cross_conversation",
+            "projection",
+            "page_token_budget",
+            "cursor",
         },
     )
     if unknown:
@@ -198,14 +211,40 @@ def _dispatch_timeline(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
     if error:
         return _err("read_timeline", "invalid_arguments", error)
     cross = args.get("cross_conversation", False)
+    if cross is None:
+        cross = False
     if not isinstance(cross, bool):
         return _err("read_timeline", "invalid_arguments", "cross_conversation_must_be_boolean")
     anchor_source_id = _optional_string(args.get("anchor_source_id"))
+    projection = _optional_string(args.get("projection")) or "conversation"
+    if projection not in TIMELINE_PROJECTIONS:
+        return _err("read_timeline", "invalid_arguments", f"invalid_timeline_projection:{projection}")
+    cursor = _optional_string(args.get("cursor"))
     try:
         before_turns = int(args.get("before_turns") or 0)
         after_turns = int(args.get("after_turns") or 0)
+        if isinstance(args.get("page_token_budget"), bool):
+            raise ValueError
+        page_token_budget = int(args.get("page_token_budget") or 0)
     except (TypeError, ValueError):
-        return _err("read_timeline", "invalid_arguments", "turn_window_must_be_integer")
+        return _err("read_timeline", "invalid_arguments", "timeline_integer_argument_invalid")
+    if page_token_budget < 0:
+        return _err("read_timeline", "invalid_arguments", "page_token_budget_must_be_non_negative_integer")
+    if cursor and any(
+        (
+            time_range is not None,
+            bool(date_from),
+            bool(date_to),
+            bool(time_periods),
+            bool(anchor_source_id),
+            bool(before_turns),
+            bool(after_turns),
+            bool(cross),
+            projection != "conversation",
+            bool(page_token_budget),
+        )
+    ):
+        return _err("read_timeline", "invalid_arguments", "cursor_options_are_embedded")
     result = mem.read_timeline(
         time_range=time_range,
         date_from=date_from,
@@ -215,10 +254,29 @@ def _dispatch_timeline(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
         before_turns=before_turns,
         after_turns=after_turns,
         cross_conversation=cross,
+        projection=projection,
+        page_token_budget=page_token_budget,
+        cursor=cursor,
     )
     if result.get("status") == "invalid_filter":
         return _err("read_timeline", "invalid_filter", str(result.get("reason") or "invalid_filter"), result=result)
     return _ok("read_timeline", result)
+
+
+def _dispatch_entry(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
+    unknown = _unknown_keys(args, {"source_id", "detail"})
+    if unknown:
+        return _err("read_entry", "invalid_arguments", f"unknown_arguments:{unknown}")
+    source_id = _required_string(args, "source_id")
+    if not source_id:
+        return _err("read_entry", "invalid_arguments", "source_id_required")
+    detail = _optional_string(args.get("detail")) or "full"
+    if detail not in ENTRY_DETAILS:
+        return _err("read_entry", "invalid_arguments", f"invalid_entry_detail:{detail}")
+    result = mem.read_entry(source_id=source_id, detail=detail)
+    if result.get("status") == "invalid_filter":
+        return _err("read_entry", "invalid_filter", str(result.get("reason") or "invalid_filter"), result=result)
+    return _ok("read_entry", result)
 
 
 def _dispatch_material(args: dict[str, Any], *, material_loader: MaterialLoader | None) -> dict[str, Any]:
@@ -465,7 +523,16 @@ def _timeline_description() -> str:
     return (
         "Exact raw timeline lookup. When concrete hours or minutes are known, pass time_range.start_at/end_at "
         "as ISO 8601 or local date-time strings; no Unix timestamp calculation is needed. Legacy date fields remain "
-        "available for whole-day or coarse-period reads. A raw retrieval source id can anchor complete nearby turns."
+        "available for whole-day or coarse-period reads. Conversation view keeps dialogue/events full and returns "
+        "reloadable compact evidence for large operation/material records. If coverage is incomplete, call again with "
+        "only next_cursor. A raw retrieval source id can anchor complete nearby turns."
+    )
+
+
+def _entry_description() -> str:
+    return (
+        "Expand one raw timeline source_id in the current authorized conversation. Use this when read_timeline "
+        "returned a compact tool, operation, skill, or material evidence block and its full stored content is needed."
     )
 
 
@@ -563,6 +630,32 @@ def _timeline_schema() -> dict[str, Any]:
             "before_turns": {"type": "integer", "minimum": 0},
             "after_turns": {"type": "integer", "minimum": 0},
             "cross_conversation": {"type": "boolean", "description": "Only true if host policy allows it."},
+            "projection": {
+                "type": "string",
+                "enum": list(TIMELINE_PROJECTIONS),
+                "description": "conversation (default), full, or tools.",
+            },
+            "page_token_budget": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Explicit caller budget only; omit/0 means no MemCore pagination or hidden truncation.",
+            },
+            "cursor": {
+                "type": "string",
+                "description": "Opaque next_cursor from a prior incomplete result. Send it alone; selector/view/budget are embedded.",
+            },
+        },
+    }
+
+
+def _entry_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["source_id"],
+        "properties": {
+            "source_id": {"type": "string", "description": "Raw source_id from timeline/retrieval evidence."},
+            "detail": {"type": "string", "enum": list(ENTRY_DETAILS)},
         },
     }
 

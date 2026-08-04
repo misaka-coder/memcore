@@ -30,7 +30,8 @@
   会返回 `summary_retry_pending` / `semantic_retry_pending`,并保留原记录供下一轮后台压缩重试。
 - **切片 5(读侧)✅**:`retrieval` —— 显式 retrieve 工具 → metadata 前置过滤 → raw/derived 分池混合检索 + RRF → verifier 门；原始 query 始终保留，`entity_anchors` 高权重，`topic_terms` 只作普通辅助；
   `build_prompt_context` 只拼可见三层,是否检索交给聊天模型调用工具决定。**读写侧全闭环。**
-- **时间线工具 ✅**:`read_timeline(...)` 支持无需 epoch 的 `time_range.start_at/end_at` 小时/分钟级读取，旧日期/时间段字段归一到同一 timestamp 路径，也支持以 raw `source_id` 为锚点读取前后完整 turn；工具并行轮不会被截半，summary/semantic 和越权 source id 会结构化拒绝或返回空。
+- **时间线工具 ✅**:`read_timeline(...)` 支持无需 epoch 的 `time_range.start_at/end_at` 小时/分钟级读取，旧日期/时间段字段归一到同一 timestamp 路径，也支持以 raw `source_id` 为锚点读取前后完整 turn；默认 `conversation` 投影保留完整对话/事件并把大工具与材料轨迹变成可展开凭据，`full/tools` 可显式切换。默认无隐藏结果上限；调用者显式提供页面预算时才按完整 turn 分页并返回可校验 `next_cursor`。
+- **精确条目展开 ✅**:`read_entry(source_id, detail)` 只读取当前授权会话里的 raw entry，可从紧凑凭据恢复完整工具结果；summary/semantic、越权 ID、密钥和本地路径不会伪装成可用正文。
 - **embedding 三条路 + 自检 ✅**:`HuggingFaceEmbeddingProvider`(本地 BGE-M3)/ `HTTPEmbeddingProvider`(OpenAI 兼容 API,纯 stdlib 零依赖)/ `HashedEmbeddingProvider`(仅测试)。
   `EmbeddingProvider` 同时提供 `embed_query/embed_queries` 与
   `embed_document/embed_documents`；对称模型默认复用旧 `embed_text(s)`，Jina 等非对称模型可分别实现 query/passage，内存与 Chroma 索引会走正确通道。
@@ -71,7 +72,7 @@
 独立可运行示例见 `examples/non_native_operation_timeline.py`。
 
 原生 tool calling 接入可用 `build_native_memory_tool_specs(...)` 生成工具 schema,再用
-`dispatch_native_memory_tool(...)` 分发 `retrieve_for_turn` / `read_timeline` / `load_material`。
+`dispatch_native_memory_tool(...)` 分发 `retrieve_for_turn` / `read_timeline` / `read_entry` / `load_material`。
 `load_material` 只调用宿主传入的 `material_loader` 回调,用于读取 file_store/derived_store 中的原图、
 OCR、视觉描述、文档 chunks 或当前清理状态;memcore 不保存文件本体。
 非多模态接入不要让最终聊天模型和视觉/OCR 解析赛跑:要么先等宿主 derived_store 写入同一

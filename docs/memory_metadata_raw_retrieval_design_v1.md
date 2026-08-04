@@ -797,10 +797,13 @@ read_timeline(
     date_from="", date_to="", time_periods=None,
     anchor_source_id="", before_turns=0, after_turns=0,
     cross_conversation=False,
+    projection="conversation", page_token_budget=0, cursor="",
 )
 ```
 
-同时传多个模式返回 `invalid_filter/timeline_modes_are_mutually_exclusive`；三个模式都不传返回 `invalid_filter/timeline_selector_required`。
+同时传多个 selector 模式返回 `invalid_filter/timeline_modes_are_mutually_exclusive`；三个 selector 模式都不传返回 `invalid_filter/timeline_selector_required`。`projection` 和显式页面预算会被冻结进 cursor，续页时不能重复或篡改。
+
+当前实现按 `turn_id`（无 turn 的记录按 source_id）组成分页逻辑单元。默认 `page_token_budget=0` 不分页；正值要求宿主注入 TokenCounter，单个 turn 超预算时仍完整返回并标记 `oversized_unit=true`。cursor 校验版本、selector 指纹、投影、方向、最后一个稳定 unit key 和当前 namespace 指纹，重新查询时仍以当前 MemorySystem namespace 为唯一授权来源。
 
 ## 17. 索引与检索执行细节
 

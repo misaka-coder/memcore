@@ -232,6 +232,12 @@ def sanitize_projection_payload(payload: Mapping[str, Any]) -> tuple[dict[str, A
     return sanitized, status
 
 
+def sanitize_timeline_value(value: Any) -> tuple[Any, ProjectionStatus]:
+    """Sanitize model-visible timeline evidence without inventing a provider message role."""
+
+    return _sanitize_value(value)
+
+
 @dataclass(frozen=True)
 class ProjectionMessageInput:
     provider_profile: str
@@ -422,6 +428,7 @@ class _RendererSpec:
     renderer_id: str
     version: int
     renderer: Renderer
+    compact_renderer: Renderer | None = None
 
 
 class RendererRegistry:
@@ -431,7 +438,12 @@ class RendererRegistry:
         self._exact: dict[str, _RendererSpec] = {}
         self._prefix: dict[str, _RendererSpec] = {}
         self._by_identity: dict[tuple[str, int], _RendererSpec] = {
-            ("canonical", 1): _RendererSpec("canonical", 1, _render_canonical_entry)
+            ("canonical", 1): _RendererSpec(
+                "canonical",
+                1,
+                _render_canonical_entry,
+                _render_compact_entry,
+            )
         }
 
     def register_exact(
@@ -441,11 +453,19 @@ class RendererRegistry:
         renderer_id: str,
         version: int,
         renderer: Renderer,
+        compact_renderer: Renderer | None = None,
     ) -> None:
         normalized = str(kind or "").strip()
         if not _KIND_PATTERN.fullmatch(normalized):
             raise SchemaError("renderer_invalid_exact_kind")
-        self._register(self._exact, normalized, renderer_id=renderer_id, version=version, renderer=renderer)
+        self._register(
+            self._exact,
+            normalized,
+            renderer_id=renderer_id,
+            version=version,
+            renderer=renderer,
+            compact_renderer=compact_renderer,
+        )
 
     def register_prefix(
         self,
@@ -454,11 +474,19 @@ class RendererRegistry:
         renderer_id: str,
         version: int,
         renderer: Renderer,
+        compact_renderer: Renderer | None = None,
     ) -> None:
         normalized = str(kind_prefix or "").strip().rstrip(".*")
         if not _KIND_PREFIX_PATTERN.fullmatch(normalized):
             raise SchemaError("renderer_invalid_kind_prefix")
-        self._register(self._prefix, normalized, renderer_id=renderer_id, version=version, renderer=renderer)
+        self._register(
+            self._prefix,
+            normalized,
+            renderer_id=renderer_id,
+            version=version,
+            renderer=renderer,
+            compact_renderer=compact_renderer,
+        )
 
     def _register(
         self,
@@ -468,17 +496,25 @@ class RendererRegistry:
         renderer_id: str,
         version: int,
         renderer: Renderer,
+        compact_renderer: Renderer | None,
     ) -> None:
         normalized_id = str(renderer_id or "").strip()
-        if not normalized_id or len(normalized_id) > 120 or not callable(renderer):
+        if (
+            not normalized_id
+            or len(normalized_id) > 120
+            or not callable(renderer)
+            or (compact_renderer is not None and not callable(compact_renderer))
+        ):
             raise SchemaError("renderer_invalid_registration")
         resolved_version = int(version)
         if resolved_version < 1:
             raise SchemaError("renderer_invalid_version")
-        spec = _RendererSpec(normalized_id, resolved_version, renderer)
+        spec = _RendererSpec(normalized_id, resolved_version, renderer, compact_renderer)
         identity = (normalized_id, resolved_version)
         existing = self._by_identity.get(identity)
-        if existing is not None and existing.renderer is not renderer:
+        if existing is not None and (
+            existing.renderer is not renderer or existing.compact_renderer is not compact_renderer
+        ):
             raise SchemaError("renderer_identity_conflict")
         self._by_identity[identity] = spec
         target[selector] = spec
@@ -505,12 +541,21 @@ class RendererRegistry:
         return replace(entry, renderer_id=renderer_id, renderer_version=version)
 
     def render(self, entry: TimelineEntry, *, timezone: str) -> RendererResult:
+        return self.render_detail(entry, timezone=timezone, detail="full")
+
+    def render_detail(self, entry: TimelineEntry, *, timezone: str, detail: str = "full") -> RendererResult:
+        """Render one entry for provider history (full) or explicit evidence reads (compact)."""
+
+        resolved_detail = str(detail or "full").strip().lower()
+        if resolved_detail not in {"full", "compact"}:
+            raise SchemaError("renderer_invalid_detail")
         spec = self._by_identity.get((entry.renderer_id, entry.renderer_version))
         status = ProjectionStatus.COMPLETE
         if spec is None:
             spec = self._by_identity[("canonical", 1)]
             status = ProjectionStatus.CANONICAL_FALLBACK
-        text = str(spec.renderer(entry, timezone) or "")
+        renderer = spec.renderer if resolved_detail == "full" else spec.compact_renderer or _render_compact_entry
+        text = str(renderer(entry, timezone) or "")
         clean, safety_status = _sanitize_value(text)
         return RendererResult(
             text=str(clean),
@@ -663,6 +708,41 @@ def _render_canonical_entry(entry: TimelineEntry, timezone: str) -> str:
     if payload:
         safe_payload, _ = _sanitize_value(payload)
         lines.extend(("data:", json.dumps(safe_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))))
+    return "\n".join(lines)
+
+
+def _render_compact_entry(entry: TimelineEntry, timezone: str) -> str:
+    """Compact, reloadable evidence for operations/materials without copying large payloads."""
+
+    lines = [_entry_header(entry, timezone), f"source_id: {_display_scalar(entry.source_id)}"]
+    for actor_line in (
+        _actor_line("actor", entry.namespace.actor),
+        _actor_line("target_actor", entry.target_actor),
+    ):
+        if actor_line:
+            lines.append(actor_line)
+    if entry.correlation_id:
+        lines.append(f"correlation_id: {_display_scalar(entry.correlation_id)}")
+    if entry.relation_status:
+        lines.append(f"relation_status: {_display_scalar(entry.relation_status)}")
+    status = _display_scalar(entry.trace_metadata.get("status") or entry.payload.get("status"))
+    if status:
+        lines.append(f"status: {status}")
+
+    retained = entry.trace_metadata.get("retention_anchor")
+    if isinstance(retained, Mapping) and retained:
+        safe_anchor, _ = _sanitize_value(dict(retained))
+        lines.append("anchor: " + json.dumps(safe_anchor, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+    for key in ("file_id", "filename", "kind", "file_status", "derived_status"):
+        value = _display_scalar(entry.payload.get(key))
+        if value:
+            lines.append(f"{key}: {value}")
+
+    payload_chars = len(entry.semantic_text) + len(
+        json.dumps(_json_ready(entry.payload), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    )
+    lines.append(f"stored_chars: {payload_chars}")
+    lines.append("summary: 完整内容已保留；需要正文时调用 read_entry(source_id, detail=full)。")
     return "\n".join(lines)
 
 
@@ -1208,5 +1288,6 @@ __all__ = [
     "merge_projection_status",
     "normalize_provider_profile",
     "sanitize_projection_payload",
+    "sanitize_timeline_value",
     "stable_projection_hash",
 ]

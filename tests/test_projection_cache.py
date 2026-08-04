@@ -313,6 +313,49 @@ class CanonicalRenderingTests(ProjectionBase):
             mem.store.close()
             mem.close()
 
+    def test_renderer_can_expose_compact_read_view_without_changing_full_projection(self) -> None:
+        registry = RendererRegistry()
+
+        def render_full(_entry: Any, _timezone: str) -> str:
+            return "full-provider-history"
+
+        def render_compact(_entry: Any, _timezone: str) -> str:
+            return "compact-evidence"
+
+        registry.register_prefix(
+            "event.custom",
+            renderer_id="custom-detail",
+            version=1,
+            renderer=render_full,
+            compact_renderer=render_compact,
+        )
+        mem = MemorySystem(
+            llm=_NoopLLM(),
+            namespace=Namespace(user_id="renderer-detail", conversation_id="c"),
+            timezone="Asia/Shanghai",
+            store=SQLiteMemoryStore(":memory:"),
+            index=InMemoryVectorIndex(embedding=HashedEmbeddingProvider()),
+            embedding=HashedEmbeddingProvider(),
+            renderer_registry=registry,
+        )
+        try:
+            handle = mem.begin_turn(
+                stimuli=[_stimulus("event", source_id="detail-entry", kind="event.custom.one")],
+                turn_id="detail-turn",
+            )
+
+            self.assertEqual(
+                registry.render(handle.stimuli[0], timezone="Asia/Shanghai").text,
+                "full-provider-history",
+            )
+            self.assertEqual(
+                registry.render_detail(handle.stimuli[0], timezone="Asia/Shanghai", detail="compact").text,
+                "compact-evidence",
+            )
+        finally:
+            mem.store.close()
+            mem.close()
+
 
 class ProviderAdapterTests(ProjectionBase):
     def _build_tool_turn(self) -> str:

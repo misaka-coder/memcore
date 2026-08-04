@@ -40,7 +40,8 @@ raw、summary、semantic、timeline 都带真实时间锚点,包括星期几。
 memcore 提供两类读工具:
 
 - `retrieve`: 向量/关键词混合检索,适合偏好、计划、长期事实、人物关系。
-- `read_timeline`: 按无需 epoch 的绝对起止时间精确读 raw，旧日期/粗时段进入同一 timestamp 路径；也可用 raw source_id 扩展前后完整 turn。
+- `read_timeline`: 按无需 epoch 的绝对起止时间精确读 raw，旧日期/粗时段进入同一 timestamp 路径；也可用 raw source_id 扩展前后完整 turn。默认会话投影压紧工具/材料正文但保留可重载 source_id；显式预算下分页只发生在完整 turn 之间，并返回 namespace-safe cursor。
+- `read_entry`: 按 current-conversation raw source_id 展开一条紧凑凭据，不认识宿主业务类型。
 
 价值:不用把所有记忆问题都塞进向量检索。精确时间问题走精确工具,长期语义问题走检索工具。
 

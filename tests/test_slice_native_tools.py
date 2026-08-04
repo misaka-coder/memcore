@@ -54,7 +54,7 @@ class NativeToolSpecs(unittest.TestCase):
 
         names = [tool["function"]["name"] for tool in tools]
 
-        self.assertEqual(names, ["retrieve_for_turn", "read_timeline", "load_material"])
+        self.assertEqual(names, ["retrieve_for_turn", "read_timeline", "read_entry", "load_material"])
         retrieve = tools[0]["function"]
         self.assertTrue(retrieve["strict"])
         self.assertFalse(retrieve["parameters"]["additionalProperties"])
@@ -82,6 +82,12 @@ class NativeToolSpecs(unittest.TestCase):
             timeline["parameters"]["properties"]["time_range"]["required"],
             ["start_at", "end_at"],
         )
+        self.assertEqual(
+            timeline["parameters"]["properties"]["projection"]["enum"],
+            ["conversation", "full", "tools", None],
+        )
+        self.assertIn("cursor", timeline["parameters"]["properties"])
+        self.assertEqual(tools[2]["function"]["name"], "read_entry")
 
     def test_openai_strict_schema_makes_optional_fields_nullable_required(self) -> None:
         tools = build_native_memory_tool_specs(tool_format="openai")
@@ -243,6 +249,39 @@ class NativeToolDispatch(unittest.TestCase):
         self.assertTrue(out["ok"])
         self.assertEqual([row["source_id"] for row in out["result"]["messages"]], ["target"])
         store.close()
+
+    def test_read_entry_dispatches_namespace_safe_raw_expansion(self) -> None:
+        mem, store, _index, _emb = _shared_mem()
+        mem.record_user_turn("原始证据", timestamp=_ts(2026, 4, 10, 11), source_id="raw-entry")
+
+        out = dispatch_native_memory_tool(
+            "read_entry",
+            {"source_id": "raw-entry", "detail": "full"},
+            mem=mem,
+        )
+        missing = dispatch_native_memory_tool(
+            "read_entry",
+            {"source_id": "missing", "detail": "full"},
+            mem=mem,
+        )
+
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["result"]["entry"]["source_id"], "raw-entry")
+        self.assertIn("原始证据", out["result"]["text"])
+        self.assertTrue(missing["ok"])
+        self.assertEqual(missing["result"]["status"], "empty")
+        store.close()
+
+    def test_timeline_cursor_rejects_repeated_selector_options(self) -> None:
+        out = dispatch_native_memory_tool(
+            "read_timeline",
+            {"cursor": "timeline-v1:not-real:not-real", "date_from": "2026-04-10"},
+            mem=SimpleNamespace(),
+        )
+
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["status"], "invalid_arguments")
+        self.assertEqual(out["reason"], "cursor_options_are_embedded")
 
     def test_load_material_uses_host_loader(self) -> None:
         mem, store, _index, _emb = _shared_mem()

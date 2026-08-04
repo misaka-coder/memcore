@@ -1524,102 +1524,306 @@ class MemorySystem:
         before_turns: int = 0,
         after_turns: int = 0,
         cross_conversation: bool = False,
+        projection: str = "conversation",
+        page_token_budget: int = 0,
+        cursor: str = "",
     ) -> dict[str, Any]:
-        """时间线工具:按绝对时间范围、旧日期别名或 raw anchor 精确读原始对话。
+        """时间线工具:精确读取、按目的投影，并在显式预算下按完整逻辑单元分页。
 
         ``time_range`` 接受 start_at/end_at ISO 或本地时间字符串。旧日期字段归一到
-        同一 timestamp 查询路径。时间/anchor 模式互斥；非法参数绝不静默放宽。
+        同一 timestamp 查询路径。时间、anchor、cursor 模式互斥；非法参数绝不静默放宽。
         """
         from .rendering import render_timeline
         from .time_anchor import normalize_timeline_time_selector
+        from .timeline_read import (
+            build_timeline_read_units,
+            decode_timeline_cursor,
+            normalize_timeline_projection,
+            paginate_timeline_units,
+            timestamp_iso,
+        )
 
         def _invalid(reason: str) -> dict[str, Any]:
             return {"status": "invalid_filter", "reason": reason, "messages": [], "message_count": 0, "text": ""}
 
         start = str(date_from or "").strip()
         anchor_id = str(anchor_source_id or "").strip()
+        cursor_token = str(cursor or "").strip()
         has_exact_mode = time_range is not None
         has_legacy_mode = bool(start or str(date_to or "").strip() or list(time_periods or []))
-        selector_count = int(bool(anchor_id)) + int(has_exact_mode) + int(has_legacy_mode)
+        selector_count = int(bool(anchor_id)) + int(has_exact_mode) + int(has_legacy_mode) + int(bool(cursor_token))
         if selector_count > 1:
             return _invalid("timeline_modes_are_mutually_exclusive")
         if selector_count == 0:
             return _invalid("timeline_selector_required")
-        if anchor_id:
-            if cross_conversation:
-                return _invalid("raw_anchor_requires_current_conversation")
+
+        after_key = None
+        selector_payload: dict[str, Any]
+        result_metadata: dict[str, Any]
+        raw_messages: list[dict[str, Any]]
+        if cursor_token:
+            if (
+                bool(before_turns)
+                or bool(after_turns)
+                or bool(cross_conversation)
+                or bool(page_token_budget)
+                or str(projection or "conversation").strip().lower() != "conversation"
+            ):
+                return _invalid("cursor_options_are_embedded")
             try:
-                before = int(before_turns)
-                after = int(after_turns)
-            except (TypeError, ValueError):
-                return _invalid("turn_window_must_be_non_negative_integer")
-            if before < 0 or after < 0:
-                return _invalid("turn_window_must_be_non_negative_integer")
-            record = self.store.get_retrieval_record(
-                namespace=self.namespace,
-                source_id=anchor_id,
-                cross_conversation=False,
-            )
-            if record is not None and str(record.get("entry_type") or "raw") != "raw":
-                return _invalid("raw_anchor_required")
-            try:
-                window = self.store.get_raw_turn_window(
+                decoded = decode_timeline_cursor(cursor_token, namespace=self.namespace)
+            except ValueError as exc:
+                return _invalid(str(exc) or "invalid_cursor")
+            selector_payload = dict(decoded["selector"])
+            projection = str(decoded["projection"])
+            page_token_budget = int(decoded["page_token_budget"])
+            after_key = decoded["last_unit_key"]
+            selector_mode = str(selector_payload.get("mode") or "")
+            if selector_mode == "time":
+                try:
+                    start_ts = int(selector_payload["start_ts"])
+                    end_ts = int(selector_payload["end_ts"])
+                    periods = [str(item) for item in list(selector_payload.get("time_periods") or [])]
+                    cross = bool(selector_payload.get("cross_conversation"))
+                except (KeyError, TypeError, ValueError):
+                    return _invalid("invalid_cursor")
+                raw_messages = self.store.get_messages_by_time_range(
                     namespace=self.namespace,
-                    anchor_source_id=anchor_id,
-                    before_turns=before,
-                    after_turns=after,
+                    start_ts=start_ts,
+                    end_ts=end_ts,
+                    time_periods=periods,
+                    cross_conversation=cross,
                 )
-            except NotImplementedError:
-                return {
-                    "status": "unavailable",
-                    "reason": "raw_turn_window_store_unsupported",
-                    "messages": [],
-                    "message_count": 0,
-                    "text": "",
+                result_metadata = {
+                    "selector_mode": str(selector_payload.get("selector_mode") or "time_range"),
+                    "time_range": {
+                        "start_at": str(selector_payload.get("start_at") or ""),
+                        "end_at": str(selector_payload.get("end_at") or ""),
+                        "start_ts": start_ts,
+                        "end_ts": end_ts,
+                    },
+                    "time_periods": periods,
                 }
-            messages = [entry.to_record() for entry in window.entries]
-            return {
-                "status": "ok" if messages else "empty",
-                "reason": window.reason,
-                "anchor_source_id": anchor_id,
-                "before_turns": before,
-                "after_turns": after,
-                "messages": messages,
-                "message_count": len(messages),
-                "text": render_timeline(messages, tz=self.timezone),
-            }
+                if result_metadata["selector_mode"] == "date":
+                    result_metadata["date_from"] = str(selector_payload.get("date_from") or "")
+                    result_metadata["date_to"] = str(selector_payload.get("date_to") or "")
+            elif selector_mode == "anchor":
+                anchor_id = str(selector_payload.get("anchor_source_id") or "")
+                try:
+                    before = int(selector_payload.get("before_turns") or 0)
+                    after = int(selector_payload.get("after_turns") or 0)
+                    window = self.store.get_raw_turn_window(
+                        namespace=self.namespace,
+                        anchor_source_id=anchor_id,
+                        before_turns=before,
+                        after_turns=after,
+                    )
+                except (NotImplementedError, TypeError, ValueError):
+                    return _invalid("invalid_cursor")
+                raw_messages = [entry.to_record() for entry in window.entries]
+                result_metadata = {
+                    "anchor_source_id": anchor_id,
+                    "before_turns": before,
+                    "after_turns": after,
+                }
+            else:
+                return _invalid("invalid_cursor")
+        else:
+            try:
+                resolved_projection = normalize_timeline_projection(projection)
+                if isinstance(page_token_budget, bool):
+                    raise ValueError("page_token_budget_must_be_non_negative_integer")
+                resolved_budget = int(page_token_budget or 0)
+                if resolved_budget < 0:
+                    raise ValueError("page_token_budget_must_be_non_negative_integer")
+            except (TypeError, ValueError) as exc:
+                return _invalid(str(exc) or "invalid_timeline_options")
+            projection = resolved_projection
+            page_token_budget = resolved_budget
+            if anchor_id:
+                if cross_conversation:
+                    return _invalid("raw_anchor_requires_current_conversation")
+                try:
+                    before = int(before_turns)
+                    after = int(after_turns)
+                except (TypeError, ValueError):
+                    return _invalid("turn_window_must_be_non_negative_integer")
+                if before < 0 or after < 0:
+                    return _invalid("turn_window_must_be_non_negative_integer")
+                record = self.store.get_retrieval_record(
+                    namespace=self.namespace,
+                    source_id=anchor_id,
+                    cross_conversation=False,
+                )
+                if record is not None and str(record.get("entry_type") or "raw") != "raw":
+                    return _invalid("raw_anchor_required")
+                try:
+                    window = self.store.get_raw_turn_window(
+                        namespace=self.namespace,
+                        anchor_source_id=anchor_id,
+                        before_turns=before,
+                        after_turns=after,
+                    )
+                except NotImplementedError:
+                    return {
+                        "status": "unavailable",
+                        "reason": "raw_turn_window_store_unsupported",
+                        "messages": [],
+                        "message_count": 0,
+                        "text": "",
+                    }
+                raw_messages = [entry.to_record() for entry in window.entries]
+                selector_payload = {
+                    "mode": "anchor",
+                    "anchor_source_id": anchor_id,
+                    "before_turns": before,
+                    "after_turns": after,
+                }
+                result_metadata = {
+                    "reason": window.reason,
+                    "anchor_source_id": anchor_id,
+                    "before_turns": before,
+                    "after_turns": after,
+                }
+            else:
+                try:
+                    selector = normalize_timeline_time_selector(
+                        timezone=self.timezone,
+                        time_range=time_range,
+                        date_from=start,
+                        date_to=str(date_to or "").strip(),
+                        time_periods=time_periods,
+                    )
+                except (TypeError, ValueError) as exc:
+                    return _invalid(str(exc) or "invalid_time_selector")
+                periods = list(selector.time_periods)
+                raw_messages = self.store.get_messages_by_time_range(
+                    namespace=self.namespace,
+                    start_ts=selector.start_ts,
+                    end_ts=selector.end_ts,
+                    time_periods=periods,
+                    cross_conversation=cross_conversation,
+                )
+                selector_payload = {
+                    "mode": "time",
+                    "selector_mode": selector.mode,
+                    "start_ts": selector.start_ts,
+                    "end_ts": selector.end_ts,
+                    "start_at": selector.start_at,
+                    "end_at": selector.end_at,
+                    "time_periods": periods,
+                    "cross_conversation": bool(cross_conversation),
+                    "date_from": start if selector.mode == "date" else "",
+                    "date_to": (str(date_to or "").strip() or start) if selector.mode == "date" else "",
+                }
+                result_metadata = {
+                    "selector_mode": selector.mode,
+                    "time_range": selector.to_dict(),
+                    "time_periods": periods,
+                }
+                if selector.mode == "date":
+                    result_metadata["date_from"] = start
+                    result_metadata["date_to"] = str(date_to or "").strip() or start
 
         try:
-            selector = normalize_timeline_time_selector(
+            resolved_projection = normalize_timeline_projection(projection)
+            entries = [TimelineEntry.from_record(record) for record in raw_messages]
+            units = build_timeline_read_units(
+                entries,
+                projection=resolved_projection,
+                renderer_registry=self.renderer_registry,
                 timezone=self.timezone,
-                time_range=time_range,
-                date_from=start,
-                date_to=str(date_to or "").strip(),
-                time_periods=time_periods,
+            )
+            count_text = self.token_counter.count_text if self.token_counter is not None else None
+            page = paginate_timeline_units(
+                units,
+                page_token_budget=int(page_token_budget or 0),
+                count_text=count_text,
+                cursor_selector=selector_payload,
+                projection=resolved_projection,
+                namespace=self.namespace,
+                after_key=after_key,
+                timezone=self.timezone,
             )
         except (TypeError, ValueError) as exc:
-            return _invalid(str(exc) or "invalid_time_selector")
-        periods = list(selector.time_periods)
-        messages = self.store.get_messages_by_time_range(
-            namespace=self.namespace,
-            start_ts=selector.start_ts,
-            end_ts=selector.end_ts,
-            time_periods=periods,
-            cross_conversation=cross_conversation,
-        )
-        result = {
+            return _invalid(str(exc) or "invalid_timeline_options")
+
+        messages = list(page.messages)
+        text = render_timeline(messages, tz=self.timezone) if messages else ""
+        timestamps = [int(message.get("timestamp") or 0) for message in messages if int(message.get("timestamp") or 0)]
+        projected_tokens = None
+        if self.token_counter is not None:
+            projected_tokens = int(self.token_counter.count_text(text))
+            if projected_tokens < 0:
+                return _invalid("TokenCounter.count_text() must return a non-negative int")
+        coverage = {
+            "complete": page.complete,
+            "requested_start": str(selector_payload.get("start_at") or ""),
+            "requested_end": str(selector_payload.get("end_at") or ""),
+            "returned_start": timestamp_iso(min(timestamps), timezone=self.timezone) if timestamps else "",
+            "returned_end": timestamp_iso(max(timestamps), timezone=self.timezone) if timestamps else "",
+            "logical_unit_count": page.logical_unit_count,
+            "total_logical_unit_count": page.total_logical_unit_count,
+            "entry_count": page.entry_count,
+            "total_entry_count": page.total_entry_count,
+            "compacted_entry_count": page.compacted_entry_count,
+            "next_cursor": page.next_cursor,
+            "oversized_unit": page.oversized_unit,
+            "page_token_budget": int(page_token_budget or 0),
+            "projected_token_count": projected_tokens,
+            "token_count_quality": self.token_counter.quality if self.token_counter is not None else "unavailable",
+        }
+        return {
             "status": "ok" if messages else "empty",
-            "selector_mode": selector.mode,
-            "time_range": selector.to_dict(),
-            "time_periods": periods,
+            **result_metadata,
+            "projection": resolved_projection,
+            "coverage": coverage,
             "message_count": len(messages),
             "messages": messages,
-            "text": render_timeline(messages, tz=self.timezone),
+            "text": text,
         }
-        if selector.mode == "date":
-            result["date_from"] = start
-            result["date_to"] = str(date_to or "").strip() or start
-        return result
+
+    def read_entry(self, *, source_id: str, detail: str = "full") -> dict[str, Any]:
+        """Read one current-conversation raw entry by source id without exposing stored secrets or paths."""
+
+        from .timeline_read import project_timeline_entry
+
+        sid = str(source_id or "").strip()
+        resolved_detail = str(detail or "full").strip().lower()
+        if not sid:
+            return {"status": "invalid_filter", "reason": "source_id_required", "entry": None, "text": ""}
+        if resolved_detail not in {"full", "compact"}:
+            return {"status": "invalid_filter", "reason": "invalid_entry_detail", "entry": None, "text": ""}
+        try:
+            entry = self.store.get_entry(namespace=self.namespace, source_id=sid)
+        except NamespaceError:
+            entry = None
+        if entry is None:
+            return {
+                "status": "empty",
+                "reason": "entry_not_found_or_out_of_scope",
+                "source_id": sid,
+                "detail": resolved_detail,
+                "entry": None,
+                "text": "",
+            }
+        projected, _ = project_timeline_entry(
+            entry,
+            projection="full",
+            renderer_registry=self.renderer_registry,
+            timezone=self.timezone,
+            detail_override=resolved_detail,
+        )
+        if projected is None:  # pragma: no cover - full projection never filters
+            return {"status": "empty", "reason": "entry_not_found_or_out_of_scope", "entry": None, "text": ""}
+        return {
+            "status": "ok",
+            "reason": "",
+            "source_id": sid,
+            "detail": resolved_detail,
+            "entry": projected,
+            "text": str(projected.get("content") or ""),
+        }
 
     def forget_namespace(self, namespace: Namespace | None = None) -> dict[str, Any]:
         """定向遗忘:删除 store 记录,并尽力同步清 VectorIndex;失败时结构化报告 partial。"""
