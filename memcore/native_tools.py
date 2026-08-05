@@ -19,10 +19,13 @@ SOURCE_LAYERS: tuple[str, ...] = ("raw", "summary", "semantic_summary")
 MATERIAL_SOURCE_PREFERENCES: tuple[str, ...] = ("auto", "original", "derived")
 ENTRY_DETAILS: tuple[str, ...] = ("full", "compact")
 TIMELINE_PROJECTIONS: tuple[str, ...] = ("conversation", "full", "tools")
+MEMORY_NODE_TYPES: tuple[str, ...] = ("episodic", "semantic")
+MEMORY_VIEWS: tuple[str, ...] = ("card", "content", "sources")
 NATIVE_MEMORY_TOOL_NAMES: tuple[str, ...] = (
     "retrieve_for_turn",
+    "browse_memory",
+    "open_memory",
     "read_timeline",
-    "read_entry",
     "load_material",
 )
 
@@ -54,8 +57,9 @@ def build_native_memory_tool_specs(
 
     tools = [
         _tool_spec("retrieve_for_turn", _retrieve_description(), _retrieve_schema()),
+        _tool_spec("browse_memory", _browse_description(), _browse_schema()),
+        _tool_spec("open_memory", _open_description(), _open_schema()),
         _tool_spec("read_timeline", _timeline_description(), _timeline_schema()),
-        _tool_spec("read_entry", _entry_description(), _entry_schema()),
     ]
     if include_material_tool:
         tools.append(_tool_spec("load_material", _material_description(), _material_schema()))
@@ -84,6 +88,10 @@ def dispatch_native_memory_tool(
         return _err(name, "invalid_arguments", error)
     if name == "retrieve_for_turn":
         return _dispatch_retrieve(args, mem=mem, current=current, policy=policy or ToolDispatchPolicy())
+    if name == "browse_memory":
+        return _dispatch_browse(args, mem=mem)
+    if name == "open_memory":
+        return _dispatch_open(args, mem=mem)
     if name == "read_timeline":
         return _dispatch_timeline(args, mem=mem)
     if name == "read_entry":
@@ -181,6 +189,106 @@ def _dispatch_retrieve(
     payload["snippets"] = snippets
     payload["count"] = len(snippets)
     return _ok("retrieve_for_turn", payload)
+
+
+def _dispatch_browse(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
+    unknown = _unknown_keys(
+        args,
+        {"time_range", "date_from", "date_to", "node_types", "cross_conversation", "page_size", "cursor"},
+    )
+    if unknown:
+        return _err("browse_memory", "invalid_arguments", f"unknown_arguments:{unknown}")
+    time_range, error = _timeline_time_range(args.get("time_range"))
+    if error:
+        return _err("browse_memory", "invalid_arguments", error)
+    date_from = _optional_string(args.get("date_from"))
+    date_to = _optional_string(args.get("date_to"))
+    node_types, error = _enum_list(args.get("node_types"), "node_types", MEMORY_NODE_TYPES)
+    if error:
+        return _err("browse_memory", "invalid_arguments", error)
+    cross = args.get("cross_conversation", False)
+    if cross is None:
+        cross = False
+    if not isinstance(cross, bool):
+        return _err("browse_memory", "invalid_arguments", "cross_conversation_must_be_boolean")
+    cursor = _optional_string(args.get("cursor"))
+    try:
+        page_size = 50 if args.get("page_size") is None else int(args["page_size"])
+        if isinstance(args.get("page_size"), bool):
+            raise ValueError
+    except (TypeError, ValueError):
+        return _err("browse_memory", "invalid_arguments", "page_size_must_be_positive_integer")
+    if cursor and any(
+        (
+            time_range is not None,
+            bool(date_from),
+            bool(date_to),
+            bool(node_types),
+            bool(cross),
+            args.get("page_size") is not None,
+        )
+    ):
+        return _err("browse_memory", "invalid_arguments", "cursor_options_are_embedded")
+    result = mem.browse_memory(
+        time_range=time_range,
+        date_from=date_from,
+        date_to=date_to,
+        node_types=node_types or None,
+        cross_conversation=cross,
+        page_size=page_size,
+        cursor=cursor,
+    )
+    if result.get("status") == "invalid_filter":
+        return _err("browse_memory", "invalid_filter", str(result.get("reason") or "invalid_filter"), result=result)
+    return _ok("browse_memory", result)
+
+
+def _dispatch_open(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
+    unknown = _unknown_keys(args, {"memory_id", "view", "detail", "cross_conversation", "page_size", "cursor"})
+    if unknown:
+        return _err("open_memory", "invalid_arguments", f"unknown_arguments:{unknown}")
+    memory_id = _optional_string(args.get("memory_id"))
+    view = _optional_string(args.get("view")) or "card"
+    detail = _optional_string(args.get("detail")) or "full"
+    cross = args.get("cross_conversation", False)
+    if cross is None:
+        cross = False
+    if not isinstance(cross, bool):
+        return _err("open_memory", "invalid_arguments", "cross_conversation_must_be_boolean")
+    cursor = _optional_string(args.get("cursor"))
+    try:
+        page_size = 50 if args.get("page_size") is None else int(args["page_size"])
+        if isinstance(args.get("page_size"), bool):
+            raise ValueError
+    except (TypeError, ValueError):
+        return _err("open_memory", "invalid_arguments", "page_size_must_be_positive_integer")
+    if cursor and any(
+        (
+            bool(memory_id),
+            args.get("view") is not None,
+            args.get("detail") is not None,
+            bool(cross),
+            args.get("page_size") is not None,
+        )
+    ):
+        return _err("open_memory", "invalid_arguments", "cursor_options_are_embedded")
+    if not cursor and not memory_id:
+        return _err("open_memory", "invalid_arguments", "memory_id_required")
+    if view not in MEMORY_VIEWS:
+        return _err("open_memory", "invalid_arguments", f"invalid_memory_view:{view}")
+    if detail not in ENTRY_DETAILS:
+        return _err("open_memory", "invalid_arguments", f"invalid_memory_detail:{detail}")
+    result = mem.open_memory(
+        memory_id=memory_id,
+        view=view,
+        detail=detail,
+        cross_conversation=cross,
+        page_size=page_size,
+        cursor=cursor,
+    )
+    if result.get("status") == "invalid_filter":
+        return _err("open_memory", "invalid_filter", str(result.get("reason") or "invalid_filter"), result=result)
+    return _ok("open_memory", result)
 
 
 def _dispatch_timeline(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
@@ -541,15 +649,26 @@ def _timeline_description() -> str:
         "Exact raw timeline lookup. When concrete hours or minutes are known, pass time_range.start_at/end_at "
         "as ISO 8601 or local date-time strings; no Unix timestamp calculation is needed. Legacy date fields remain "
         "available for whole-day or coarse-period reads. Conversation view keeps dialogue/events full and returns "
-        "reloadable compact evidence for large operation/material records. If coverage is incomplete, call again with "
-        "only next_cursor. A raw retrieval source id can anchor complete nearby turns."
+        "reloadable compact evidence for large operation/material records; expand one with open_memory(content). If "
+        "coverage is incomplete, call again with only next_cursor. A raw retrieval source id can anchor complete "
+        "nearby turns."
     )
 
 
-def _entry_description() -> str:
+def _browse_description() -> str:
     return (
-        "Expand one raw timeline source_id in the current authorized conversation. Use this when read_timeline "
-        "returned a compact tool, operation, skill, or material evidence block and its full stored content is needed."
+        "Browse a deterministic time catalog of compact memory cards before opening large history. Use this for "
+        "multi-day questions such as what happened from one date to another. It returns every matching card across "
+        "lossless cursor pages plus explicit coverage of summarized, live-unsummarized, and broken-lineage records. "
+        "If page_complete is false, call again with only next_cursor."
+    )
+
+
+def _open_description() -> str:
+    return (
+        "Open one memory_id returned by browse_memory or retrieval. card repeats compact navigation metadata; content "
+        "returns the full summary or raw entry; sources returns exact child episode cards or complete raw logical units. "
+        "Use sources only when the summary is insufficient. If page_complete is false, continue with only next_cursor."
     )
 
 
@@ -680,14 +799,67 @@ def _timeline_schema() -> dict[str, Any]:
     }
 
 
-def _entry_schema() -> dict[str, Any]:
+def _browse_schema() -> dict[str, Any]:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["source_id"],
+        "required": [],
         "properties": {
-            "source_id": {"type": "string", "description": "Raw source_id from timeline/retrieval evidence."},
-            "detail": {"type": "string", "enum": list(ENTRY_DETAILS)},
+            "time_range": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["start_at", "end_at"],
+                "properties": {
+                    "start_at": {"type": "string", "description": "Inclusive ISO/local date-time."},
+                    "end_at": {"type": "string", "description": "Exclusive ISO/local date-time."},
+                },
+            },
+            "date_from": {"type": "string", "description": "Inclusive YYYY-MM-DD."},
+            "date_to": {"type": "string", "description": "Inclusive YYYY-MM-DD; omit for one day."},
+            "node_types": {
+                "type": "array",
+                "items": {"type": "string", "enum": list(MEMORY_NODE_TYPES)},
+                "description": "episodic by default; include semantic only when long-term themes are useful.",
+            },
+            "cross_conversation": {"type": "boolean", "description": "Only true if host policy allows it."},
+            "page_size": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 200,
+                "description": "Complete cards per page; omitted default is 50 and no card is truncated.",
+            },
+            "cursor": {
+                "type": "string",
+                "description": "Opaque next_cursor. Send it alone; selector and page size are embedded.",
+            },
+        },
+    }
+
+
+def _open_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": [],
+        "properties": {
+            "memory_id": {"type": "string", "description": "Memory id from a card or retrieval result."},
+            "view": {"type": "string", "enum": list(MEMORY_VIEWS)},
+            "detail": {
+                "type": "string",
+                "enum": list(ENTRY_DETAILS),
+                "description": "Raw evidence detail; full by default.",
+            },
+            "cross_conversation": {"type": "boolean", "description": "Only true if host policy allows it."},
+            "page_size": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 200,
+                "description": "Complete source units per page; omitted default is 50.",
+            },
+            "cursor": {
+                "type": "string",
+                "description": "Opaque next_cursor for sources view. Send it alone.",
+            },
         },
     }
 

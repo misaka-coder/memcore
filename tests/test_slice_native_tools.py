@@ -54,7 +54,16 @@ class NativeToolSpecs(unittest.TestCase):
 
         names = [tool["function"]["name"] for tool in tools]
 
-        self.assertEqual(names, ["retrieve_for_turn", "read_timeline", "read_entry", "load_material"])
+        self.assertEqual(
+            names,
+            [
+                "retrieve_for_turn",
+                "browse_memory",
+                "open_memory",
+                "read_timeline",
+                "load_material",
+            ],
+        )
         retrieve = tools[0]["function"]
         self.assertTrue(retrieve["strict"])
         self.assertFalse(retrieve["parameters"]["additionalProperties"])
@@ -76,7 +85,19 @@ class NativeToolSpecs(unittest.TestCase):
         )
         self.assertIn("include_explicit", retrieve["parameters"]["properties"])
         self.assertIn("kind_patterns", retrieve["parameters"]["properties"])
-        timeline = tools[1]["function"]
+        browse = tools[1]["function"]
+        self.assertIn("time_range", browse["parameters"]["properties"])
+        self.assertEqual(
+            browse["parameters"]["properties"]["node_types"]["items"]["enum"],
+            ["episodic", "semantic"],
+        )
+        self.assertIn("cursor", browse["parameters"]["properties"])
+        opened = tools[2]["function"]
+        self.assertEqual(
+            opened["parameters"]["properties"]["view"]["enum"],
+            ["card", "content", "sources", None],
+        )
+        timeline = tools[3]["function"]
         self.assertIn("time_range", timeline["parameters"]["properties"])
         self.assertEqual(
             timeline["parameters"]["properties"]["time_range"]["required"],
@@ -87,7 +108,7 @@ class NativeToolSpecs(unittest.TestCase):
             ["conversation", "full", "tools", None],
         )
         self.assertIn("cursor", timeline["parameters"]["properties"])
-        self.assertEqual(tools[2]["function"]["name"], "read_entry")
+        self.assertEqual(tools[4]["function"]["name"], "load_material")
 
     def test_openai_strict_schema_makes_optional_fields_nullable_required(self) -> None:
         tools = build_native_memory_tool_specs(tool_format="openai")
@@ -299,6 +320,43 @@ class NativeToolDispatch(unittest.TestCase):
         self.assertEqual(ok["result"]["message_count"], 1)
         self.assertFalse(bad["ok"])
         self.assertEqual(bad["status"], "invalid_filter")
+        store.close()
+
+    def test_browse_and_open_dispatch_form_a_catalog_to_evidence_loop(self) -> None:
+        mem, store, _index, _emb = _shared_mem()
+        mem.record_user_turn("聊了扬州早茶", timestamp=_ts(2026, 4, 10, 9), source_id="raw-breakfast")
+        store.add_summary(
+            namespace=mem.namespace,
+            record={
+                "summary_id": "episode-breakfast",
+                "timestamp": _ts(2026, 4, 10, 9),
+                "period_start_ts": _ts(2026, 4, 10, 9),
+                "period_end_ts": _ts(2026, 4, 10, 9),
+                "diary_summary": "聊了扬州早茶。",
+                "memory_title": "扬州早茶",
+                "catalog_hint": "可回答早茶话题。",
+                "catalog_schema_version": 1,
+                "source_ids": ["raw-breakfast"],
+            },
+        )
+        store.mark_messages_summarized(["raw-breakfast"], "episode-breakfast")
+
+        catalog = dispatch_native_memory_tool(
+            "browse_memory",
+            {"date_from": "2026-04-10"},
+            mem=mem,
+        )
+        evidence = dispatch_native_memory_tool(
+            "open_memory",
+            {"memory_id": "episode-breakfast", "view": "sources"},
+            mem=mem,
+        )
+
+        self.assertTrue(catalog["ok"])
+        self.assertEqual(catalog["result"]["cards"][0]["memory_id"], "episode-breakfast")
+        self.assertTrue(evidence["ok"])
+        self.assertEqual(evidence["result"]["result"]["source_count"], 1)
+        self.assertIn("聊了扬州早茶", evidence["result"]["text"])
         store.close()
 
     def test_read_timeline_dispatches_exact_time_range_without_unknown_entity(self) -> None:

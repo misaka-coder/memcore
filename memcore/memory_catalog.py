@@ -130,9 +130,10 @@ def count_logical_turns(entries: list[Any]) -> int:
 
 
 def _node_identity(record: Mapping[str, Any]) -> tuple[str, str]:
-    if normalize_text(record.get("summary_id")):
+    entry_type = normalize_text(record.get("entry_type")).lower()
+    if entry_type == "summary" or (not entry_type and normalize_text(record.get("summary_id"))):
         return ("episodic", normalize_text(record.get("summary_id")))
-    if normalize_text(record.get("semantic_id")):
+    if entry_type == "semantic_summary" or (not entry_type and normalize_text(record.get("semantic_id"))):
         return ("semantic", normalize_text(record.get("semantic_id")))
     return ("raw", normalize_text(record.get("source_id")))
 

@@ -9,14 +9,15 @@ memcore 不替宿主写完整人格 prompt,但建议把下面这些规则拼到�
 ```text
 你可以看到 memcore 提供的可见三层记忆,并可使用记忆工具:
 - retrieve_for_turn: 按语义/关键词/metadata 模糊检索长期或历史记忆,并排除当前 prompt 已经可见的记忆与本轮消息。
+- browse_memory: 按确定时间范围浏览紧凑摘要目录；适合“这几天聊了什么”这类宽范围概览，不直接拉取整段群聊原文。
+- open_memory: 按 memory_id 打开卡片、完整摘要正文或精确来源证据；摘要够用就不要继续展开 raw。
 - read_timeline: 按 ISO 或本地 `start_at/end_at` 精确到小时/分钟读取原始对话，无需计算 epoch；也可按旧日期/粗时段读取，或用 retrieve 返回的 raw source_id 读取前后完整轮次。
-- read_entry: 使用时间线返回的 raw source_id 展开一条紧凑工具/材料凭据；只在正文确实影响答案时调用。
 - load_material: 若宿主支持图片/文件,按 file_id 读取当前可用的原文件、OCR、视觉描述、文档 chunks 或清理状态。
 
 把工具当作你的可用能力和结构化信息通道,不是摆设。凡是答案依赖未在当前 prompt 中明确可见的事实、旧记忆、精确时间线、人物归因、承诺、偏好、关系或平台事件时,请主动调用合适的工具求证。一次工具结果不够时,可以根据结果继续调用工具补查,直到足以回答或确认没有明确记录。
 
 当用户提到“昨天/今天/明天/上周/上周二/最近/刚才”等相对时间时,必须结合 prompt 里的日期、星期和时间段锚点理解。
-如果需要精确日期或时间范围,优先调用 read_timeline;如果是偏好、计划、人物关系、长期事实等模糊问题,调用 retrieve_for_turn。
+如果用户问精确时刻、原话或短时间范围,优先调用 read_timeline；如果问多日概览,先调用 browse_memory，再按 card 的 memory_id 调 open_memory(content)，摘要不足才调用 open_memory(sources)；如果是时间未知的偏好、计划、人物关系、长期事实等模糊问题,调用 retrieve_for_turn。
 如果问题依赖“刚才那张图/之前那个文件/PDF 第几页”等材料内容,先从可见 raw 或 `read_timeline` 找到 file_id；需要检索显式材料轨迹时,使用宿主授权的 `retrieve_for_turn(include_explicit=true, kind_patterns=["material.*"])`,再调用 `load_material`。
 非多模态接入里,只有当前轮 provider 请求已经附了原生图片输入,或 load_material/视觉工具返回了同一 file_id 的 OCR、视觉描述、文档 chunks 时,才可以回答材料内容。只有 file_id、filename、derived_status 或 pending 状态不算看到了材料,不要用旧附件或旧工具结果猜。
 人格亲近感不能替代证据;不要为了显得记得、懂得或反应快而跳过工具编造。
@@ -80,21 +81,27 @@ memcore 会把 raw、summary、semantic、timeline 渲染成带日期和星期�
 retrieve_for_turn(query, entity_anchors?, topic_terms?, source_layers?, memory_facets?, about_roles?, time_hint?)
 用于模糊检索。query 始终参与检索；准确且已知的实体使用 entity_anchors，正在询问的未知人物/答案不能先猜成 anchor；动作、关系、属性和主题使用 topic_terms。已知具体时间时可传 time_hint={start_at,end_at}，使用与 read_timeline 相同的本地/ISO 时间规则，并在相似度计算前硬过滤；memory_facets/about_roles 也会在评分前裁剪候选。
 
+browse_memory(time_range? / date_from?, date_to?, node_types?, cursor?)
+用于宽范围历史概览。返回的是完整卡片页和 coverage，不是 Top-K，也不是截断 raw。page_complete=false 时下一次只传 cursor。
+
+open_memory(memory_id?, view?, detail?, cursor?)
+用于打开已选节点。card 只看目录信息；content 看完整摘要或 raw；sources 返回精确子证据并保持完整逻辑单元。sources 分页未完成时下一次只传 cursor。
+
 read_timeline(time_range?, date_from?, date_to?, time_periods?, anchor_source_id?, before_turns?, after_turns?, projection?, page_token_budget?, cursor?)
 time_range 使用 start_at/end_at 做起点包含、终点不包含的精确读取；日期模式读取整天或粗时段；anchor 模式从一条 raw 命中扩展前后完整 turn。conversation/full/tools 决定读取密度。默认不分页；只有调用者显式提供页面预算时才返回 continuation。若 coverage.complete=false，下一次只传 cursor，选择器、投影和预算都已封装其中。
-
-read_entry(source_id, detail?)
-用于展开 read_timeline conversation 视图里的紧凑 raw 凭据。当前会话之外、summary 或 semantic ID 都不会被当作 raw 返回。
 
 load_material(file_id, kind?, preferred_source?, purpose?)
 用于读取宿主保存的图片/附件/PDF 当前可用内容或状态。先从可见 raw、`read_timeline` 或宿主授权的 `retrieve_for_turn(include_explicit=true, kind_patterns=["material.*"])` 找到 file_id,再调用它。
 ```
+
+Python API/dispatcher 仍暂时接受旧 `read_entry(source_id, detail)`，但生成的模型工具列表不再暴露它；对应的新调用是 `open_memory(memory_id=source_id, view="content", detail=...)`。
 
 常见选择:
 
 | 用户意图 | 推荐工具 |
 |---|---|
 | “昨天晚上我说了什么?” | `read_timeline(date_from=昨天日期,time_periods=["night"])` |
+| “7 月 22 日到 25 日都聊了什么?” | `browse_memory(date_from="2026-07-22",date_to="2026-07-25")`，选择相关 card 后 `open_memory(view="content")`；摘要不足才展开 sources |
 | “昨天 11 点到 12 点和我一起来的是谁?” | `read_timeline(time_range={"start_at":"昨天日期 11:00","end_at":"昨天日期 12:00"})`；从原话识别人名，不猜未知 entity anchor |
 | “大约那一小时、和 misaka 同行的人是谁，但还需按关系模糊找?” | `retrieve_for_turn(query="和 misaka 一起来玩的另一个人", entity_anchors=["misaka"], topic_terms=["同行","一起来玩"], time_hint={"start_at":"日期 11:00","end_at":"日期 12:00"})`；不填写未知答案的人名 |
 | “我之前是不是说过喜欢可乐?” | `retrieve_for_turn(query="喜欢 可乐", entity_anchors=["可乐"], memory_facets=["preference"], about_roles=["user"])` |

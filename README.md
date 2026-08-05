@@ -7,7 +7,7 @@
 > 压缩。对外能力地图见 [`docs/public_capabilities_v1.md`](docs/public_capabilities_v1.md)。
 
 - **写侧**:working(原始对话)→ episodic(阶段摘要)→ semantic(长期事实)三层压缩 + 强化合并。
-- **读侧**:显式 `retrieve` / `read_timeline` 核心读工具 + 可选原生 `load_material` 分发 + 向量/关键词混合检索 + RRF。raw 先于摘要和长期记忆占用结果位；facet/role 保持前置过滤，只有准确实体导致候选为零时才单独放宽实体条件，并返回可解释 diagnostics。读侧不再追加一次 LLM verifier 调用。
+- **读侧**:显式 `retrieve` / `browse_memory` / `open_memory` / `read_timeline` 互补工具 + 可选原生 `load_material` 分发 + 向量/关键词混合检索 + RRF。raw 先于摘要和长期记忆占用结果位；facet/role 保持前置过滤，只有准确实体导致候选为零时才单独放宽实体条件，并返回可解释 diagnostics。读侧不再追加一次 LLM verifier 调用。
 - **贯穿**:时间锚点(带时区)、命名空间硬隔离、可选 flavor 层、提示词注入防线。
 
 实现说明按以下公开文档维护：[`usage_flow_v1.md`](docs/usage_flow_v1.md)、
@@ -31,7 +31,8 @@
 - **切片 5(读侧)✅**:`retrieval` —— 显式 retrieve 工具 → metadata 前置过滤 → raw/derived 分池混合检索 + RRF → 确定性分数与关系完整性检查；原始 query 始终保留，`entity_anchors` 高权重，`topic_terms` 只作普通辅助；`time_hint.start_at/end_at` 复用时间线的本地/ISO 解析并在评分前执行起点包含、终点不包含的硬过滤，未知答案不需要也不允许伪装成实体锚点；
   `build_prompt_context` 只拼可见三层,是否检索交给聊天模型调用工具决定。**读写侧全闭环。**
 - **时间线工具 ✅**:`read_timeline(...)` 支持无需 epoch 的 `time_range.start_at/end_at` 小时/分钟级读取，旧日期/时间段字段归一到同一 timestamp 路径，也支持以 raw `source_id` 为锚点读取前后完整 turn；默认 `conversation` 投影保留完整对话/事件并把大工具与材料轨迹变成可展开凭据，`full/tools` 可显式切换。默认无隐藏结果上限；调用者显式提供页面预算时才按完整 turn 分页并返回可校验 `next_cursor`。
-- **精确条目展开 ✅**:`read_entry(source_id, detail)` 只读取当前授权会话里的 raw entry，可从紧凑凭据恢复完整工具结果；summary/semantic、越权 ID、密钥和本地路径不会伪装成可用正文。
+- **记忆目录导航 ✅**:`browse_memory(...)` 按确定性时间范围返回有界卡片目录与 raw 覆盖状态；`open_memory(memory_id, view=card/content/sources)` 可从摘要正文继续展开精确子摘要或完整 raw 逻辑单元。分页使用 namespace-safe 稳定键 cursor，不截断卡片/turn，缺失 lineage 明确返回 `partial`。
+- **精确条目展开 ✅**:`read_entry(source_id, detail)` 是 `open_memory(view="content")` 的 current-conversation raw-only 兼容适配；summary/semantic、越权 ID、密钥和本地路径不会伪装成 raw 正文。
 - **embedding 三条路 + 自检 ✅**:`HuggingFaceEmbeddingProvider`(本地 BGE-M3)/ `HTTPEmbeddingProvider`(OpenAI 兼容 API,纯 stdlib 零依赖)/ `HashedEmbeddingProvider`(仅测试)。
   `EmbeddingProvider` 同时提供 `embed_query/embed_queries` 与
   `embed_document/embed_documents`；对称模型默认复用旧 `embed_text(s)`，Jina 等非对称模型可分别实现 query/passage，内存与 Chroma 索引会走正确通道。
@@ -72,7 +73,7 @@
 独立可运行示例见 `examples/non_native_operation_timeline.py`。
 
 原生 tool calling 接入可用 `build_native_memory_tool_specs(...)` 生成工具 schema,再用
-`dispatch_native_memory_tool(...)` 分发 `retrieve_for_turn` / `read_timeline` / `read_entry` / `load_material`。
+`dispatch_native_memory_tool(...)` 分发 `retrieve_for_turn` / `browse_memory` / `open_memory` / `read_timeline` / `load_material`。旧 `read_entry` 只保留 Python/dispatcher 兼容适配，不再进入模型可见的生成工具列表；新接入统一使用 `open_memory`。
 `load_material` 只调用宿主传入的 `material_loader` 回调,用于读取 file_store/derived_store 中的原图、
 OCR、视觉描述、文档 chunks 或当前清理状态;memcore 不保存文件本体。
 非多模态接入不要让最终聊天模型和视觉/OCR 解析赛跑:要么先等宿主 derived_store 写入同一

@@ -1,6 +1,6 @@
 # Memory Catalog & Evidence Navigation Design V1
 
-> Status: approved implementation specification; Slice A implemented locally, later slices pending  
+> Status: approved implementation specification; Slice A-B implemented locally, later slices pending
 > Date: 2026-08-05  
 > Scope: MemCore package; host products only provide identity, authorization, prompt assembly,
 > and channel delivery
@@ -618,7 +618,7 @@ Current implementation status:
 
 ```text
 Slice A  implemented locally and covered by package regression
-Slice B  pending
+Slice B  implemented locally
 Slice C  pending
 Slice D  pending
 Slice E  pending

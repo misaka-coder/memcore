@@ -78,11 +78,13 @@ V2 使用实际 provider projection 的 token 预算规划完整 turn。这是�
 压缩策略，不存在 count/flat 备选路径。宿主可注入真实 tokenizer；没有 counter
 时仍可压缩，但结果明确标为 `token_count_quality=estimated`。
 
-### 4. 两种互补的记忆读取工具
+### 4. 互补的记忆读取与证据导航工具
 
 - `retrieve_for_turn`：面向偏好、计划、关系、人物、主题和长期事实的模糊检索；支持用本地/ISO `time_hint.start_at/end_at` 在评分前硬过滤，并允许只凭已知人物、关系和时间发现未知答案；
+- `browse_memory`：面向多日/宽范围概览，按 SQLite 时间重叠返回小型 episodic/semantic 卡片，而不是把整段群聊 raw 塞回模型；结果同时报告已摘要、未摘要 live tail、broken lineage 和无损 cursor；
+- `open_memory`：统一打开 raw/episodic/semantic ID；`card` 看导航信息，`content` 看完整节点正文，`sources` 沿精确 lineage 返回子摘要卡或完整 raw 逻辑单元；
 - `read_timeline`：既可按 `start_at/end_at` 精确到小时/分钟读取，也可按旧日期/粗时段读取，或把 raw 检索命中扩成前后完整 turn；`conversation/full/tools` 决定证据密度，显式页面预算才会产生完整单元 cursor；
-- `read_entry`：按当前会话 raw source_id 展开完整或紧凑条目；
+- `read_entry`：兼容期 raw-only 薄适配，新接入使用 `open_memory(view="content")`；
 - `load_material`：只负责调用宿主提供的材料 loader，不保存文件本体；
 - 普通检索只接纳 `retrieval_visibility=default` 的记录；没有有效 annotation 的
   standalone 事件、operation 和 material 轨迹默认是 `explicit`，不会混入普通候选；

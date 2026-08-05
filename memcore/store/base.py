@@ -223,6 +223,16 @@ class MemoryStore(ABC):
         """Namespace-safe lookup for a raw/summary/semantic retrieval candidate."""
         raise NotImplementedError
 
+    def get_entries_by_source_ids(
+        self,
+        *,
+        namespace: Namespace,
+        source_ids: tuple[str, ...],
+        cross_conversation: bool = False,
+    ) -> list[TimelineEntry]:
+        """Read exact raw lineage children in requested-id order within hard scope."""
+        raise NotImplementedError
+
     def resolve_lineage_source_ids(
         self,
         *,
@@ -312,6 +322,29 @@ class MemoryStore(ABC):
         include_explicit: bool = False,
     ) -> list[dict[str, Any]]:
         """Return every overlapping episodic summary in deterministic time order."""
+        raise NotImplementedError
+
+    def get_semantic_summaries_by_time_range(
+        self,
+        *,
+        namespace: Namespace,
+        start_ts: int,
+        end_ts: int,
+        cross_conversation: bool = False,
+        include_explicit: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Return every overlapping semantic summary in deterministic time order."""
+        raise NotImplementedError
+
+    def get_catalog_raw_coverage(
+        self,
+        *,
+        namespace: Namespace,
+        start_ts: int,
+        end_ts: int,
+        cross_conversation: bool = False,
+    ) -> dict[str, Any]:
+        """Return compact accounting for covered, live, and broken raw lineage."""
         raise NotImplementedError
 
     @abstractmethod

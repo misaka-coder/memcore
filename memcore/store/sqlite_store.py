@@ -1976,6 +1976,7 @@ class SQLiteMemoryStore(MemoryStore):
             with_conversation=not bool(cross_conversation),
         )
         with self._lock:
+            matches: list[dict[str, Any]] = []
             for table, id_col in (
                 ("messages", "source_id"),
                 ("summaries", "summary_id"),
@@ -1986,8 +1987,33 @@ class SQLiteMemoryStore(MemoryStore):
                     [*params, sid],
                 ).fetchone()
                 if row is not None:
-                    return self._row_to_record(row, table)
-        return None
+                    matches.append(self._row_to_record(row, table))
+            if len(matches) > 1:
+                raise SchemaError("ambiguous_memory_id")
+            return matches[0] if matches else None
+
+    def get_entries_by_source_ids(
+        self,
+        *,
+        namespace: Namespace,
+        source_ids: tuple[str, ...],
+        cross_conversation: bool = False,
+    ) -> list[TimelineEntry]:
+        requested = tuple(dict.fromkeys(str(item or "").strip() for item in source_ids if str(item or "").strip()))
+        if not requested:
+            return []
+        scope_clause, params = self._scope_clause(
+            namespace,
+            with_conversation=not bool(cross_conversation),
+        )
+        placeholders = ",".join("?" for _ in requested)
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT * FROM messages WHERE {scope_clause} AND source_id IN ({placeholders})",
+                [*params, *requested],
+            ).fetchall()
+        by_id = {str(row["source_id"]): TimelineEntry.from_record(self._row_to_record(row, "messages")) for row in rows}
+        return [by_id[source_id] for source_id in requested if source_id in by_id]
 
     def resolve_lineage_source_ids(
         self,
@@ -2412,6 +2438,115 @@ class SQLiteMemoryStore(MemoryStore):
                 [*params, resolved_start, resolved_end],
             ).fetchall()
         return [self._row_to_record(row, "summaries") for row in rows]
+
+    def get_semantic_summaries_by_time_range(
+        self,
+        *,
+        namespace: Namespace,
+        start_ts: int,
+        end_ts: int,
+        cross_conversation: bool = False,
+        include_explicit: bool = False,
+    ) -> list[dict[str, Any]]:
+        if isinstance(start_ts, bool) or isinstance(end_ts, bool):
+            raise ValueError("catalog_time_range_requires_integer_timestamps")
+        try:
+            resolved_start = int(start_ts)
+            resolved_end = int(end_ts)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("catalog_time_range_requires_integer_timestamps") from exc
+        if resolved_start < 0 or resolved_end <= resolved_start:
+            raise ValueError("catalog_time_range_invalid")
+        scope_clause, params = self._scope_clause(
+            namespace,
+            with_conversation=not bool(cross_conversation),
+        )
+        visibility_clause = "" if include_explicit else " AND retrieval_visibility = 'default'"
+        effective_start = "CASE WHEN period_start_ts > 0 THEN period_start_ts ELSE timestamp END"
+        effective_end = "CASE WHEN period_end_ts > 0 THEN period_end_ts ELSE timestamp END"
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT * FROM semantic_summaries
+                WHERE {scope_clause}
+                  {visibility_clause}
+                  AND {effective_end} >= ?
+                  AND {effective_start} < ?
+                ORDER BY {effective_start} ASC, timestamp ASC, semantic_id ASC
+                """,
+                [*params, resolved_start, resolved_end],
+            ).fetchall()
+        return [self._row_to_record(row, "semantic_summaries") for row in rows]
+
+    def get_catalog_raw_coverage(
+        self,
+        *,
+        namespace: Namespace,
+        start_ts: int,
+        end_ts: int,
+        cross_conversation: bool = False,
+    ) -> dict[str, Any]:
+        if isinstance(start_ts, bool) or isinstance(end_ts, bool):
+            raise ValueError("catalog_time_range_requires_integer_timestamps")
+        resolved_start = int(start_ts)
+        resolved_end = int(end_ts)
+        if resolved_start < 0 or resolved_end <= resolved_start:
+            raise ValueError("catalog_time_range_invalid")
+        scope_clause, params = self._scope_clause(
+            namespace,
+            with_conversation=not bool(cross_conversation),
+        )
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT conversation_id,
+                       CASE
+                         WHEN is_summarized = 0 THEN 'live'
+                         WHEN summary_id != '' AND EXISTS (
+                           SELECT 1 FROM summaries s
+                           WHERE s.summary_id = messages.summary_id
+                             AND s.tenant_id = messages.tenant_id
+                             AND s.user_id = messages.user_id
+                             AND s.domain_id = messages.domain_id
+                             AND s.conversation_id = messages.conversation_id
+                         ) THEN 'covered'
+                         ELSE 'gap'
+                       END AS coverage_state,
+                       MIN(timestamp) AS start_ts,
+                       MAX(timestamp) + 1 AS end_ts,
+                       COUNT(*) AS source_count
+                FROM messages
+                WHERE {scope_clause} AND timestamp >= ? AND timestamp < ?
+                GROUP BY conversation_id, coverage_state
+                ORDER BY start_ts, conversation_id, coverage_state
+                """,
+                [*params, resolved_start, resolved_end],
+            ).fetchall()
+        result: dict[str, Any] = {
+            "total_source_count": 0,
+            "covered_source_count": 0,
+            "live_source_count": 0,
+            "gap_source_count": 0,
+            "live_raw_intervals": [],
+            "gap_intervals": [],
+        }
+        for row in rows:
+            state = str(row["coverage_state"])
+            count = int(row["source_count"] or 0)
+            result["total_source_count"] += count
+            result[f"{state}_source_count"] += count
+            if state in {"live", "gap"}:
+                target = "live_raw_intervals" if state == "live" else "gap_intervals"
+                result[target].append(
+                    {
+                        "conversation_id": str(row["conversation_id"] or ""),
+                        "start_ts": max(resolved_start, int(row["start_ts"] or resolved_start)),
+                        "end_ts": min(resolved_end, int(row["end_ts"] or resolved_end)),
+                        "source_count": count,
+                        "interval_quality": "activity_envelope",
+                    }
+                )
+        return result
 
     def get_recent_semantic_summaries(
         self, *, namespace: Namespace, limit: int | None = None, cross_conversation: bool = False

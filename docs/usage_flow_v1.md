@@ -163,8 +163,10 @@ Expose memory tools to the final chat model:
   MemCore normalizes it with the same timezone rules as `read_timeline` and
   filters candidates before vector/BM25 ranking.
 - `read_timeline(time_range={"start_at": ..., "end_at": ...}, projection="conversation")` for exact hour/minute questions without calculating epoch; legacy date fields remain available for whole-day/coarse-period reads, or use it for expanding a raw retrieval `source_id` into complete nearby turns. The default view keeps dialogue/events full and returns reloadable compact evidence for operations/materials.
+- `browse_memory(date_from=..., date_to=...)` for broad multi-day overviews. It returns compact chronological cards plus stored-history coverage instead of loading the whole raw range. Continue an incomplete page with only `cursor`.
+- `open_memory(memory_id=..., view="content")` opens one selected raw/episodic/semantic node; `view="sources"` follows exact lineage to child episode cards or complete raw logical units. Use sources only when summary content is insufficient.
 - If the caller explicitly supplied a page token budget and `coverage.complete=false`, continue with `read_timeline(cursor=coverage.next_cursor)` only. Omitted/zero budget means MemCore performs no hidden result pagination.
-- `read_entry(source_id=..., detail="full")` expands one compact raw evidence block in the current authorized conversation.
+- `read_entry(source_id=..., detail="full")` is a raw-only compatibility adapter. New integrations use `open_memory(view="content")`.
 
 If the host supports images/files, also expose `load_material(file_id, kind?,
 preferred_source?, purpose?)` as a provider-native tool backed by host
@@ -311,7 +313,7 @@ When an AI agent integrates `memcore`, follow this order:
 1. Use `MemorySystem`; do not bypass it to write private internals.
 2. Record the user turn before building prompt context.
 3. Render visible memory and add it to the final chat model prompt.
-4. Expose `retrieve_for_turn` and `read_timeline` as model tools.
+4. Expose `retrieve_for_turn`, `browse_memory`, `open_memory`, and `read_timeline` as model tools.
 5. Add the model prompt guidance and optional JSON contract.
 6. Parse the final reply before storing assistant speech.
 7. Commit parsed `memory_metadata` to the host-selected annotation target.
