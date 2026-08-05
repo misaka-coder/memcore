@@ -1924,7 +1924,7 @@ class MemorySystem:
                         cross_conversation=cross_conversation,
                     )
                 )
-            cards = [build_memory_card(record) for record in records]
+            cards = [build_memory_card(record, timezone=self.timezone) for record in records]
             cards.sort(
                 key=lambda card: (
                     int(card.get("period_start_ts") or 0),
@@ -2199,7 +2199,7 @@ class MemorySystem:
                 "result": None,
             }
 
-        card = build_memory_card(record)
+        card = build_memory_card(record, timezone=self.timezone)
         node_type = str(card["node_type"])
         base = {
             "memory_id": memory_id,
@@ -2285,7 +2285,7 @@ class MemorySystem:
             ]
             found_ids = {str(child.get("summary_id") or "") for child in valid_records}
             missing = [source_id for source_id in child_ids if source_id not in found_ids]
-            cards = [build_memory_card(child) for child in valid_records]
+            cards = [build_memory_card(child, timezone=self.timezone) for child in valid_records]
             cards.sort(
                 key=lambda child: (
                     int(child.get("period_start_ts") or 0),

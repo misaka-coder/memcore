@@ -140,15 +140,22 @@ The structured/native result includes `matches`, rendered `snippets`, `count`,
 `lineage_scope`, entity-relaxation diagnostics, token usage, and
 omission/truncation state. `navigation` pairs each returned position with the
 reloadable top-level ID: summary layers expose `memory_id`; raw layers expose
-`source_id` plus available turn/time anchors. It never copies a summary's
-descendant lineage.
+`source_id` plus available turn/time anchors. Every match and navigation item
+also carries a `time` object with local ISO timestamps (`at` for raw,
+`start_at/end_at` for summary layers). Candidate counts describe the
+pre-ranking pools; the returned matches are the top raw-first ranked results,
+not a claim that no other stored record exists. Navigation never copies a
+summary's descendant lineage.
 
 The intended loop is explicit:
 
 - answer immediately when the rendered snippet is sufficient;
 - use `open_memory(memory_id=..., view="content")` for the full summary;
-- use `open_memory(memory_id=..., view="sources")` when the user asks for
-  original wording/evidence or the summary is insufficient;
+- when a summary topic is correct but one detail is missing, use
+  `retrieve_for_turn(within_memory_id=..., source_layers=["raw"])` to search
+  only that node's exact source lineage;
+- use `open_memory(memory_id=..., view="sources")` when the complete source
+  tree or original evidence is actually required;
 - use a raw `source_id` with `read_timeline` only when adjacent turns are
   missing;
 - do not issue synonymous retrievals after a useful hit. Retrieve again only
@@ -206,6 +213,10 @@ cards[]
 matched_card_count / returned_card_count / remaining_card_count
 page_complete / next_cursor
 ```
+
+Cards returned by the `MemorySystem` facade include both epoch
+`period_start_ts/period_end_ts` and model-readable local ISO
+`period_start_at/period_end_at` values.
 
 `coverage.complete=true` means every stored raw source in the requested range
 is accounted for. It does not claim the host was online or recording every

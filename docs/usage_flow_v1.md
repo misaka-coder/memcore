@@ -163,7 +163,11 @@ Expose memory tools to the final chat model:
   topics, and long-term facts. When exact time is useful to narrow a fuzzy
   event search, pass local/ISO `time_hint={"start_at": ..., "end_at": ...}`;
   MemCore normalizes it with the same timezone rules as `read_timeline` and
-  filters candidates before vector/BM25 ranking.
+  filters candidates before vector/BM25 ranking. A selected summary/card ID can
+  be passed as `within_memory_id` with `source_layers=["raw"]` to search one
+  exact lineage for a missing detail. Results expose layer, reloadable ID,
+  local ISO time, candidate counts, and scope so the model can choose the next
+  tool without repeatedly issuing synonymous global searches.
 - `read_timeline(time_range={"start_at": ..., "end_at": ...}, projection="conversation")` for exact hour/minute questions without calculating epoch; legacy date fields remain available for whole-day/coarse-period reads, or use it for expanding a raw retrieval `source_id` into complete nearby turns. The default view keeps dialogue/events full and returns reloadable compact evidence for operations/materials.
 - `browse_memory(date_from=..., date_to=...)` for broad multi-day overviews. It returns compact chronological cards plus stored-history coverage instead of loading the whole raw range. Continue an incomplete page with only `cursor`.
 - `open_memory(memory_id=..., view="content")` opens one selected raw/episodic/semantic node; `view="sources"` follows exact lineage to child episode cards or complete raw logical units. Raw sources default to `projection="conversation"`, so dialogue/events remain complete while large operation/Skill/tool/material bodies become compact records containing type, call/result linkage, status, `source_id`, and small retained anchors. Use `projection="full"` or `"tools"`, or open one compact `source_id` as `content`, only when that body is actually needed. Use sources only when summary content is insufficient.

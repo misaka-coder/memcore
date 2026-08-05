@@ -59,7 +59,7 @@ def normalize_participant_refs(value: Any) -> list[dict[str, str]]:
     return [{"actor_id": actor_id, "display_name": names[actor_id]} for actor_id in ordered_ids]
 
 
-def build_memory_card(record: Mapping[str, Any]) -> dict[str, Any]:
+def build_memory_card(record: Mapping[str, Any], *, timezone: str = "") -> dict[str, Any]:
     """Project one raw/episodic/semantic record into a compact navigation card."""
 
     node_type, memory_id = _node_identity(record)
@@ -75,7 +75,9 @@ def build_memory_card(record: Mapping[str, Any]) -> dict[str, Any]:
     if source_entry_count == 0 and node_type in {"episodic", "semantic"}:
         source_entry_count = len(source_ids)
     source_turn_count = _non_negative_int(record.get("source_turn_count"))
-    return {
+    period_start_ts = _effective_timestamp(record.get("period_start_ts"), record.get("timestamp"))
+    period_end_ts = _effective_timestamp(record.get("period_end_ts"), record.get("timestamp"))
+    card = {
         "memory_id": memory_id,
         "node_type": node_type,
         "memory_title": title,
@@ -84,8 +86,8 @@ def build_memory_card(record: Mapping[str, Any]) -> dict[str, Any]:
             _compact_text(item, limit=_MAX_HEADING_CHARS)
             for item in _unique_strings(record.get("topic_headings"))[:_MAX_HEADINGS]
         ],
-        "period_start_ts": _effective_timestamp(record.get("period_start_ts"), record.get("timestamp")),
-        "period_end_ts": _effective_timestamp(record.get("period_end_ts"), record.get("timestamp")),
+        "period_start_ts": period_start_ts,
+        "period_end_ts": period_end_ts,
         "participant_refs": normalize_participant_refs(record.get("participant_refs")),
         "source_turn_count": source_turn_count,
         "source_entry_count": source_entry_count,
@@ -94,6 +96,12 @@ def build_memory_card(record: Mapping[str, Any]) -> dict[str, Any]:
         "has_content": _has_content(record, node_type=node_type),
         "has_sources": bool(source_ids),
     }
+    if str(timezone or "").strip():
+        from .timeline_read import timestamp_iso
+
+        card["period_start_at"] = timestamp_iso(period_start_ts, timezone=timezone)
+        card["period_end_at"] = timestamp_iso(period_end_ts, timezone=timezone)
+    return card
 
 
 def collect_participant_refs(entries: list[Any]) -> list[dict[str, str]]:

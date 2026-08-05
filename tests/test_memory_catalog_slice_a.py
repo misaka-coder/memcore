@@ -76,6 +76,20 @@ class CatalogProjectionTests(unittest.TestCase):
         self.assertEqual(fallback["catalog_hint"], "用户复习高数")
         self.assertEqual(fallback["source_entry_count"], 1)
 
+        timed = build_memory_card(
+            {
+                "summary_id": "episode-timed",
+                "timestamp": 200,
+                "period_start_ts": 100,
+                "period_end_ts": 200,
+                "diary_summary": "带时间的摘要",
+            },
+            timezone="Asia/Shanghai",
+        )
+        self.assertEqual(timed["period_start_at"], "1970-01-01T08:01:40+08:00")
+        self.assertEqual(timed["period_end_at"], "1970-01-01T08:03:20+08:00")
+        self.assertNotIn("period_start_at", generated)
+
 
 class CatalogCompactionTests(unittest.TestCase):
     def test_new_summary_commits_catalog_and_source_metrics_atomically(self) -> None:

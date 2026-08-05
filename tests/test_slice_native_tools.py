@@ -250,6 +250,12 @@ class NativeToolDispatch(unittest.TestCase):
                             timestamp=1785727000,
                             rendered_text="summary snippet",
                             lineage=("raw-a", "raw-b"),
+                            time={
+                                "start_ts": 1785727000,
+                                "end_ts": 1785727600,
+                                "start_at": "2026-08-03T11:16:40+08:00",
+                                "end_at": "2026-08-03T11:26:40+08:00",
+                            },
                             **common,
                         ),
                         RetrievalMatch(
@@ -259,6 +265,10 @@ class NativeToolDispatch(unittest.TestCase):
                             layer="raw",
                             timestamp=1785727800,
                             rendered_text="raw snippet",
+                            time={
+                                "timestamp": 1785727800,
+                                "at": "2026-08-03T11:30:00+08:00",
+                            },
                             **common,
                         ),
                     ),
@@ -274,15 +284,33 @@ class NativeToolDispatch(unittest.TestCase):
         self.assertEqual(
             out["result"]["navigation"],
             [
-                {"match_index": 1, "layer": "summary", "memory_id": "episode-fable"},
+                {
+                    "match_index": 1,
+                    "layer": "summary",
+                    "memory_id": "episode-fable",
+                    "time": {
+                        "start_ts": 1785727000,
+                        "end_ts": 1785727600,
+                        "start_at": "2026-08-03T11:16:40+08:00",
+                        "end_at": "2026-08-03T11:26:40+08:00",
+                    },
+                },
                 {
                     "match_index": 2,
                     "layer": "raw",
                     "source_id": "raw-c",
                     "turn_id": "turn-c",
                     "timestamp": 1785727800,
+                    "time": {
+                        "timestamp": 1785727800,
+                        "at": "2026-08-03T11:30:00+08:00",
+                    },
                 },
             ],
+        )
+        self.assertIn(
+            "retrieve_within_memory_id_for_specific_raw_detail",
+            out["result"]["suggested_next_actions"],
         )
         self.assertIn("open_memory_sources_for_original_evidence", out["result"]["suggested_next_actions"])
         self.assertIn(

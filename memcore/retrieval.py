@@ -21,10 +21,16 @@ from .index.metadata_filters import (
 )
 from .index.rrf import fuse_with_rrf
 from .namespace import Namespace
-from .rendering import render_raw_snippet, render_semantic_snippet, render_summary_snippet
+from .rendering import (
+    record_time_range,
+    render_raw_snippet,
+    render_semantic_snippet,
+    render_summary_snippet,
+)
 from .store.base import LineageClosure, MemoryStore
 from .schema import ABOUT_ROLES, MEMORY_FACETS
 from .timeline import TimelineEntry, TurnRole
+from .timeline_read import timestamp_iso
 from .time_anchor import normalize_retrieval_time_hint
 from .token_counter import TokenCounter
 
@@ -104,6 +110,7 @@ class RetrievalMatch:
     rendered_text: str
     lineage: tuple[str, ...] = ()
     truncated: bool = False
+    time: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -123,6 +130,7 @@ class RetrievalMatch:
             "rendered_text": self.rendered_text,
             "lineage": list(self.lineage),
             "truncated": self.truncated,
+            "time": dict(self.time),
         }
 
 
@@ -185,6 +193,8 @@ class RetrievalResult:
                     item["turn_id"] = match.turn_id
                 if match.timestamp > 0:
                     item["timestamp"] = match.timestamp
+            if match.time:
+                item["time"] = dict(match.time)
             items.append(item)
         return items
 
@@ -198,6 +208,7 @@ class RetrievalResult:
             actions.extend(
                 (
                     "open_memory_content_for_full_summary",
+                    "retrieve_within_memory_id_for_specific_raw_detail",
                     "open_memory_sources_for_original_evidence",
                 )
             )
@@ -954,6 +965,7 @@ class ReadPipeline:
             rendered = render_raw_snippet([record], tz=self.timezone)
             semantic_text = str(record.get("semantic_text") or record.get("content") or "")
             lineage = ()
+        time_metadata = self._record_time_metadata(record=record, layer=layer)
         return RetrievalMatch(
             source_ids=(source_id,),
             source_id=source_id,
@@ -968,7 +980,28 @@ class ReadPipeline:
             semantic_text=semantic_text,
             rendered_text=rendered,
             lineage=lineage,
+            time=time_metadata,
         )
+
+    def _record_time_metadata(self, *, record: Mapping[str, Any], layer: str) -> dict[str, Any]:
+        if layer == "raw":
+            timestamp = int(record.get("timestamp") or 0)
+            if timestamp <= 0:
+                return {}
+            return {
+                "timestamp": timestamp,
+                "at": timestamp_iso(timestamp, timezone=self.timezone),
+            }
+
+        start_ts, end_ts = record_time_range(dict(record))
+        metadata: dict[str, Any] = {}
+        if start_ts is not None:
+            metadata["start_ts"] = start_ts
+            metadata["start_at"] = timestamp_iso(start_ts, timezone=self.timezone)
+        if end_ts is not None:
+            metadata["end_ts"] = end_ts
+            metadata["end_at"] = timestamp_iso(end_ts, timezone=self.timezone)
+        return metadata
 
     def _expand_matches(
         self,

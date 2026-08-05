@@ -734,15 +734,20 @@ def _retrieve_description() -> str:
     return (
         "Fuzzy memory search for preferences, plans, people, old facts, relationships, "
         "promises, and material/tool trace anchors. Excludes visible context for the current turn. "
-        "Pass only entities already known from the question or context; a person or answer being asked for is not an "
-        "entity anchor and must not be guessed. When a concrete local/ISO time is known, use time_hint.start_at/end_at; "
+        "Pass entity_anchors only for entities already known from the question or context; a person or answer being "
+        "asked for is not an entity anchor and must not be guessed. When a concrete local/ISO time is known, use time_hint.start_at/end_at; "
         "time is hard-filtered before semantic or keyword ranking. Use include_explicit with a precise kind_patterns "
-        "value only when tool, event, skill, or material records are needed. The result includes navigation IDs: if "
-        "a snippet is sufficient, answer immediately; for a summary hit that needs its full narrative use "
-        "open_memory(content), and when the user asks for original wording/evidence use open_memory(sources). A raw "
-        "source_id can be passed to read_timeline only when adjacent turns are missing. Do not repeatedly call this "
-        "tool with synonymous queries after a useful hit; retrieve again only when a new known entity, time clue, or "
-        "materially different search target becomes available."
+        "value only when tool, event, skill, or material records are needed. Results are the top raw-first ranked "
+        "matches rather than a claim that all memory was returned; each match includes its layer, reloadable ID, "
+        "human-readable time, candidate diagnostics, and lineage scope. If a snippet is sufficient, answer "
+        "immediately. For a summary hit, use open_memory(content) for its full narrative; when the topic is right but "
+        "only one detail is missing, call this tool again with that summary memory_id as within_memory_id and "
+        "source_layers=[raw] to search only its exact source lineage. Use open_memory(sources) only when the complete "
+        "source tree or original evidence is needed. A raw source_id can be passed to read_timeline when adjacent "
+        "turns are missing, while a known exact time should go directly to read_timeline. Use browse_memory for broad "
+        "multi-day overviews. Do not repeatedly call this tool with synonymous queries after a useful hit; retrieve "
+        "again only for a scoped detail or when a new known entity, time clue, or materially different search target "
+        "becomes available."
     )
 
 

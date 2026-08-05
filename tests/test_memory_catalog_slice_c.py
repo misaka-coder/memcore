@@ -134,6 +134,14 @@ class LineageScopedRetrievalTests(unittest.TestCase):
         self.assertIn("李嘉图", "\n".join(result.rendered_texts))
         self.assertNotIn("张三", "\n".join(result.rendered_texts))
         self.assertEqual(
+            result.matches[0].time,
+            {
+                "timestamp": _ts(2, 9),
+                "at": "2026-08-02T09:00:00+08:00",
+            },
+        )
+        self.assertEqual(result.navigation[0]["time"], result.matches[0].time)
+        self.assertEqual(
             result.lineage_scope,
             {
                 "status": "resolved",
@@ -352,7 +360,8 @@ class LineageScopedRetrievalTests(unittest.TestCase):
             text="早茶同行的人叫李嘉图。",
             timestamp=_ts(2, 9),
         )
-        schema = build_native_memory_tool_specs(tool_format="plain")[0]["parameters"]
+        tool_spec = build_native_memory_tool_specs(tool_format="plain")[0]
+        schema = tool_spec["parameters"]
 
         result = dispatch_native_memory_tool(
             "retrieve_for_turn",
@@ -372,6 +381,8 @@ class LineageScopedRetrievalTests(unittest.TestCase):
         )
 
         self.assertIn("within_memory_id", schema["properties"])
+        self.assertIn("within_memory_id", tool_spec["description"])
+        self.assertIn("top raw-first ranked", tool_spec["description"])
         self.assertTrue(result["ok"])
         self.assertEqual(result["result"]["lineage_scope"]["within_memory_id"], "target-episode")
         self.assertIn("李嘉图", "\n".join(result["result"]["snippets"]))
