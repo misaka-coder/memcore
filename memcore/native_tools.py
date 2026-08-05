@@ -257,12 +257,16 @@ def _dispatch_browse(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
 
 
 def _dispatch_open(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
-    unknown = _unknown_keys(args, {"memory_id", "view", "detail", "cross_conversation", "page_size", "cursor"})
+    unknown = _unknown_keys(
+        args,
+        {"memory_id", "view", "detail", "projection", "cross_conversation", "page_size", "cursor"},
+    )
     if unknown:
         return _err("open_memory", "invalid_arguments", f"unknown_arguments:{unknown}")
     memory_id = _optional_string(args.get("memory_id"))
     view = _optional_string(args.get("view")) or "card"
     detail = _optional_string(args.get("detail")) or "full"
+    projection = _optional_string(args.get("projection")) or "conversation"
     cross = args.get("cross_conversation", False)
     if cross is None:
         cross = False
@@ -280,6 +284,7 @@ def _dispatch_open(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
             bool(memory_id),
             args.get("view") is not None,
             args.get("detail") is not None,
+            args.get("projection") is not None,
             bool(cross),
             args.get("page_size") is not None,
         )
@@ -291,17 +296,51 @@ def _dispatch_open(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
         return _err("open_memory", "invalid_arguments", f"invalid_memory_view:{view}")
     if detail not in ENTRY_DETAILS:
         return _err("open_memory", "invalid_arguments", f"invalid_memory_detail:{detail}")
+    if projection not in TIMELINE_PROJECTIONS:
+        return _err("open_memory", "invalid_arguments", f"invalid_memory_projection:{projection}")
     result = mem.open_memory(
         memory_id=memory_id,
         view=view,
         detail=detail,
+        projection=projection,
         cross_conversation=cross,
         page_size=page_size,
         cursor=cursor,
     )
     if result.get("status") == "invalid_filter":
         return _err("open_memory", "invalid_filter", str(result.get("reason") or "invalid_filter"), result=result)
-    return _ok("open_memory", result)
+    return _ok("open_memory", _project_open_result_for_model(result))
+
+
+def _project_open_result_for_model(result: dict[str, Any]) -> dict[str, Any]:
+    """Keep one evidence body in native tool results while preserving navigation metadata."""
+
+    model_result = dict(result)
+    payload = result.get("result")
+    if not isinstance(payload, dict):
+        return model_result
+
+    view = str(result.get("view") or "")
+    node_type = str(result.get("node_type") or "")
+    model_payload = dict(payload)
+    if view == "content" and str(result.get("text") or ""):
+        if node_type == "raw":
+            model_payload.pop("content", None)
+        else:
+            model_payload = {"card": model_payload.get("card")} if model_payload.get("card") else {}
+        model_result["result_projection"] = "rendered_text_with_navigation_metadata"
+    elif view == "sources" and str(payload.get("source_node_type") or "") == "raw":
+        source_units = payload.get("source_units")
+        if isinstance(source_units, list):
+            model_payload["returned_logical_unit_ids"] = [
+                str(unit.get("unit_id") or "")
+                for unit in source_units
+                if isinstance(unit, dict) and str(unit.get("unit_id") or "")
+            ]
+        model_payload.pop("source_units", None)
+        model_result["result_projection"] = "rendered_text_with_navigation_metadata"
+    model_result["result"] = model_payload
+    return model_result
 
 
 def _dispatch_timeline(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
@@ -702,8 +741,11 @@ def _browse_description() -> str:
 def _open_description() -> str:
     return (
         "Open one memory_id returned by browse_memory or retrieval. card repeats compact navigation metadata; content "
-        "returns the full summary or raw entry; sources returns exact child episode cards or complete raw logical units. "
-        "Use sources only when the summary is insufficient. If page_complete is false, continue with only next_cursor."
+        "returns the full summary or one raw entry; sources returns exact child episode cards or complete raw logical "
+        "units. Sources default to conversation projection: dialogue/events stay full while operation/material bodies "
+        "become reloadable compact evidence. Use projection=full or tools only when full operation evidence is actually "
+        "needed, or open one compact source_id with content. Use sources only when the summary is insufficient. If "
+        "page_complete is false, continue with only next_cursor."
     )
 
 
@@ -893,7 +935,15 @@ def _open_schema() -> dict[str, Any]:
             "detail": {
                 "type": "string",
                 "enum": list(ENTRY_DETAILS),
-                "description": "Raw evidence detail; full by default.",
+                "description": "Detail for a raw content view; full by default.",
+            },
+            "projection": {
+                "type": "string",
+                "enum": list(TIMELINE_PROJECTIONS),
+                "description": (
+                    "Sources view only: conversation (default) keeps dialogue/events full and compacts operation/material "
+                    "bodies; full returns every body; tools returns only full operation/tool evidence."
+                ),
             },
             "cross_conversation": {"type": "boolean", "description": "Only true if host policy allows it."},
             "page_size": {

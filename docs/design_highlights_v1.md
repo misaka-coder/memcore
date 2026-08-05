@@ -42,10 +42,10 @@ memcore 提供互补的检索、目录、节点展开和精确时间线工具:
 - `retrieve`: 向量/关键词混合检索,适合偏好、计划、长期事实、人物关系。
 - `read_timeline`: 按无需 epoch 的绝对起止时间精确读 raw，旧日期/粗时段进入同一 timestamp 路径；也可用 raw source_id 扩展前后完整 turn。默认会话投影压紧工具/材料正文但保留可重载 source_id；显式预算下分页只发生在完整 turn 之间，并返回 namespace-safe cursor。
 - `browse_memory`: 宽时间范围先返回按 SQLite 重叠选择的紧凑摘要卡与 raw 覆盖状态，稳定键 cursor 不会因为前面回填旧卡而跳过后续结果。
-- `open_memory`: 一个 ID 门面统一打开 raw、episodic、semantic 的 card/content/sources；来源展开沿精确 lineage，分页不拆 turn，缺失来源不静默吞掉。
+- `open_memory`: 一个 ID 门面统一打开 raw、episodic、semantic 的 card/content/sources；来源展开沿精确 lineage，分页不拆 turn，缺失来源不静默吞掉。默认来源投影专注对话/事件，工具、Skill 与材料只留下可重载的调用/结果关系和状态；完整工具正文必须显式展开。
 - `read_entry`: 仅保留为 current-conversation raw 的兼容薄适配，不再进入新模型工具列表。
 
-价值:不用把所有记忆问题都塞进向量检索。精确时间问题走精确工具,长期语义问题走检索工具。
+价值:不用把所有记忆问题都塞进向量检索，也不会因为从一条约 3 万 token 摘要回溯来源，就把其中的大型搜索结果、文件正文等再次整段灌入上下文。精确时间问题走精确工具,长期语义问题走检索工具。
 
 ### 5. 不内置 router,让聊天模型自驱检索
 

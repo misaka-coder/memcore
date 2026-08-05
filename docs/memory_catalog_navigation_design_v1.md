@@ -425,7 +425,8 @@ Purpose: open any authorized memory node by stable ID.
 open_memory(
     memory_id="...",
     view="card",       # card | content | sources
-    detail="full",     # full | compact where applicable
+    detail="full",     # full | compact for one raw content node
+    projection="conversation",  # conversation | full | tools for raw sources
     cursor="",
 )
 ```
@@ -439,8 +440,14 @@ Semantics:
 | semantic | semantic card | full semantic summary | episodic cards |
 
 Source pagination is by complete child logical units. Opening episodic sources never splits a turn or
-action/observation relation. Opening semantic sources returns episode cards first; the model explicitly
-opens the selected episode content or sources next.
+action/observation relation. Its default `conversation` projection keeps dialogue and events complete but
+projects action/observation, Skill, tool, and material entries as reloadable compact evidence containing
+their source ID, kind, correlation/status relation, and retained small anchors. Full payloads remain in
+SQLite and are returned only when the model opens one raw source as `content` or explicitly selects
+`projection=full/tools`. Opening semantic sources returns episode cards first; the model explicitly opens
+the selected episode content or sources next. Native tool dispatch removes the duplicate structured raw
+body when the same evidence is already present in rendered `text`; direct trusted Python calls retain both
+views for diagnostics.
 
 The current `read_entry(source_id, detail)` becomes a thin raw-only adapter to `open_memory` during one
 documented migration window and is removed from model-visible native tools. It must not remain a second

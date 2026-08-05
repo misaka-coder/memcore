@@ -82,7 +82,7 @@ V2 使用实际 provider projection 的 token 预算规划完整 turn。这是�
 
 - `retrieve_for_turn`：面向偏好、计划、关系、人物、主题和长期事实的模糊检索；支持用本地/ISO `time_hint.start_at/end_at` 在评分前硬过滤，也可用 `within_memory_id` 把 dense/BM25 候选硬限制在已选节点及其精确后代中，允许只凭已知事件、关系和时间发现未知答案；段内为空不会放宽到全库；
 - `browse_memory`：面向多日/宽范围概览，按 SQLite 时间重叠返回小型 episodic/semantic 卡片，而不是把整段群聊 raw 塞回模型；结果同时报告已摘要、未摘要 live tail、broken lineage 和无损 cursor；
-- `open_memory`：统一打开 raw/episodic/semantic ID；`card` 看导航信息，`content` 看完整节点正文，`sources` 沿精确 lineage 返回子摘要卡或完整 raw 逻辑单元；
+- `open_memory`：统一打开 raw/episodic/semantic ID；`card` 看导航信息，`content` 看完整节点正文，`sources` 沿精确 lineage 返回子摘要卡或完整 raw 逻辑单元。raw 来源默认采用对话优先投影：对话/事件完整，operation/Skill/tool/material 正文压成保留 `source_id`、`correlation_id`、状态和锚点的紧凑凭据；需要时可打开单条正文或显式切换 `full/tools`。native 结果只发送一份渲染正文，不和结构化 entries 重复占用模型上下文；
 - `read_timeline`：既可按 `start_at/end_at` 精确到小时/分钟读取，也可按旧日期/粗时段读取，或把 raw 检索命中扩成前后完整 turn；`conversation/full/tools` 决定证据密度。模型侧 native dispatch 使用 `native_timeline_page_token_budget` 的有限上限，返回完整逻辑单元、所选/本页 token 与条目总量、`partial/page_boundary`、导航建议和 namespace-safe cursor；无真实 tokenizer 时使用并明确标记估算，不会让工具失效。native result 只保留一份渲染正文，避免和结构化 messages 重复耗费 provider token；直接 Python API 保留双视图与显式无限诊断路径；
 - `dispatch_native_memory_tool` 同时返回完整当前轮 result 与紧凑 `receipt`；receipt 只保留选择器、返回 ID、coverage、cursor 和经过清理的稳定 hash，供宿主跨轮写入 operation observation，避免把大段 raw/摘要/检索正文复制进时间线；非原生适配可直接调用 `build_memory_operation_receipt`；
 - `read_entry`：兼容期 raw-only 薄适配，新接入使用 `open_memory(view="content")`；

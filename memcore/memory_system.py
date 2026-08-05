@@ -2029,6 +2029,7 @@ class MemorySystem:
         memory_id: str = "",
         view: str = "card",
         detail: str = "full",
+        projection: str = "conversation",
         cross_conversation: bool = False,
         page_size: int = 50,
         cursor: str = "",
@@ -2044,7 +2045,11 @@ class MemorySystem:
             paginate_memory_items,
         )
         from .rendering import render_semantic_snippet, render_summary_snippet, render_timeline
-        from .timeline_read import build_timeline_read_units, project_timeline_entry
+        from .timeline_read import (
+            build_timeline_read_units,
+            normalize_timeline_projection,
+            project_timeline_entry,
+        )
 
         def _invalid(reason: str) -> dict[str, Any]:
             return {"status": "invalid_filter", "reason": reason, "memory_id": "", "view": "", "result": None}
@@ -2055,6 +2060,7 @@ class MemorySystem:
                 str(memory_id or "").strip()
                 or str(view or "card").strip().lower() != "card"
                 or str(detail or "full").strip().lower() != "full"
+                or str(projection or "conversation").strip().lower() != "conversation"
                 or bool(cross_conversation)
                 or page_size != 50
             ):
@@ -2069,6 +2075,7 @@ class MemorySystem:
                 memory_id = str(selector["memory_id"])
                 view = str(selector["view"])
                 detail = str(selector["detail"])
+                projection = str(selector.get("projection") or "conversation")
                 cross_conversation = bool(selector["cross_conversation"])
                 page_size = int(decoded["page_size"])
                 after_key = tuple(decoded["last_key"])
@@ -2078,6 +2085,10 @@ class MemorySystem:
             memory_id = str(memory_id or "").strip()
             view = str(view or "card").strip().lower()
             detail = str(detail or "full").strip().lower()
+            try:
+                projection = normalize_timeline_projection(projection)
+            except ValueError:
+                return _invalid("invalid_memory_projection")
             try:
                 page_size = normalize_page_size(page_size)
             except ValueError as exc:
@@ -2122,6 +2133,7 @@ class MemorySystem:
             "node_type": node_type,
             "view": view,
             "detail": detail,
+            "projection": projection,
             "cross_conversation": bool(cross_conversation),
         }
         if view == "card":
@@ -2170,6 +2182,7 @@ class MemorySystem:
             "memory_id": memory_id,
             "view": "sources",
             "detail": detail,
+            "projection": projection,
             "cross_conversation": bool(cross_conversation),
         }
         if node_type == "raw":
@@ -2258,7 +2271,7 @@ class MemorySystem:
         missing = [source_id for source_id in child_ids if source_id not in found_ids]
         units = build_timeline_read_units(
             entries,
-            projection="full",
+            projection=projection,
             renderer_registry=self.renderer_registry,
             timezone=self.timezone,
         )
@@ -2278,6 +2291,7 @@ class MemorySystem:
             "source_count": len(child_ids),
             "logical_unit_count": len(units),
             "returned_logical_unit_count": page.returned_count,
+            "compacted_entry_count": sum(unit.compacted_entry_count for unit in page.items),
             "missing_source_ids": missing,
             "source_units": source_units,
             "next_cursor": page.next_cursor,

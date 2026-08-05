@@ -97,6 +97,10 @@ class NativeToolSpecs(unittest.TestCase):
             opened["parameters"]["properties"]["view"]["enum"],
             ["card", "content", "sources", None],
         )
+        self.assertEqual(
+            opened["parameters"]["properties"]["projection"]["enum"],
+            ["conversation", "full", "tools", None],
+        )
         timeline = tools[3]["function"]
         self.assertIn("time_range", timeline["parameters"]["properties"])
         self.assertEqual(
@@ -356,7 +360,11 @@ class NativeToolDispatch(unittest.TestCase):
         self.assertEqual(catalog["result"]["cards"][0]["memory_id"], "episode-breakfast")
         self.assertTrue(evidence["ok"])
         self.assertEqual(evidence["result"]["result"]["source_count"], 1)
+        self.assertNotIn("source_units", evidence["result"]["result"])
+        self.assertEqual(evidence["result"]["result"]["returned_logical_unit_ids"], ["source:c1:raw-breakfast"])
         self.assertIn("聊了扬州早茶", evidence["result"]["text"])
+        self.assertEqual(evidence["result"]["result_projection"], "rendered_text_with_navigation_metadata")
+        self.assertEqual(evidence["receipt"]["returned_logical_unit_ids"], ["source:c1:raw-breakfast"])
         store.close()
 
     def test_read_timeline_dispatches_exact_time_range_without_unknown_entity(self) -> None:

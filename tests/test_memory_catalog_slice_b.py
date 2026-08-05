@@ -7,6 +7,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from memcore import (
+    EntryOrigin,
     HashedEmbeddingProvider,
     InMemoryVectorIndex,
     LLMClient,
@@ -16,6 +17,8 @@ from memcore import (
     MemorySystem,
     Namespace,
     SQLiteMemoryStore,
+    TimelineEntryInput,
+    TurnRole,
 )
 
 
@@ -169,6 +172,79 @@ class MemoryCatalogNavigationTests(unittest.TestCase):
             ["question", "answer"],
         )
         self.assertIn("和李嘉图一起", sources["text"])
+
+    def test_open_episode_sources_default_to_dialogue_with_reloadable_tool_evidence(self) -> None:
+        handle = self.mem.begin_turn(
+            stimuli=[
+                TimelineEntryInput(
+                    source_id="question-with-tool",
+                    kind="message.user",
+                    origin=EntryOrigin.USER,
+                    turn_role=TurnRole.STIMULUS,
+                    semantic_text="帮我查完以后告诉我结论",
+                    timestamp=_ts(23, 13),
+                )
+            ],
+            turn_id="turn-with-tool",
+            opened_at=_ts(23, 13),
+        )
+        self.mem.append_action(
+            turn_id=handle.turn_id,
+            kind="tool.web_search.call",
+            correlation_id="search-breakfast",
+            semantic_text="搜索早茶资料",
+            payload={"query": "扬州早茶"},
+            source_id="search-call",
+            timestamp=_ts(23, 13, 1),
+        )
+        self.mem.append_observation(
+            turn_id=handle.turn_id,
+            kind="tool.web_search.result",
+            correlation_id="search-breakfast",
+            semantic_text="巨型工具正文" * 1000,
+            payload={"status": "completed", "result": "巨型工具正文" * 1000},
+            status="completed",
+            source_id="search-result",
+            timestamp=_ts(23, 13, 2),
+        )
+        self.mem.complete_turn(
+            turn_id=handle.turn_id,
+            semantic_text="结论是和李嘉图一起吃了早茶。",
+            provider_output_raw='{"speech":"结论是和李嘉图一起吃了早茶。"}',
+            memory_annotation={},
+            annotation_status="accepted",
+            source_id="answer-with-tool",
+            timestamp=_ts(23, 13, 3),
+        )
+        source_ids = ["question-with-tool", "search-call", "search-result", "answer-with-tool"]
+        self._episode(
+            "episode-with-tool",
+            source_ids,
+            _ts(23, 13),
+            _ts(23, 13, 3),
+            "早茶工具轮",
+        )
+
+        sources = self.mem.open_memory(memory_id="episode-with-tool", view="sources")
+
+        self.assertEqual(sources["projection"], "conversation")
+        self.assertEqual(sources["result"]["compacted_entry_count"], 2)
+        self.assertIn("帮我查完以后告诉我结论", sources["text"])
+        self.assertIn("结论是和李嘉图一起吃了早茶", sources["text"])
+        self.assertIn("tool.web_search.call", sources["text"])
+        self.assertIn("correlation_id: search-breakfast", sources["text"])
+        self.assertIn('open_memory(memory_id="search-result"', sources["text"])
+        self.assertNotIn("巨型工具正文巨型工具正文", sources["text"])
+
+        expanded = self.mem.open_memory(memory_id="search-result", view="content")
+        explicit_full = self.mem.open_memory(
+            memory_id="episode-with-tool",
+            view="sources",
+            projection="full",
+        )
+
+        self.assertIn("巨型工具正文巨型工具正文", expanded["text"])
+        self.assertIn("巨型工具正文巨型工具正文", explicit_full["text"])
 
     def test_open_semantic_sources_returns_exact_episode_cards(self) -> None:
         self._raw("source-a", "聊了出行", _ts(22, 10))

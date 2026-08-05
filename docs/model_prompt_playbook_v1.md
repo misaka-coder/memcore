@@ -10,7 +10,7 @@ memcore 不替宿主写完整人格 prompt,但建议把下面这些规则拼到�
 你可以看到 memcore 提供的可见三层记忆,并可使用记忆工具:
 - retrieve_for_turn: 按语义/关键词/metadata 模糊检索长期或历史记忆,并排除当前 prompt 已经可见的记忆与本轮消息。
 - browse_memory: 按确定时间范围浏览紧凑摘要目录；适合“这几天聊了什么”这类宽范围概览，不直接拉取整段群聊原文。
-- open_memory: 按 memory_id 打开卡片、完整摘要正文或精确来源证据；摘要够用就不要继续展开 raw。
+- open_memory: 按 memory_id 打开卡片、完整摘要正文或精确来源证据；来源页默认完整展示对话/事件，只把工具、Skill、材料正文压成带 source_id 和调用关联的可重载轨迹。摘要够用就不要继续展开 raw，需要某条工具正文时再打开该 source_id，确实要看整段工具证据时才显式选择 full/tools 投影。
 - read_timeline: 按 ISO 或本地 `start_at/end_at` 精确到小时/分钟读取原始对话，无需计算 epoch；也可按旧日期/粗时段读取，或用 retrieve 返回的 raw source_id 读取前后完整轮次。结果可能按完整轮次无损分页，不会静默截断。
 - load_material: 若宿主支持图片/文件,按 file_id 读取当前可用的原文件、OCR、视觉描述、文档 chunks 或清理状态。
 
@@ -84,8 +84,8 @@ retrieve_for_turn(query, entity_anchors?, topic_terms?, source_layers?, memory_f
 browse_memory(time_range? / date_from?, date_to?, node_types?, cursor?)
 用于宽范围历史概览。返回的是完整卡片页和 coverage，不是 Top-K，也不是截断 raw。page_complete=false 时下一次只传 cursor。
 
-open_memory(memory_id?, view?, detail?, cursor?)
-用于打开已选节点。card 只看目录信息；content 看完整摘要或 raw；sources 返回精确子证据并保持完整逻辑单元。sources 分页未完成时下一次只传 cursor。
+open_memory(memory_id?, view?, detail?, projection?, cursor?)
+用于打开已选节点。card 只看目录信息；content 看完整摘要或单条 raw；sources 返回精确子证据并保持完整逻辑单元。sources 默认 `projection=conversation`：对话/事件完整，operation/Skill/tool/material 只返回 kind、source_id、correlation_id、状态和小型锚点，不复制大型输入/结果正文。紧凑轨迹已足够理解“调用过什么、哪次请求对应哪个结果、成功还是失败”；只有回答确实依赖工具正文时，才打开该 source_id 的 content，或显式使用 `projection=full/tools`。sources 分页未完成时下一次只传 cursor。
 
 read_timeline(time_range?, date_from?, date_to?, time_periods?, anchor_source_id?, before_turns?, after_turns?, projection?, page_token_budget?, cursor?)
 time_range 使用 start_at/end_at 做起点包含、终点不包含的精确读取；日期模式读取整天或粗时段；anchor 模式从一条 raw 命中扩展前后完整 turn。conversation/full/tools 决定读取密度。模型侧始终有宿主配置的有限页面预算：省略/传 0 使用该预算，传更大值不会越过宿主上限。`status=partial` 时先看 selected/returned 数量和 token 总量：需要精确后续证据就只传 cursor 继续；用户要宽范围概览则改用 browse_memory。不要重复原选择器，也不要把 partial 当作完整覆盖。单个超大 turn 仍完整返回并标记 oversized_unit。

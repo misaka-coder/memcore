@@ -742,7 +742,11 @@ def _render_compact_entry(entry: TimelineEntry, timezone: str) -> str:
         json.dumps(_json_ready(entry.payload), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     )
     lines.append(f"stored_chars: {payload_chars}")
-    lines.append("summary: 完整内容已保留；需要正文时调用 read_entry(source_id, detail=full)。")
+    memory_id = json.dumps(_display_scalar(entry.source_id), ensure_ascii=False)
+    lines.append(
+        "expand: 完整内容已保留；需要该条正文时调用 "
+        f'open_memory(memory_id={memory_id}, view="content", detail="full")。'
+    )
     return "\n".join(lines)
 
 

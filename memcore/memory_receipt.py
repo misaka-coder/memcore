@@ -126,6 +126,7 @@ def _selector_for(operation: str, arguments: Mapping[str, Any], result: Mapping[
             "memory_id": str(result.get("memory_id") or arguments.get("memory_id") or arguments.get("source_id") or ""),
             "view": str(result.get("view") or arguments.get("view") or "content"),
             "detail": str(result.get("detail") or arguments.get("detail") or "full"),
+            "projection": str(result.get("projection") or arguments.get("projection") or "conversation"),
         }
     if operation == "retrieve_for_turn":
         return {
@@ -173,6 +174,9 @@ def _returned_logical_unit_ids(operation: str, result: Mapping[str, Any]) -> lis
         return _unique_strings(coverage.get("returned_logical_unit_ids") or [])
     if operation == "open_memory":
         payload = result.get("result") if isinstance(result.get("result"), Mapping) else {}
+        returned_ids = payload.get("returned_logical_unit_ids")
+        if returned_ids:
+            return _unique_strings(returned_ids)
         return _unique_strings(unit.get("unit_id") for unit in _mapping_items(payload.get("source_units")))
     return []
 

@@ -224,8 +224,13 @@ Recommended tool parameters:
 Use this only with a `memory_id` returned by retrieval or `browse_memory`.
 `view="card"` repeats compact metadata, `view="content"` opens the selected
 raw/summary body, and `view="sources"` follows exact lineage to child episode
-cards or complete raw logical units. Use `sources` only when summary content is
-insufficient. Continue an incomplete sources page with only `cursor`.
+cards or complete raw logical units. Raw sources default to
+`projection="conversation"`: dialogue/events remain full while operation,
+Skill, tool, and material bodies become reloadable compact evidence. Use
+`projection="full"`/`"tools"`, or open one compact source ID with
+`view="content"`, only when the full operation body is actually needed. Use
+`sources` only when summary content is insufficient. Continue an incomplete
+sources page with only `cursor`.
 
 ### `load_material` optional
 

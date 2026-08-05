@@ -164,7 +164,7 @@ Expose memory tools to the final chat model:
   filters candidates before vector/BM25 ranking.
 - `read_timeline(time_range={"start_at": ..., "end_at": ...}, projection="conversation")` for exact hour/minute questions without calculating epoch; legacy date fields remain available for whole-day/coarse-period reads, or use it for expanding a raw retrieval `source_id` into complete nearby turns. The default view keeps dialogue/events full and returns reloadable compact evidence for operations/materials.
 - `browse_memory(date_from=..., date_to=...)` for broad multi-day overviews. It returns compact chronological cards plus stored-history coverage instead of loading the whole raw range. Continue an incomplete page with only `cursor`.
-- `open_memory(memory_id=..., view="content")` opens one selected raw/episodic/semantic node; `view="sources"` follows exact lineage to child episode cards or complete raw logical units. Use sources only when summary content is insufficient.
+- `open_memory(memory_id=..., view="content")` opens one selected raw/episodic/semantic node; `view="sources"` follows exact lineage to child episode cards or complete raw logical units. Raw sources default to `projection="conversation"`, so dialogue/events remain complete while large operation/Skill/tool/material bodies become compact records containing type, call/result linkage, status, `source_id`, and small retained anchors. Use `projection="full"` or `"tools"`, or open one compact `source_id` as `content`, only when that body is actually needed. Use sources only when summary content is insufficient.
 - Provider-native dispatch always applies `MemoryConfig.native_timeline_page_token_budget` as a finite maximum. Omitted/zero uses that maximum; a smaller model request is honored and a larger one is capped. If `status=partial`, inspect selected/returned token and logical-unit counts, then either continue with `read_timeline(cursor=next_cursor)` only or use `browse_memory` for an overview. One oversized turn is returned whole and marked explicitly. The native result keeps the readable rendered `text` plus navigation metadata and omits the duplicate structured `messages` body. Trusted host/diagnostic code may still call `MemorySystem.read_timeline(page_token_budget=0)` directly for an unlimited read and receives both messages and text.
 - `read_entry(source_id=..., detail="full")` is a raw-only compatibility adapter. New integrations use `open_memory(view="content")`.
 
@@ -205,6 +205,11 @@ sanitized result hash. If the product wants cross-turn recall, persist that
 receipt as the observation payload; keep the full result only in the active
 provider tool loop. Do not duplicate raw text, summary bodies, snippets,
 credentials, files, or local paths into the timeline.
+
+For `open_memory(content/sources)`, the direct trusted Python facade keeps both
+structured records and rendered text for diagnostics. Native dispatch sends
+only one rendered evidence body plus navigation metadata and logical-unit IDs,
+so the same raw page is not serialized twice into the model context.
 
 ```python
 mem.append_observation(
