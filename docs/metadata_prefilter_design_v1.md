@@ -290,7 +290,7 @@ Chroma metadata 只保存 str/int/float/bool 等标量,所以布尔字段适合�
 - `memory_metadata` 的 JSON 契约。
 - SQLite 存储结构。
 - BM25 使用 metadata text tag 增强召回的行为。
-- verifier 行为。
+- 确定性分数阈值、关系完整性与 diagnostics 行为；读侧不得追加 LLM verifier。
 - 可见三层和工具检索的职责划分。
 
 本设计也不引入 router。工具是否调用仍由聊天模型判断;memcore 只负责当工具带着结构化 metadata 参数进来时,把这些参数用于真正的前置候选裁剪。

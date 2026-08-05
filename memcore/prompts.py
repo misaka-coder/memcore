@@ -1,6 +1,6 @@
 """记忆压缩链的承重提示词(焊死骨架 + 人格文本插槽)。
 
-覆盖 summary / semantic / reinforcement(写侧)与 verifier(读侧)。
+覆盖 summary / semantic / reinforcement 三个记忆压缩任务。
 焊死的是:"你就是当前角色整理自己的记忆 + 不许编造 + 只输出 JSON + 字段固定 + importance 是 0-1 数字 +
 时间锚点(相对转绝对)"。可配置的只有 persona_text(填进 [CHARACTER MEMORY SELF] 插槽)。
 
@@ -29,6 +29,8 @@ MULTI_ACTOR_MEMORY_RULES = (
     "整理事实时必须保留事实主体:谁表达了偏好、谁提出计划、谁承诺行动、谁情绪变化。"
     "同一稳定ID代表同一发言人;昵称只用于显示,不要把不同稳定ID的人合并。"
     "不要把不同发言人的事实笼统写成“用户说/大家说”。"
+    "若发言标签含“-> 接收方”或 target_actor,事实、请求、计划或承诺与接收对象有关时必须保留接收方。"
+    "没有明确接收方不等于发给助手;旁观到的群消息不得改写成对助手的请求、承诺或共同经历。"
 )
 
 MEMORY_METADATA_RULES = "[memory_metadata 标注规则]\n" + build_memory_metadata_instruction(enable_flavor=False)
@@ -135,22 +137,6 @@ REINFORCEMENT_USER_TEMPLATE = (
     "已有长期语义记忆:\n{existing_text}\n\n新的阶段摘要压缩结果:\n{incoming_text}\n\n"
     "请输出融合后的长期记忆,尽量保留旧的稳定信息,同时吸收新的重复线索。"
 )
-
-
-VERIFIER_SYSTEM = (
-    "你是记忆检索校验器,只判断检索到的片段是否足以回答用户问题。\n"
-    "必须输出 NDJSON,每行一个合法 JSON 对象,不要输出解释。\n"
-    '第一行 decision 事件:{"type":"decision","match_result":"match|mismatch"}。\n'
-    '若 match,第二行 selection 事件:{"type":"selection","selected_indexes":[1,2]}'
-    "(编号从 1 开始,对应展示的片段)。\n"
-    "只选对回答当前问题有直接帮助的片段;若片段只是重复用户提问或没有新事实,判 mismatch。"
-)
-
-VERIFIER_USER_TEMPLATE = "用户问题:\n{query}\n\n检索到的记忆片段(编号从 1 开始):\n{snippets}"
-
-
-def build_verifier_prompts(*, query: str, snippets_text: str) -> tuple[str, str]:
-    return (VERIFIER_SYSTEM, VERIFIER_USER_TEMPLATE.format(query=query, snippets=snippets_text))
 
 
 def build_summary_prompts(

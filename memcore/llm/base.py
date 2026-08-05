@@ -1,6 +1,6 @@
 """LLMClient 接口 —— 记忆库对模型的唯一依赖(model-agnostic 的关键)。
 
-记忆库需要 4 类结构化调用(summary/semantic/reinforcement/verifier),
+记忆库需要 3 类结构化调用(summary/semantic/reinforcement),
 裸 `llm_call(system, user)` 会丢掉契约类型/超时/重试/错误态。所以注入这个接口,谁用谁喂自己的模型。
 
 实现要求:失败必须**结构化返回**(ok=False + error + 用 fallback),
@@ -19,18 +19,16 @@ class TaskType(str, Enum):
     SUMMARY = "summary"
     SEMANTIC = "semantic"
     REINFORCEMENT = "reinforcement"
-    VERIFIER = "verifier"
 
 
 class ResponseFormat(str, Enum):
     JSON = "json"  # summary / semantic / reinforcement
-    NDJSON = "ndjson"  # verifier(逐行事件)
 
 
 @dataclass
 class LLMResult:
     ok: bool
-    data: Any = None  # JSON dict 或 NDJSON 事件列表;失败时为 fallback
+    data: Any = None  # JSON dict;失败时为 fallback
     error: str = ""
     latency_ms: int = 0
     attempts: int = 0

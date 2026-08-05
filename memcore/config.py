@@ -47,7 +47,6 @@ class MemoryConfig:
     retrieval_min_dense_score: float = 0.0
     retrieval_min_bm25_score: float = 0.0
     retrieval_min_fused_score: float = 0.0
-    enable_verifier: bool = True  # verifier 门:片段进 prompt 前先校验筛选
     llm_max_retries: int = 2  # 结构化 LLM 调用建议重试次数;失败仍不提交空记忆
 
     # --- 可见层作用域 ---

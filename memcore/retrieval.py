@@ -19,9 +19,7 @@ from .index.metadata_filters import (
     normalize_kind_pattern,
 )
 from .index.rrf import fuse_with_rrf
-from .llm.base import LLMClient, LLMRequest, ResponseFormat, TaskType
 from .namespace import Namespace
-from .prompts import build_verifier_prompts
 from .rendering import render_raw_snippet, render_semantic_snippet, render_summary_snippet
 from .store.base import LineageClosure, MemoryStore
 from .schema import ABOUT_ROLES, MEMORY_FACETS
@@ -35,24 +33,6 @@ _ACCEPTED_DEFAULT_STATUSES = (
     "derived",
     "derived_turn_final",
 )
-
-
-def parse_ndjson(text: Any) -> list[dict[str, Any]]:
-    """Parse verifier NDJSON; deterministic test clients may provide event dicts directly."""
-    if isinstance(text, list):
-        return [event for event in text if isinstance(event, dict)]
-    events: list[dict[str, Any]] = []
-    for line in str(text or "").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            value = json.loads(line)
-        except (TypeError, ValueError):
-            continue
-        if isinstance(value, dict):
-            events.append(value)
-    return events
 
 
 @dataclass(frozen=True)
@@ -209,14 +189,12 @@ class ReadPipeline:
         *,
         store: MemoryStore,
         index: VectorIndex,
-        llm: LLMClient,
         config: MemoryConfig,
         timezone: str,
         token_counter: TokenCounter | None = None,
     ) -> None:
         self.store = store
         self.index = index
-        self.llm = llm
         self.config = config
         self.timezone = timezone
         self.token_counter = token_counter
@@ -537,7 +515,6 @@ class ReadPipeline:
             "below_bm25_score": 0,
             "below_dense_score": 0,
             "below_fused_score": 0,
-            "verifier_rejected": 0,
             "invalid_lineage": 0,
             "lineage_quarantine_failed": 0,
             "incomplete_relation": 0,
@@ -574,16 +551,10 @@ class ReadPipeline:
             semantic=plan.semantic,
             entity_relaxed_layers=tuple(relaxed_layers),
         )
-        raw_verified = self._verify_matches(query=plan.request.query, matches=raw_matches, rejected=rejected)
-        derived_verified = self._verify_matches(
-            query=plan.request.query,
-            matches=derived_matches,
-            rejected=rejected,
-        )
-        selected_matches = list(raw_verified[: plan.request.max_matches])
+        selected_matches = list(raw_matches[: plan.request.max_matches])
         remaining = max(0, plan.request.max_matches - len(selected_matches))
         if remaining:
-            selected_matches.extend(derived_verified[:remaining])
+            selected_matches.extend(derived_matches[:remaining])
         if plan.relation.result_token_budget > 0 and self.token_counter is None:
             return RetrievalResult(
                 status="unavailable",
@@ -1118,54 +1089,6 @@ class ReadPipeline:
                 high = middle - 1
         return best
 
-    def _verify_matches(
-        self,
-        *,
-        query: str,
-        matches: list[RetrievalMatch],
-        rejected: dict[str, int],
-    ) -> list[RetrievalMatch]:
-        if not matches or not self.config.enable_verifier:
-            return matches
-        numbered = "\n".join(f"[{index + 1}] {item.rendered_text}" for index, item in enumerate(matches))
-        try:
-            response = self.llm.call(
-                LLMRequest(
-                    task_type=TaskType.VERIFIER,
-                    **dict(
-                        zip(
-                            ("system_prompt", "user_prompt"),
-                            build_verifier_prompts(query=query, snippets_text=numbered),
-                        )
-                    ),
-                    response_format=ResponseFormat.NDJSON,
-                    max_retries=self.config.llm_max_retries,
-                    fallback={},
-                )
-            )
-        except Exception:
-            return matches
-        if not response.ok:
-            return matches
-        events = parse_ndjson(response.data)
-        decision = next((event for event in events if event.get("type") == "decision"), None)
-        if decision is None:
-            return matches
-        if str(decision.get("match_result")) != "match":
-            rejected["verifier_rejected"] += len(matches)
-            return []
-        selection = next((event for event in events if event.get("type") == "selection"), {})
-        indexes = [
-            int(value)
-            for value in (selection.get("selected_indexes") or [])
-            if isinstance(value, int) or str(value).isdigit()
-        ]
-        selected = [matches[index - 1] for index in indexes if 1 <= index <= len(matches)]
-        if selected:
-            rejected["verifier_rejected"] += len(matches) - len(selected)
-            return selected
-        return matches
-
     @staticmethod
     def _effective_filters(
         *,
@@ -1202,5 +1125,4 @@ __all__ = [
     "RetrievalRequest",
     "RetrievalResult",
     "SemanticFilterPlan",
-    "parse_ndjson",
 ]

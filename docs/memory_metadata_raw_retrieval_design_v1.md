@@ -342,8 +342,8 @@ tool provenance / source lineage / material status
 4. 分别在 raw 与 derived 辅助池中执行 dense/BM25
 5. raw 结果优先返回，summary/semantic 作为不与 raw 竞争排序位置的辅助结果
 6. 同 lineage 多层命中时优先 raw
-7. verifier 只验证已经合法的候选
-8. 返回结构化结果和实际生效条件
+7. 按 raw-first 与确定性分数选取已经合法的候选
+8. 返回结构化结果、实际生效条件和诊断
 ```
 
 ### 6.3 结果层级行为
@@ -868,7 +868,7 @@ derived pool : entry_type in (summary, semantic_summary) + 同样边界
 1. 分别计算加实体条件后的候选数量；
 2. 某个池实体候选为零时，仅在该池移除实体 flag 条件并记录 diagnostics；
 3. 在实际候选池内运行 dense 与 BM25，再 RRF；
-4. verifier 分别看到已经合法的结果，不负责修补错误过滤；
+4. 不再追加 LLM verifier；相关性问题必须在 query、索引、确定性分数与 diagnostics 中可解释；
 5. 先按相关度填充 raw；还有现有 `max_matches` 空位时才附加 derived；
 6. derived 的 lineage closure 与已选 raw 相交时丢弃 derived 副本；
 7. derived 不能挤掉 raw，也不自动下钻；

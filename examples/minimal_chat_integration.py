@@ -87,13 +87,6 @@ class DemoMemoryLLM(LLMClient):
         if request.task_type == TaskType.REINFORCEMENT:
             return LLMResult(ok=True, data=request.fallback or {}, attempts=1)
 
-        if request.task_type == TaskType.VERIFIER:
-            data = [
-                {"type": "decision", "match_result": "match"},
-                {"type": "selection", "selected_indexes": [1]},
-            ]
-            return LLMResult(ok=True, data=data, attempts=1)
-
         return LLMResult(ok=False, data=request.fallback or {}, error="unsupported_task", attempts=1)
 
 
@@ -141,7 +134,6 @@ def main() -> None:
             raw_token_trigger=1200,
             raw_token_batch_ratio=0.67,
             episodic_compact_trigger_count=99,
-            enable_verifier=True,
             enable_flavor=False,
         )
         llm = DemoMemoryLLM()

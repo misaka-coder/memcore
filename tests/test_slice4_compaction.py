@@ -654,6 +654,8 @@ class SummaryCycleViaFacade(unittest.TestCase):
             "user(张三;id=qq-1) -> assistant: 我下周三要复盘基金组合",
             summary_requests[0].user_prompt,
         )
+        self.assertIn("事实、请求、计划或承诺与接收对象有关时必须保留接收方", summary_requests[0].system_prompt)
+        self.assertIn("旁观到的群消息不得改写成对助手的请求、承诺或共同经历", summary_requests[0].system_prompt)
 
 
 class SemanticAndReinforcement(unittest.TestCase):

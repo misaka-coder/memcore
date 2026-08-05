@@ -14,18 +14,16 @@ from typing import Any
 from .config import MemoryConfig
 from .embedding.hashed import HashedEmbeddingProvider
 from .index.memory_index import InMemoryVectorIndex
-from .llm.base import LLMClient, LLMRequest, LLMResult, TaskType
+from .llm.base import LLMClient, LLMRequest, LLMResult
 from .memory_system import MemorySystem
 from .namespace import Namespace
 from .store.sqlite_store import SQLiteMemoryStore
 
 
 class EvalLLM(LLMClient):
-    """确定性评测用:verifier 恒 match(保留全部候选,把判定交给指标)。"""
+    """确定性评测用:读侧不调用模型，压缩任务在这组用例里也不会触发。"""
 
     def call(self, request: LLMRequest) -> LLMResult:
-        if request.task_type == TaskType.VERIFIER:
-            return LLMResult(ok=True, data=[{"type": "decision", "match_result": "match"}])
         return LLMResult(ok=True, data={})
 
 

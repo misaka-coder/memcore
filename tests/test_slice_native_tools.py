@@ -43,7 +43,7 @@ def _shared_mem(conversation: str = "c1"):
         store=store,
         index=index,
         embedding=emb,
-        config=MemoryConfig(enable_verifier=False),
+        config=MemoryConfig(),
     )
     return mem, store, index, emb
 

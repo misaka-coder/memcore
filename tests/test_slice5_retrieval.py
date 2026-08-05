@@ -1,7 +1,4 @@
-"""切片 5 单测:读侧显式检索 → verifier → build_prompt_context 可见层。
-
-canned LLM 用列表形式返回 NDJSON 事件(parse_ndjson 接受列表)。不依赖真实模型/网络。
-"""
+"""切片 5 单测:读侧显式检索、确定性排序与 build_prompt_context 可见层。"""
 
 from __future__ import annotations
 
@@ -31,26 +28,17 @@ from memcore.index.metadata_filters import (
     entity_filter_key,
     facet_filter_key,
 )
-from memcore.llm.base import LLMClient, LLMRequest, LLMResult, TaskType
+from memcore.llm.base import LLMClient, LLMRequest, LLMResult
 
 
 class ReadLLM(LLMClient):
-    """verifier 按 verifier_match 决定 match/mismatch。"""
+    """读侧不应调用模型；写侧结构化任务在本文件大多不会触发。"""
 
-    def __init__(self, *, verifier_match: bool = True) -> None:
-        self.verifier_match = verifier_match
+    def __init__(self) -> None:
+        self.requests: list[LLMRequest] = []
 
     def call(self, request: LLMRequest) -> LLMResult:
-        if request.task_type == TaskType.VERIFIER:
-            if self.verifier_match:
-                return LLMResult(
-                    ok=True,
-                    data=[
-                        {"type": "decision", "match_result": "match"},
-                        {"type": "selection", "selected_indexes": [1]},
-                    ],
-                )
-            return LLMResult(ok=True, data=[{"type": "decision", "match_result": "mismatch"}])
+        self.requests.append(request)
         return LLMResult(ok=True, data={})
 
 
@@ -123,7 +111,7 @@ class ExplicitRetrieve(unittest.TestCase):
 
     def test_tool_trace_is_excluded_from_default_retrieve_but_explicitly_searchable(self) -> None:
         store, index, emb = _shared_backends()
-        mem = _mem(store, index, emb, conversation="c1", config=MemoryConfig(enable_verifier=False))
+        mem = _mem(store, index, emb, conversation="c1")
         mem.begin_turn(
             turn_id="tool-turn",
             stimuli=[
@@ -160,7 +148,7 @@ class ExplicitRetrieve(unittest.TestCase):
 
     def test_event_trace_is_excluded_from_default_retrieve_but_explicitly_searchable(self) -> None:
         store, index, emb = _shared_backends()
-        mem = _mem(store, index, emb, conversation="c1", config=MemoryConfig(enable_verifier=False))
+        mem = _mem(store, index, emb, conversation="c1")
         mem.record_external_event(
             event_type="finance",
             source="public_news",
@@ -187,7 +175,7 @@ class ExplicitRetrieve(unittest.TestCase):
 
     def test_material_trace_is_excluded_from_default_retrieve_but_explicitly_searchable(self) -> None:
         store, index, emb = _shared_backends()
-        mem = _mem(store, index, emb, conversation="c1", config=MemoryConfig(enable_verifier=False))
+        mem = _mem(store, index, emb, conversation="c1")
         mem.record_material_reference(
             file_id="file_img_001",
             kind="image",
@@ -210,19 +198,13 @@ class ExplicitRetrieve(unittest.TestCase):
         self.assertTrue(any("file_img_001" in s and "photo.jpg" in s for s in hits))
         store.close()
 
-    def test_verifier_mismatch_returns_nothing(self) -> None:
+    def test_retrieval_does_not_issue_an_llm_call(self) -> None:
         store, index, emb = _shared_backends()
-        mem = _mem(store, index, emb, conversation="c1", llm=ReadLLM(verifier_match=False))
-        mem.record_user_turn("我最喜欢喝可乐", timestamp=1000)
-        self.assertEqual(mem.retrieve("可乐", entity_anchors=["可乐"]), [])
-        store.close()
-
-    def test_verifier_disabled_passes_through(self) -> None:
-        store, index, emb = _shared_backends()
-        cfg = MemoryConfig(enable_verifier=False)
-        mem = _mem(store, index, emb, conversation="c1", llm=ReadLLM(verifier_match=False), config=cfg)
+        llm = ReadLLM()
+        mem = _mem(store, index, emb, conversation="c1", llm=llm)
         mem.record_user_turn("我最喜欢喝可乐", timestamp=1000)
         self.assertTrue(any("可乐" in s for s in mem.retrieve("可乐", entity_anchors=["可乐"])))
+        self.assertEqual(llm.requests, [])
         store.close()
 
     def test_index_safe_metadata_filters_are_pushed_into_where(self) -> None:
@@ -288,7 +270,7 @@ class ExplicitRetrieve(unittest.TestCase):
 
     def test_entity_filter_only_relaxes_after_zero_candidates(self) -> None:
         store, index, emb = _shared_backends()
-        mem = _mem(store, index, emb, conversation="c1", config=MemoryConfig(enable_verifier=False))
+        mem = _mem(store, index, emb, conversation="c1")
         mem.record_user_turn(
             "Fable 5 被讨论为雅可比猜想的反例构造。",
             timestamp=1000,
@@ -331,7 +313,7 @@ class ExplicitRetrieve(unittest.TestCase):
 
     def test_retrieve_for_turn_finds_unknown_companion_from_known_time_and_relationship(self) -> None:
         store, index, emb = _shared_backends()
-        cfg = MemoryConfig(enable_verifier=False)
+        cfg = MemoryConfig()
         live = _mem(store, index, emb, conversation="live", config=cfg)
         history = _mem(store, index, emb, conversation="history", config=cfg)
         history.record_user_turn(
@@ -403,7 +385,7 @@ class ExplicitRetrieve(unittest.TestCase):
 
     def test_raw_results_fill_limit_before_derived_results(self) -> None:
         store, index, emb = _shared_backends()
-        mem = _mem(store, index, emb, conversation="c1", config=MemoryConfig(enable_verifier=False))
+        mem = _mem(store, index, emb, conversation="c1")
         mem.record_user_turn(
             "Fable 原始对话保存了雅可比猜想的具体讨论。",
             timestamp=1000,
@@ -443,10 +425,10 @@ class ExplicitRetrieve(unittest.TestCase):
 
     def test_retrieve_for_turn_excludes_visible_raw_and_context_neighbor(self) -> None:
         store, index, emb = _shared_backends()
-        mem = _mem(store, index, emb, conversation="c1", config=MemoryConfig(enable_verifier=False))
+        mem = _mem(store, index, emb, conversation="c1")
         mem.record_user_turn("当前会话可见 raw 可乐", timestamp=1000, source_id="visible")
         cur = mem.record_user_turn("我之前说过我喜欢喝可乐吗", timestamp=1001, source_id="cur")
-        other = _mem(store, index, emb, conversation="c2", config=MemoryConfig(enable_verifier=False))
+        other = _mem(store, index, emb, conversation="c2")
         other.record_user_turn("跨会话隐藏 raw 可乐", timestamp=900, source_id="hidden")
 
         hits = mem.retrieve_for_turn(current=cur, query="可乐", entity_anchors=["可乐"])
@@ -459,7 +441,7 @@ class ExplicitRetrieve(unittest.TestCase):
 
     def test_retrieve_for_turn_excludes_visible_episodic_and_semantic(self) -> None:
         store, index, emb = _shared_backends()
-        mem = _mem(store, index, emb, conversation="c1", config=MemoryConfig(enable_verifier=False))
+        mem = _mem(store, index, emb, conversation="c1")
         cur = mem.record_user_turn("帮我查一下滑雪相关记忆", timestamp=2000, source_id="cur")
         other_ns = Namespace(user_id="u1", conversation_id="c2")
 
@@ -528,7 +510,7 @@ class ExplicitRetrieve(unittest.TestCase):
 
     def test_update_turn_metadata_reindexes_raw_tags(self) -> None:
         store, index, emb = _shared_backends()
-        mem = _mem(store, index, emb, conversation="c1", config=MemoryConfig(enable_verifier=False))
+        mem = _mem(store, index, emb, conversation="c1")
         rec = mem.record_user_turn("我最近在看一只波动很大的股票", timestamp=1000, source_id="m1")
         out = mem.update_turn_metadata(
             rec["source_id"],
@@ -561,7 +543,7 @@ class ExplicitRetrieve(unittest.TestCase):
 
     def test_update_turn_metadata_accepts_matching_actor_owner(self) -> None:
         store, index, emb = _shared_backends()
-        mem = _mem(store, index, emb, conversation="group-1", config=MemoryConfig(enable_verifier=False))
+        mem = _mem(store, index, emb, conversation="group-1")
         actor = Actor(stable_id="qq:10001", display_name="张三")
         rec = mem.record_user_turn(
             "我最近更关注新能源板块。",

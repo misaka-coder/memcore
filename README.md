@@ -7,7 +7,7 @@
 > 压缩。对外能力地图见 [`docs/public_capabilities_v1.md`](docs/public_capabilities_v1.md)。
 
 - **写侧**:working(原始对话)→ episodic(阶段摘要)→ semantic(长期事实)三层压缩 + 强化合并。
-- **读侧**:显式 `retrieve` / `read_timeline` 核心读工具 + 可选原生 `load_material` 分发 + 向量/关键词混合检索 + RRF + verifier。raw 先于摘要和长期记忆占用结果位；facet/role 保持前置过滤，只有准确实体导致候选为零时才单独放宽实体条件，并返回 diagnostics。
+- **读侧**:显式 `retrieve` / `read_timeline` 核心读工具 + 可选原生 `load_material` 分发 + 向量/关键词混合检索 + RRF。raw 先于摘要和长期记忆占用结果位；facet/role 保持前置过滤，只有准确实体导致候选为零时才单独放宽实体条件，并返回可解释 diagnostics。读侧不再追加一次 LLM verifier 调用。
 - **贯穿**:时间锚点(带时区)、命名空间硬隔离、可选 flavor 层、提示词注入防线。
 
 实现说明按以下公开文档维护：[`usage_flow_v1.md`](docs/usage_flow_v1.md)、
@@ -28,7 +28,7 @@
 - **切片 4(写侧)✅**:`compaction` 三层压缩(raw→摘要→语义)+ 主题重叠强化合并(注入 LLMClient,
   按 namespace 加锁,outbox 索引);`MemorySystem` 写侧 record/compact 接通。压缩 LLM 失败时不会提交空摘要,
   会返回 `summary_retry_pending` / `semantic_retry_pending`,并保留原记录供下一轮后台压缩重试。
-- **切片 5(读侧)✅**:`retrieval` —— 显式 retrieve 工具 → metadata 前置过滤 → raw/derived 分池混合检索 + RRF → verifier 门；原始 query 始终保留，`entity_anchors` 高权重，`topic_terms` 只作普通辅助；`time_hint.start_at/end_at` 复用时间线的本地/ISO 解析并在评分前执行起点包含、终点不包含的硬过滤，未知答案不需要也不允许伪装成实体锚点；
+- **切片 5(读侧)✅**:`retrieval` —— 显式 retrieve 工具 → metadata 前置过滤 → raw/derived 分池混合检索 + RRF → 确定性分数与关系完整性检查；原始 query 始终保留，`entity_anchors` 高权重，`topic_terms` 只作普通辅助；`time_hint.start_at/end_at` 复用时间线的本地/ISO 解析并在评分前执行起点包含、终点不包含的硬过滤，未知答案不需要也不允许伪装成实体锚点；
   `build_prompt_context` 只拼可见三层,是否检索交给聊天模型调用工具决定。**读写侧全闭环。**
 - **时间线工具 ✅**:`read_timeline(...)` 支持无需 epoch 的 `time_range.start_at/end_at` 小时/分钟级读取，旧日期/时间段字段归一到同一 timestamp 路径，也支持以 raw `source_id` 为锚点读取前后完整 turn；默认 `conversation` 投影保留完整对话/事件并把大工具与材料轨迹变成可展开凭据，`full/tools` 可显式切换。默认无隐藏结果上限；调用者显式提供页面预算时才按完整 turn 分页并返回可校验 `next_cursor`。
 - **精确条目展开 ✅**:`read_entry(source_id, detail)` 只读取当前授权会话里的 raw entry，可从紧凑凭据恢复完整工具结果；summary/semantic、越权 ID、密钥和本地路径不会伪装成可用正文。
@@ -53,7 +53,7 @@
   工具轨迹参与同一 token 生命周期，但压缩为独立 operation digest；普通检索仍默认排除，显式授权后可检索。
 - **材料轨迹类别 ✅**:材料引用/清理使用 typed standalone entry，或作为当前 turn 的 `material.*` intermediate。
   只保存 file_id、文件名、类型和状态；原始文件与 OCR/视觉描述/文档 chunks 由宿主存储。压缩时材料进入 operation 分区，不污染对话摘要；普通检索默认排除。
-- 可配置:`raw_token_trigger`、`raw_token_batch_ratio`、`retrieval_result_token_budget`、`visible_memory_scope`、`enable_verifier`、`enable_flavor`、`enable_importance_decay`。
+- 可配置:`raw_token_trigger`、`raw_token_batch_ratio`、`retrieval_result_token_budget`、`visible_memory_scope`、`enable_flavor`、`enable_importance_decay`。
 - 压缩重试:`llm_max_retries` 会传给注入的 `LLMClient`;最终仍失败时压缩层不标记已完成,下一轮继续重试。
 - **Chat Output Adapter ✅**:标准 JSON 输出契约、`speech` 流式解析、普通文本尽力分段、raw metadata 回写流程见 `docs/chat_output_adapter_v1.md`;工具调用阶段不套该 JSON,只在最终回复阶段输出 memcore JSON。
 - **稳定投影与缓存审计 ✅**:canonical/OpenAI/Anthropic provider projection、renderer/version、strict-prefix 验收、projection hash 与真实请求 audit;MemCore 保证前缀稳定,不替 provider 承诺缓存必命中。
@@ -231,7 +231,7 @@ memcore 是**纯机制**:它不含任何具体人格、领域调教或模型权�
 | memcore 提供(机制) | 接入方自备(你的资产) |
 |---|---|
 | 三层记忆、压缩、强化、时间锚点 | 具体**人格文本**(经 `persona_text` / `PromptOverrides` 运行时注入) |
-| raw-first 混合检索、verifier、可观测实体放宽、核心读工具与原生工具分发辅助 | 你的**聊天模型**(`LLMClient` 适配器) |
+| raw-first 混合检索、可观测实体放宽、核心读工具与原生工具分发辅助 | 你的**聊天模型**(`LLMClient` 只用于三层压缩，不介入读侧筛选) |
 | 统一 metadata 契约 + 提示词骨架 + 校验插槽 | **领域补充说明**与**调参**(窗口/阈值)；不能替换固定 facet/role 协议 |
 | embedding 接口 + 三路适配器 + 自检 | **embedding 模型**(本地 / API / 自有) |
 | 隔离、outbox 自愈、遗忘、评测台 | 领域**合规规则**(memcore 只保证记忆不越权变指令) |

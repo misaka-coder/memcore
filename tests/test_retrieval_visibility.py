@@ -117,7 +117,7 @@ def _memory(
         llm=NoopLLM(),
         namespace=Namespace(user_id="user", conversation_id=conversation),
         timezone="Asia/Shanghai",
-        config=MemoryConfig(enable_verifier=False),
+        config=MemoryConfig(),
         store=store,
         index=index,
         embedding=embedding,

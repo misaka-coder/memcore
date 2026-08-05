@@ -54,7 +54,7 @@
 - provider-neutral entry 到 provider messages 的稳定投影；
 - raw/episodic/semantic 记忆生命周期；
 - token 预算、完整轮次压缩与开放轮次保护；
-- 混合检索、前置过滤、关系扩窗和 verifier；
+- 混合检索、前置过滤、确定性诊断和关系扩窗；
 - `retrieve_for_turn`、`read_timeline` 及可选材料读取工具的 schema、分发和结构化状态；
 - 稳定前缀 hash、renderer/projection 版本和可诊断的缓存审计。
 
@@ -586,7 +586,7 @@ V2 核心能力已经在 package 中可用；下面是仍然真实存在的兼�
 - `InMemoryVectorIndex._candidate_entries()` 先过滤再 cosine/BM25；
 - Chroma where 的递归 `$and/$or` 翻译；
 - category/scope 的布尔 metadata flags；
-- RRF 双路融合与 verifier 降级；
+- RRF 双路融合与确定性分数/关系完整性降级；
 - timezone、日期/星期/时间段渲染；
 - Actor stable id/display name 分离；
 - `StreamingSpeechParser` 只流式展示、最终完成才提交 metadata；
@@ -1264,7 +1264,7 @@ RetrievalMatch
 RetrievalResult
 ```
 
-入口先完成权限和参数校验，再把查询编译成 plan。`HardFilterPlan` 一旦生成，在 dense、BM25、RRF、relaxation 和 verifier 各阶段都不可改变：
+入口先完成权限和参数校验，再把查询编译成 plan。`HardFilterPlan` 一旦生成，在 dense、BM25、RRF、relaxation 和关系扩展各阶段都不可改变：
 
 - 完整 Namespace；
 - conversation scope 和宿主授权的 cross-conversation scope；
@@ -1326,12 +1326,12 @@ categories 不再承担 trace 开关。即使用户显式传入一个旧 `tool_t
 3. BM25 只从同一合法集合构建/读取 postings；
 4. 两路结果进入 RRF；
 5. 对语义条件执行有界 relaxation；
-6. 对已经合法的候选运行 verifier；
+6. 按 raw-first 规则确定性选取候选；
 7. 关系扩窗并执行 token 裁剪。
 
 不得先对全 Namespace 计算 cosine，再用 Python 删除 tool trace。若 Chroma 方言或候选 ids 数量无法表达所需 hard filter，返回 `status=unavailable, reason=index_filter_unsupported`，或走同样先由 SQLite 建候选集的安全实现；不能静默退化为后过滤。
 
-BM25/dense 均应有最低有效分数或空查询诊断。当前“零相似度候选仍返回”和 verifier disabled 时噪声直接穿透的问题，V2 通过 `min_dense_score/min_bm25_score/min_fused_score` 与 `diagnostics.rejected_counts` 显式处理。阈值允许配置，但 `score=0` 不得仅因为 top-k 未填满而成为有效记忆。
+BM25/dense 均应有最低有效分数或空查询诊断。“零相似度候选仍返回”的问题由 `min_dense_score/min_bm25_score/min_fused_score` 与 `diagnostics.rejected_counts` 显式处理。阈值允许配置，但 `score=0` 不得仅因为 top-k 未填满而成为有效记忆；不能再增加一次模型调用替确定性检索收尾。
 
 ### 20.5 Lineage closure
 
@@ -1418,7 +1418,7 @@ SQLite 保存当前 index generation 和每条 entry 的 indexed generation。ki
 
 ### 20.10 Relation expansion 实现检查点（2026-07-21）
 
-- verifier 只判断合法 seed；随后 raw seed 按真实 turn/correlation 关系扩成原子组，默认对话只返回 annotation target stimulus + assistant final，不夹带 intermediate/action/observation；
+- raw seed 按真实 turn/correlation 关系扩成原子组，默认对话只返回 annotation target stimulus + assistant final，不夹带 intermediate/action/observation；候选取舍由分数、硬过滤和关系完整性确定，不追加 LLM verifier；
 - 显式 `tool.*` seed 只返回同一 `correlation_id` 下的完整 action/terminal observation branch；未闭合 branch 计入 `incomplete_relation` 并整体拒绝；
 - `event.*` seed 返回事件及其关联 final；关系邻居仍重新检查 Namespace、conversation、trust、visibility、annotation 与 never policy；
 - summary/semantic 使用 Store lineage closure；semantic 命中会压掉其 source summary/raw，断裂、循环或跨 Namespace lineage 会从 index 隔离并计入结构化 diagnostics；

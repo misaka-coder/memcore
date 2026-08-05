@@ -121,7 +121,7 @@ the configured `MemoryConfig.projection_profile` fallback.
 
 A production host must provide or choose:
 
-- `LLMClient` for summary, semantic, reinforcement, and verifier calls.
+- `LLMClient` for summary, semantic, and reinforcement calls. Retrieval remains deterministic and does not call an LLM verifier.
 - `EmbeddingProvider` for semantic retrieval. Do not use
   `HashedEmbeddingProvider` in production.
 - `Namespace` values for tenant/user/domain/conversation isolation.

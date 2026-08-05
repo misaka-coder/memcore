@@ -38,7 +38,7 @@ class TimelineV2StandaloneTests(unittest.TestCase):
             llm=NoopLLM(),
             namespace=Namespace(user_id="user", conversation_id="c1"),
             timezone="Asia/Shanghai",
-            config=MemoryConfig(enable_verifier=False),
+            config=MemoryConfig(),
             store=self.store,
             index=InMemoryVectorIndex(embedding=embedding),
             embedding=embedding,

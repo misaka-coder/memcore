@@ -152,7 +152,6 @@ class MemorySystem:
         self._read = ReadPipeline(
             store=self.store,
             index=self.index,
-            llm=self.llm,
             config=self.config,
             timezone=self.timezone,
             token_counter=self.token_counter,

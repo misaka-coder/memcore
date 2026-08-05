@@ -428,7 +428,7 @@ class V1MigrationTests(unittest.TestCase):
                 store=store,
                 index=index,
                 embedding=embedding,
-                config=MemoryConfig(enable_verifier=False),
+                config=MemoryConfig(),
             )
             try:
                 mem.reindex_all()

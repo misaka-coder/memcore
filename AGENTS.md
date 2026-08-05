@@ -78,7 +78,7 @@ For tests, scripts, or deterministic shutdown, `compact_due_sync()` is acceptabl
 
 Implement or choose these pieces in the host project:
 
-- `LLMClient`: adapter for summary / semantic / reinforcement / verifier calls.
+- `LLMClient`: adapter for summary / semantic / reinforcement calls. Retrieval must not add an LLM verifier pass.
 - `EmbeddingProvider`: production embedding model. Do not use `HashedEmbeddingProvider` in production.
 - `Namespace`: decide `tenant_id`, `user_id`, `domain_id`, `conversation_id`.
 - Optional `Actor`: use for group/multi-speaker messages.
@@ -116,7 +116,6 @@ Start conservative:
 ```python
 cfg = MemoryConfig(
     visible_memory_scope="conversation",
-    enable_verifier=True,
     enable_flavor=False,
 )
 ```
