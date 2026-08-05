@@ -16,6 +16,7 @@ from .namespace import Namespace
 from .projection import RendererRegistry, canonical_json_bytes, sanitize_timeline_value, stable_projection_hash
 from .rendering import render_timeline
 from .timeline import TimelineEntry, TurnRole
+from .token_counter import estimate_text_tokens
 
 TIMELINE_PROJECTIONS: tuple[str, ...] = ("conversation", "full", "tools")
 _CURSOR_PREFIX = "timeline-v1"
@@ -38,12 +39,18 @@ class TimelineReadUnit:
 @dataclass(frozen=True)
 class TimelinePage:
     messages: tuple[dict[str, Any], ...]
+    logical_unit_ids: tuple[str, ...]
     complete: bool
     next_cursor: str
     logical_unit_count: int
     total_logical_unit_count: int
     entry_count: int
     total_entry_count: int
+    selected_projected_token_count: int
+    returned_projected_token_count: int
+    remaining_logical_unit_count: int
+    remaining_entry_count: int
+    remaining_projected_token_count: int
     compacted_entry_count: int
     oversized_unit: bool
 
@@ -188,35 +195,55 @@ def paginate_timeline_units(
     after_key: StableKey | None = None,
     timezone: str,
 ) -> TimelinePage:
-    remaining = [unit for unit in units if after_key is None or unit.sort_key > after_key]
-    total_entry_count = sum(len(unit.projected_messages) for unit in remaining)
+    all_units = list(units)
+    remaining = [unit for unit in all_units if after_key is None or unit.sort_key > after_key]
     budget = int(page_token_budget or 0)
     if budget < 0:
         raise ValueError("page_token_budget_must_be_non_negative_integer")
-    if budget and count_text is None:
-        raise ValueError("timeline_token_counter_required_for_page_budget")
+    resolved_counter = count_text or estimate_text_tokens
+
+    def _messages(selected_units: Sequence[TimelineReadUnit]) -> list[dict[str, Any]]:
+        return [message for unit in selected_units for message in unit.projected_messages]
+
+    def _projected_tokens(selected_units: Sequence[TimelineReadUnit]) -> int:
+        messages = _messages(selected_units)
+        if not messages:
+            return 0
+        count = int(resolved_counter(render_timeline(messages, tz=timezone)))
+        if count < 0:
+            raise ValueError("TokenCounter.count_text() must return a non-negative int")
+        return count
+
+    selected_projected_tokens = _projected_tokens(all_units)
+    remaining_before_tokens = selected_projected_tokens if after_key is None else _projected_tokens(remaining)
 
     selected: list[TimelineReadUnit] = []
     oversized = False
     if not budget:
         selected = list(remaining)
-    else:
-        assert count_text is not None
-        for unit in remaining:
-            candidate_messages = [
-                message for candidate in (*selected, unit) for message in candidate.projected_messages
-            ]
-            candidate_text = render_timeline(candidate_messages, tz=timezone)
-            candidate_tokens = int(count_text(candidate_text))
-            if candidate_tokens < 0:
-                raise ValueError("TokenCounter.count_text() must return a non-negative int")
-            if selected and candidate_tokens > budget:
-                break
-            if not selected and candidate_tokens > budget:
-                selected.append(unit)
-                oversized = True
-                break
-            selected.append(unit)
+    elif remaining_before_tokens <= budget:
+        selected = list(remaining)
+    elif remaining:
+        # Find the largest complete-unit prefix that fits.  This avoids the
+        # previous O(n²) repeated rendering on busy group timelines.
+        low = 1
+        high = len(remaining)
+        fitted = 0
+        while low <= high:
+            middle = (low + high) // 2
+            candidate_tokens = _projected_tokens(remaining[:middle])
+            if candidate_tokens <= budget:
+                fitted = middle
+                low = middle + 1
+            else:
+                high = middle - 1
+        if fitted:
+            selected = list(remaining[:fitted])
+        else:
+            # One turn is the indivisible evidence unit.  Returning it whole is
+            # more truthful than truncating dialogue or a tool exchange.
+            selected = [remaining[0]]
+            oversized = True
 
     complete = len(selected) == len(remaining)
     next_cursor = ""
@@ -228,15 +255,23 @@ def paginate_timeline_units(
             last_unit_key=selected[-1].sort_key,
             namespace=namespace,
         )
-    messages = tuple(message for unit in selected for message in unit.projected_messages)
+    messages = tuple(_messages(selected))
+    returned_projected_tokens = _projected_tokens(selected)
+    after_page = remaining[len(selected) :]
     return TimelinePage(
         messages=messages,
+        logical_unit_ids=tuple(unit.unit_id for unit in selected),
         complete=complete,
         next_cursor=next_cursor,
         logical_unit_count=len(selected),
-        total_logical_unit_count=len(remaining),
+        total_logical_unit_count=len(all_units),
         entry_count=len(messages),
-        total_entry_count=total_entry_count,
+        total_entry_count=sum(len(unit.projected_messages) for unit in all_units),
+        selected_projected_token_count=selected_projected_tokens,
+        returned_projected_token_count=returned_projected_tokens,
+        remaining_logical_unit_count=len(after_page),
+        remaining_entry_count=sum(len(unit.projected_messages) for unit in after_page),
+        remaining_projected_token_count=_projected_tokens(after_page),
         compacted_entry_count=sum(unit.compacted_entry_count for unit in selected),
         oversized_unit=oversized,
     )

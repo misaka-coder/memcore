@@ -11,7 +11,7 @@ memcore 不替宿主写完整人格 prompt,但建议把下面这些规则拼到�
 - retrieve_for_turn: 按语义/关键词/metadata 模糊检索长期或历史记忆,并排除当前 prompt 已经可见的记忆与本轮消息。
 - browse_memory: 按确定时间范围浏览紧凑摘要目录；适合“这几天聊了什么”这类宽范围概览，不直接拉取整段群聊原文。
 - open_memory: 按 memory_id 打开卡片、完整摘要正文或精确来源证据；摘要够用就不要继续展开 raw。
-- read_timeline: 按 ISO 或本地 `start_at/end_at` 精确到小时/分钟读取原始对话，无需计算 epoch；也可按旧日期/粗时段读取，或用 retrieve 返回的 raw source_id 读取前后完整轮次。
+- read_timeline: 按 ISO 或本地 `start_at/end_at` 精确到小时/分钟读取原始对话，无需计算 epoch；也可按旧日期/粗时段读取，或用 retrieve 返回的 raw source_id 读取前后完整轮次。结果可能按完整轮次无损分页，不会静默截断。
 - load_material: 若宿主支持图片/文件,按 file_id 读取当前可用的原文件、OCR、视觉描述、文档 chunks 或清理状态。
 
 把工具当作你的可用能力和结构化信息通道,不是摆设。凡是答案依赖未在当前 prompt 中明确可见的事实、旧记忆、精确时间线、人物归因、承诺、偏好、关系或平台事件时,请主动调用合适的工具求证。一次工具结果不够时,可以根据结果继续调用工具补查,直到足以回答或确认没有明确记录。
@@ -45,7 +45,7 @@ memory_metadata 标注的是宿主指定的本轮记忆目标,可能是用户消
 3. system/developer 或 user: 固定领域规则/长期不变的大段资料(如同一份研报/财报原文)
 4. user/developer: 本轮动态时间锚点、render_prompt_context(ctx) 的可见三层记忆
 5. user: 本轮用户输入
-6. tool result: retrieve_for_turn / read_timeline 的工具返回
+6. tool result: retrieve_for_turn / browse_memory / open_memory / read_timeline 的动态工具返回
 7. assistant final: 最终回复;若启用 memcore_json,只在这里输出 JSON
 ```
 
@@ -88,7 +88,7 @@ open_memory(memory_id?, view?, detail?, cursor?)
 用于打开已选节点。card 只看目录信息；content 看完整摘要或 raw；sources 返回精确子证据并保持完整逻辑单元。sources 分页未完成时下一次只传 cursor。
 
 read_timeline(time_range?, date_from?, date_to?, time_periods?, anchor_source_id?, before_turns?, after_turns?, projection?, page_token_budget?, cursor?)
-time_range 使用 start_at/end_at 做起点包含、终点不包含的精确读取；日期模式读取整天或粗时段；anchor 模式从一条 raw 命中扩展前后完整 turn。conversation/full/tools 决定读取密度。默认不分页；只有调用者显式提供页面预算时才返回 continuation。若 coverage.complete=false，下一次只传 cursor，选择器、投影和预算都已封装其中。
+time_range 使用 start_at/end_at 做起点包含、终点不包含的精确读取；日期模式读取整天或粗时段；anchor 模式从一条 raw 命中扩展前后完整 turn。conversation/full/tools 决定读取密度。模型侧始终有宿主配置的有限页面预算：省略/传 0 使用该预算，传更大值不会越过宿主上限。`status=partial` 时先看 selected/returned 数量和 token 总量：需要精确后续证据就只传 cursor 继续；用户要宽范围概览则改用 browse_memory。不要重复原选择器，也不要把 partial 当作完整覆盖。单个超大 turn 仍完整返回并标记 oversized_unit。
 
 load_material(file_id, kind?, preferred_source?, purpose?)
 用于读取宿主保存的图片/附件/PDF 当前可用内容或状态。先从可见 raw、`read_timeline` 或宿主授权的 `retrieve_for_turn(include_explicit=true, kind_patterns=["material.*"])` 找到 file_id,再调用它。

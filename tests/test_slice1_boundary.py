@@ -49,6 +49,10 @@ class ConfigInvariants(unittest.TestCase):
         with self.assertRaises(ConfigError):
             MemoryConfig(retrieval_result_token_budget=-1)
 
+    def test_native_timeline_budget_must_be_positive(self) -> None:
+        with self.assertRaises(ConfigError):
+            MemoryConfig(native_timeline_page_token_budget=0)
+
     def test_episodic_differential_enforced(self) -> None:
         with self.assertRaises(ConfigError):
             MemoryConfig(episodic_compact_trigger_count=5, episodic_compact_batch_size=5)

@@ -32,6 +32,9 @@ class MemoryConfig:
     # token 决定何时压缩和大致压缩多少，完整 terminal turn/component 决定实际边界。
     # 0 表示 MemCore 不裁剪检索结果；正值仅供宿主显式选择，不由 MemCore 自动推断。
     retrieval_result_token_budget: int = 0
+    # provider-native read_timeline 的模型可见单页上限。可信宿主仍可直接调用
+    # MemorySystem.read_timeline(page_token_budget=0) 进行显式无限诊断读取。
+    native_timeline_page_token_budget: int = 12000
     projection_profile: str = "canonical_user_assistant"
     compaction_min_recent_turns: int = 1
     compaction_schema_version: int = 2
@@ -76,6 +79,7 @@ class MemoryConfig:
             "retrieval_limit": self.retrieval_limit,
             "relaxation_stop_candidate_count": self.relaxation_stop_candidate_count,
             "llm_max_retries": self.llm_max_retries,
+            "native_timeline_page_token_budget": self.native_timeline_page_token_budget,
         }
         for name, value in positives.items():
             if not isinstance(value, int) or value <= 0:

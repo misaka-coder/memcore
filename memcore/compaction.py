@@ -62,7 +62,7 @@ from .timeline import (
     TimelineEntry,
     TurnRole,
 )
-from .token_counter import TokenCounter
+from .token_counter import TokenCounter, estimate_text_tokens
 
 
 @dataclass
@@ -403,7 +403,7 @@ class Compaction:
 
     def _count_text_tokens(self, text: str) -> int:
         if self.token_counter is None:
-            return max(1, (len(text.encode("utf-8")) + 3) // 4)
+            return estimate_text_tokens(text)
         try:
             count = int(self.token_counter.count_text(text))
         except (TypeError, ValueError) as exc:

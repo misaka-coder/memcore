@@ -199,7 +199,7 @@ Recommended tool parameters:
 - `time_periods: list[str]` optional, such as morning/afternoon/night or localized aliases supported by the host
 - `cross_conversation: bool` only if the product allows it
 - `projection: conversation|full|tools` optional; conversation is the normal evidence view
-- `page_token_budget: int` optional; zero/omitted means no MemCore pagination
+- `page_token_budget: int` optional; native dispatch uses the configured finite maximum when omitted/zero and caps larger values; direct trusted Python calls may use zero for unlimited diagnostics
 - `cursor: str` optional; when present, send the cursor alone because selector/view/budget are embedded
 
 ### `load_material` optional
@@ -216,7 +216,7 @@ Recommended tool parameters:
 Tell the chat model:
 
 - Use `read_timeline` for "yesterday", "last Tuesday", "that night", and exact hour/minute ranges.
-- If timeline coverage is incomplete, call `read_timeline(cursor=next_cursor)`; do not repeat or alter the selector.
+- If timeline status is `partial`, inspect selected/returned volume; either call `read_timeline(cursor=next_cursor)` without repeating the selector or use `browse_memory` for an overview.
 - Use `read_entry(source_id, detail="full")` when a compact operation/material evidence block is relevant.
 - Use `retrieve_for_turn` for preferences, plans, long-term facts, people, topics, and fuzzy recall.
 - Pass only already-known names in `entity_anchors`. A person or answer being
@@ -226,6 +226,10 @@ Tell the chat model:
 
 For provider-native tool loops, prefer `build_native_memory_tool_specs(...)` and
 `dispatch_native_memory_tool(...)` over legacy text wrappers. The dispatcher strictly rejects invalid filters instead of broadening them.
+It also returns a compact `receipt`. Send the full result through the active
+provider tool-result channel, but persist only the receipt as an
+`operation.memory.*` observation for cross-round recall; never duplicate a
+large raw/summary body into the timeline.
 When a product allows explicit operation/event/material retrieval, pass a
 `ToolDispatchPolicy` with only the approved kind prefixes, for example
 `ToolDispatchPolicy(allow_explicit_trace=True, allowed_kind_prefixes=("material",))`.

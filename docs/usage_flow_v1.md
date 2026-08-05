@@ -165,7 +165,7 @@ Expose memory tools to the final chat model:
 - `read_timeline(time_range={"start_at": ..., "end_at": ...}, projection="conversation")` for exact hour/minute questions without calculating epoch; legacy date fields remain available for whole-day/coarse-period reads, or use it for expanding a raw retrieval `source_id` into complete nearby turns. The default view keeps dialogue/events full and returns reloadable compact evidence for operations/materials.
 - `browse_memory(date_from=..., date_to=...)` for broad multi-day overviews. It returns compact chronological cards plus stored-history coverage instead of loading the whole raw range. Continue an incomplete page with only `cursor`.
 - `open_memory(memory_id=..., view="content")` opens one selected raw/episodic/semantic node; `view="sources"` follows exact lineage to child episode cards or complete raw logical units. Use sources only when summary content is insufficient.
-- If the caller explicitly supplied a page token budget and `coverage.complete=false`, continue with `read_timeline(cursor=coverage.next_cursor)` only. Omitted/zero budget means MemCore performs no hidden result pagination.
+- Provider-native dispatch always applies `MemoryConfig.native_timeline_page_token_budget` as a finite maximum. Omitted/zero uses that maximum; a smaller model request is honored and a larger one is capped. If `status=partial`, inspect selected/returned token and logical-unit counts, then either continue with `read_timeline(cursor=next_cursor)` only or use `browse_memory` for an overview. One oversized turn is returned whole and marked explicitly. The native result keeps the readable rendered `text` plus navigation metadata and omits the duplicate structured `messages` body. Trusted host/diagnostic code may still call `MemorySystem.read_timeline(page_token_budget=0)` directly for an unlimited read and receives both messages and text.
 - `read_entry(source_id=..., detail="full")` is a raw-only compatibility adapter. New integrations use `open_memory(view="content")`.
 
 If the host supports images/files, also expose `load_material(file_id, kind?,
@@ -199,8 +199,25 @@ tool_result = dispatch_native_memory_tool(
 ```
 
 Send `tool_result` back through the model provider's native tool-result channel.
-If the product wants cross-turn recall of tool calls/results, record them with
-`record_tool_exchange(...)` after the native tool call completes.
+The dispatcher also returns `tool_result["receipt"]`, a deterministic compact
+record containing selectors, returned IDs, coverage, cursor, request hash, and
+sanitized result hash. If the product wants cross-turn recall, persist that
+receipt as the observation payload; keep the full result only in the active
+provider tool loop. Do not duplicate raw text, summary bodies, snippets,
+credentials, files, or local paths into the timeline.
+
+```python
+mem.append_observation(
+    turn_id=handle.turn_id,
+    kind=f"operation.memory.{tool_call.name}.result",
+    correlation_id=tool_call.id,
+    payload=tool_result["receipt"],
+    status=tool_result["receipt"]["status"],
+)
+```
+
+`build_memory_operation_receipt(...)` is public for non-native adapters that
+need the same receipt contract.
 
 If the host app records tool calls or tool results into raw memory, prefer
 `record_tool_exchange(...)`. It writes typed action/observation records. Their

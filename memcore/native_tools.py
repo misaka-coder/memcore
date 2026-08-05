@@ -13,6 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from .memory_receipt import build_memory_operation_receipt
 from .schema import ABOUT_ROLES, MEMORY_FACETS
 
 SOURCE_LAYERS: tuple[str, ...] = ("raw", "summary", "semantic_summary")
@@ -85,20 +86,25 @@ def dispatch_native_memory_tool(
     name = str(tool_name or "").strip()
     args, error = _coerce_arguments(arguments)
     if error:
-        return _err(name, "invalid_arguments", error)
+        dispatched = _err(name, "invalid_arguments", error)
+        dispatched["receipt"] = build_memory_operation_receipt(name, {}, dispatched)
+        return dispatched
     if name == "retrieve_for_turn":
-        return _dispatch_retrieve(args, mem=mem, current=current, policy=policy or ToolDispatchPolicy())
-    if name == "browse_memory":
-        return _dispatch_browse(args, mem=mem)
-    if name == "open_memory":
-        return _dispatch_open(args, mem=mem)
-    if name == "read_timeline":
-        return _dispatch_timeline(args, mem=mem)
-    if name == "read_entry":
-        return _dispatch_entry(args, mem=mem)
-    if name == "load_material":
-        return _dispatch_material(args, material_loader=material_loader)
-    return _err(name, "unknown_tool", f"unsupported_tool:{name}")
+        dispatched = _dispatch_retrieve(args, mem=mem, current=current, policy=policy or ToolDispatchPolicy())
+    elif name == "browse_memory":
+        dispatched = _dispatch_browse(args, mem=mem)
+    elif name == "open_memory":
+        dispatched = _dispatch_open(args, mem=mem)
+    elif name == "read_timeline":
+        dispatched = _dispatch_timeline(args, mem=mem)
+    elif name == "read_entry":
+        dispatched = _dispatch_entry(args, mem=mem)
+    elif name == "load_material":
+        dispatched = _dispatch_material(args, material_loader=material_loader)
+    else:
+        dispatched = _err(name, "unknown_tool", f"unsupported_tool:{name}")
+    dispatched["receipt"] = build_memory_operation_receipt(name, args, dispatched)
+    return dispatched
 
 
 def _dispatch_retrieve(
@@ -340,10 +346,10 @@ def _dispatch_timeline(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
         after_turns = int(args.get("after_turns") or 0)
         if isinstance(args.get("page_token_budget"), bool):
             raise ValueError
-        page_token_budget = int(args.get("page_token_budget") or 0)
+        requested_page_token_budget = int(args.get("page_token_budget") or 0)
     except (TypeError, ValueError):
         return _err("read_timeline", "invalid_arguments", "timeline_integer_argument_invalid")
-    if page_token_budget < 0:
+    if requested_page_token_budget < 0:
         return _err("read_timeline", "invalid_arguments", "page_token_budget_must_be_non_negative_integer")
     if cursor and any(
         (
@@ -356,10 +362,24 @@ def _dispatch_timeline(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
             bool(after_turns),
             bool(cross),
             projection != "conversation",
-            bool(page_token_budget),
+            bool(requested_page_token_budget),
         )
     ):
         return _err("read_timeline", "invalid_arguments", "cursor_options_are_embedded")
+    if cursor:
+        page_token_budget = 0
+    else:
+        try:
+            configured_budget = int(getattr(mem.config, "native_timeline_page_token_budget"))
+        except (AttributeError, TypeError, ValueError):
+            return _err("read_timeline", "invalid_state", "native_timeline_page_token_budget_invalid")
+        if configured_budget <= 0:
+            return _err("read_timeline", "invalid_state", "native_timeline_page_token_budget_invalid")
+        page_token_budget = (
+            configured_budget
+            if requested_page_token_budget <= 0
+            else min(requested_page_token_budget, configured_budget)
+        )
     result = mem.read_timeline(
         time_range=time_range,
         date_from=date_from,
@@ -375,7 +395,14 @@ def _dispatch_timeline(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
     )
     if result.get("status") == "invalid_filter":
         return _err("read_timeline", "invalid_filter", str(result.get("reason") or "invalid_filter"), result=result)
-    return _ok("read_timeline", result)
+    # The direct Python API intentionally exposes both structured messages and
+    # rendered text.  A native provider result needs only one copy of the
+    # evidence body; keep the readable rendering plus IDs/coverage so the page
+    # budget is not effectively doubled on the wire.
+    model_result = dict(result)
+    model_result.pop("messages", None)
+    model_result["result_projection"] = "rendered_text_with_navigation_metadata"
+    return _ok("read_timeline", model_result)
 
 
 def _dispatch_entry(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
@@ -657,8 +684,9 @@ def _timeline_description() -> str:
         "as ISO 8601 or local date-time strings; no Unix timestamp calculation is needed. Legacy date fields remain "
         "available for whole-day or coarse-period reads. Conversation view keeps dialogue/events full and returns "
         "reloadable compact evidence for large operation/material records; expand one with open_memory(content). If "
-        "coverage is incomplete, call again with only next_cursor. A raw retrieval source id can anchor complete "
-        "nearby turns."
+        "status is partial, inspect selected/returned volume and either call again with only next_cursor or use "
+        "browse_memory for an overview. Native reads always use a host-configured finite complete-unit page; one "
+        "oversized turn is returned whole. A raw retrieval source id can anchor complete nearby turns."
     )
 
 
@@ -804,7 +832,10 @@ def _timeline_schema() -> dict[str, Any]:
             "page_token_budget": {
                 "type": "integer",
                 "minimum": 0,
-                "description": "Explicit caller budget only; omit/0 means no MemCore pagination or hidden truncation.",
+                "description": (
+                    "Optional smaller per-page preference. Omit/0 uses the host-configured finite native limit; "
+                    "values above that limit are capped. Direct trusted Python calls may explicitly use unlimited mode."
+                ),
             },
             "cursor": {
                 "type": "string",

@@ -1,6 +1,6 @@
 # Memory Catalog & Evidence Navigation Design V1
 
-> Status: approved implementation specification; Slice A-C implemented locally, later slices pending
+> Status: approved implementation specification; Slice A-D implemented locally, Slice E pending
 > Date: 2026-08-05  
 > Scope: MemCore package; host products only provide identity, authorization, prompt assembly,
 > and channel delivery
@@ -669,6 +669,15 @@ guessing them as entity anchors or searching unrelated history.
 
 Acceptance: the historical thousands-entry regression cannot generate an unbounded tool payload, while a
 precise one-hour raw query still returns exact ordered evidence and can continue losslessly.
+
+Implementation status: complete. Native dispatch injects and caps against
+`MemoryConfig.native_timeline_page_token_budget`; direct Python calls retain an
+explicit unlimited path. Timeline responses distinguish selected, returned,
+and remaining logical-unit/entry/token volume, return `partial/page_boundary`
+with navigation suggestions, preserve oversized turns whole, and use an
+explicit `estimated` fallback when no tokenizer is injected. Native dispatch
+also returns a deterministic compact receipt; host reintegration in Slice E is
+responsible for persisting that receipt instead of the full current-round body.
 
 ### Slice E: host reintegration
 

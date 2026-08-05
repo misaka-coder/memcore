@@ -69,6 +69,7 @@ from .index.memory_index import InMemoryVectorIndex
 from .index.rrf import fuse_with_rrf
 from .llm.base import LLMClient, LLMRequest, LLMResult, ResponseFormat, TaskType
 from .memory_system import MemorySystem
+from .memory_receipt import build_memory_operation_receipt
 from .native_tools import (
     NATIVE_MEMORY_TOOL_NAMES,
     ToolDispatchPolicy,
@@ -131,6 +132,7 @@ __all__ = [
     "__version__",
     # 门面
     "MemorySystem",
+    "build_memory_operation_receipt",
     "NATIVE_MEMORY_TOOL_NAMES",
     "ToolDispatchPolicy",
     "build_native_memory_tool_specs",

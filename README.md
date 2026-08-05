@@ -30,7 +30,7 @@
   会返回 `summary_retry_pending` / `semantic_retry_pending`,并保留原记录供下一轮后台压缩重试。
 - **切片 5(读侧)✅**:`retrieval` —— 显式 retrieve 工具 → metadata 前置过滤 → raw/derived 分池混合检索 + RRF → 确定性分数与关系完整性检查；原始 query 始终保留，`entity_anchors` 高权重，`topic_terms` 只作普通辅助；`time_hint.start_at/end_at` 复用时间线的本地/ISO 解析并在评分前执行起点包含、终点不包含的硬过滤，未知答案不需要也不允许伪装成实体锚点；
   `build_prompt_context` 只拼可见三层,是否检索交给聊天模型调用工具决定。**读写侧全闭环。**
-- **时间线工具 ✅**:`read_timeline(...)` 支持无需 epoch 的 `time_range.start_at/end_at` 小时/分钟级读取，旧日期/时间段字段归一到同一 timestamp 路径，也支持以 raw `source_id` 为锚点读取前后完整 turn；默认 `conversation` 投影保留完整对话/事件并把大工具与材料轨迹变成可展开凭据，`full/tools` 可显式切换。默认无隐藏结果上限；调用者显式提供页面预算时才按完整 turn 分页并返回可校验 `next_cursor`。
+- **时间线工具 ✅**:`read_timeline(...)` 支持无需 epoch 的 `time_range.start_at/end_at` 小时/分钟级读取，旧日期/时间段字段归一到同一 timestamp 路径，也支持以 raw `source_id` 为锚点读取前后完整 turn；默认 `conversation` 投影保留完整对话/事件并把大工具与材料轨迹变成可展开凭据，`full/tools` 可显式切换。模型侧 native dispatcher 默认使用可配置的有限页面预算，按完整 turn 无损分页，并返回所选总量、本页总量、`partial/page_boundary`、后续动作和可校验 `next_cursor`；native result 只发送一份渲染正文，不再把等价 `messages` 正文重复喂给模型。可信宿主直接调用 Python API 时仍保留结构化 messages/text 双视图，并可显式使用 `page_token_budget=0` 完整读取。
 - **记忆目录导航 ✅**:`browse_memory(...)` 按确定性时间范围返回有界卡片目录与 raw 覆盖状态；`open_memory(memory_id, view=card/content/sources)` 可从摘要正文继续展开精确子摘要或完整 raw 逻辑单元；`retrieve_for_turn(within_memory_id=...)` 可在已选节点的精确 lineage 内继续做 dense/BM25 模糊检索，实体条件放宽不会移除该边界，段内为空也不会退回全库。分页使用 namespace-safe 稳定键 cursor，不截断卡片/turn，缺失 lineage 明确返回 `partial`。
 - **精确条目展开 ✅**:`read_entry(source_id, detail)` 是 `open_memory(view="content")` 的 current-conversation raw-only 兼容适配；summary/semantic、越权 ID、密钥和本地路径不会伪装成 raw 正文。
 - **embedding 三条路 + 自检 ✅**:`HuggingFaceEmbeddingProvider`(本地 BGE-M3)/ `HTTPEmbeddingProvider`(OpenAI 兼容 API,纯 stdlib 零依赖)/ `HashedEmbeddingProvider`(仅测试)。
@@ -54,7 +54,7 @@
   工具轨迹参与同一 token 生命周期，但压缩为独立 operation digest；普通检索仍默认排除，显式授权后可检索。
 - **材料轨迹类别 ✅**:材料引用/清理使用 typed standalone entry，或作为当前 turn 的 `material.*` intermediate。
   只保存 file_id、文件名、类型和状态；原始文件与 OCR/视觉描述/文档 chunks 由宿主存储。压缩时材料进入 operation 分区，不污染对话摘要；普通检索默认排除。
-- 可配置:`raw_token_trigger`、`raw_token_batch_ratio`、`retrieval_result_token_budget`、`visible_memory_scope`、`enable_flavor`、`enable_importance_decay`。
+- 可配置:`raw_token_trigger`、`raw_token_batch_ratio`、`retrieval_result_token_budget`、`native_timeline_page_token_budget`、`visible_memory_scope`、`enable_flavor`、`enable_importance_decay`。
 - 压缩重试:`llm_max_retries` 会传给注入的 `LLMClient`;最终仍失败时压缩层不标记已完成,下一轮继续重试。
 - **Chat Output Adapter ✅**:标准 JSON 输出契约、`speech` 流式解析、普通文本尽力分段、raw metadata 回写流程见 `docs/chat_output_adapter_v1.md`;工具调用阶段不套该 JSON,只在最终回复阶段输出 memcore JSON。
 - **稳定投影与缓存审计 ✅**:canonical/OpenAI/Anthropic provider projection、renderer/version、strict-prefix 验收、projection hash 与真实请求 audit;MemCore 保证前缀稳定,不替 provider 承诺缓存必命中。
@@ -165,7 +165,15 @@ tool_payload = dispatch_native_memory_tool(
 )
 
 # 把 tool_payload 作为 provider 原生 tool_result 回给聊天模型。
-# 如需跨轮追问该工具结果，把本轮 action/observation 写进同一 turn。
+# 当前轮仍使用完整 tool_payload；跨轮只持久化 tool_payload["receipt"]，
+# 不要把 read_timeline/open_memory 的大段正文再复制进 raw。
+mem.append_observation(
+    turn_id=handle.turn_id,
+    kind=f"operation.memory.{tool_call.name}.result",
+    correlation_id=tool_call.id,
+    payload=tool_payload["receipt"],
+    status=tool_payload["receipt"]["status"],
+)
 ```
 
 宿主不使用原生 tool calling 时也不需要另建历史系统。宿主解析模型自己的
@@ -250,7 +258,7 @@ memcore 是**纯机制**:它不含任何具体人格、领域调教或模型权�
 `import memcore` 暴露:`MemorySystem`、`MemoryConfig`、`Namespace`/`Actor`、`PromptOverrides`、
 `LLMClient`/`LLMRequest`/`LLMResult`、`MemoryStore`/`VectorIndex`/`EmbeddingProvider`/`TokenCounter` 接口、
 默认实现 `SQLiteMemoryStore`/`InMemoryVectorIndex`/`HashedEmbeddingProvider`/`HuggingFaceEmbeddingProvider`/`HTTPEmbeddingProvider`、
-`verify_embedding`、`build_native_memory_tool_specs` / `dispatch_native_memory_tool`、
+`verify_embedding`、`build_native_memory_tool_specs` / `dispatch_native_memory_tool` / `build_memory_operation_receipt`、
 `build_action_entry` / `build_observation_entry`、Timeline V2 与 projection 契约、
 `MemoryMetadata`/`SummaryRecord`/`SemanticRecord`、异常类。
 

@@ -376,7 +376,9 @@ class NativeToolDispatch(unittest.TestCase):
         )
 
         self.assertTrue(out["ok"])
-        self.assertEqual([row["source_id"] for row in out["result"]["messages"]], ["target"])
+        self.assertNotIn("messages", out["result"])
+        self.assertIn("我们俩一起来玩的", out["result"]["text"])
+        self.assertEqual(out["result"]["result_projection"], "rendered_text_with_navigation_metadata")
         store.close()
 
     def test_read_entry_dispatches_namespace_safe_raw_expansion(self) -> None:

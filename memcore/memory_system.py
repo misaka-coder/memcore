@@ -1756,33 +1756,58 @@ class MemorySystem:
         messages = list(page.messages)
         text = render_timeline(messages, tz=self.timezone) if messages else ""
         timestamps = [int(message.get("timestamp") or 0) for message in messages if int(message.get("timestamp") or 0)]
-        projected_tokens = None
-        if self.token_counter is not None:
-            projected_tokens = int(self.token_counter.count_text(text))
-            if projected_tokens < 0:
-                return _invalid("TokenCounter.count_text() must return a non-negative int")
+        token_count_quality = self.token_counter.quality if self.token_counter is not None else "estimated"
         coverage = {
             "complete": page.complete,
+            "coverage_complete": page.complete,
             "requested_start": str(selector_payload.get("start_at") or ""),
             "requested_end": str(selector_payload.get("end_at") or ""),
             "returned_start": timestamp_iso(min(timestamps), timezone=self.timezone) if timestamps else "",
             "returned_end": timestamp_iso(max(timestamps), timezone=self.timezone) if timestamps else "",
             "logical_unit_count": page.logical_unit_count,
             "total_logical_unit_count": page.total_logical_unit_count,
+            "selected_logical_unit_count": page.total_logical_unit_count,
+            "returned_logical_unit_count": page.logical_unit_count,
+            "returned_logical_unit_ids": list(page.logical_unit_ids),
+            "remaining_logical_unit_count": page.remaining_logical_unit_count,
             "entry_count": page.entry_count,
             "total_entry_count": page.total_entry_count,
+            "selected_entry_count": page.total_entry_count,
+            "returned_entry_count": page.entry_count,
+            "remaining_entry_count": page.remaining_entry_count,
             "compacted_entry_count": page.compacted_entry_count,
             "next_cursor": page.next_cursor,
             "oversized_unit": page.oversized_unit,
             "page_token_budget": int(page_token_budget or 0),
-            "projected_token_count": projected_tokens,
-            "token_count_quality": self.token_counter.quality if self.token_counter is not None else "unavailable",
+            "projected_token_count": page.returned_projected_token_count,
+            "selected_projected_token_count": page.selected_projected_token_count,
+            "returned_projected_token_count": page.returned_projected_token_count,
+            "remaining_projected_token_count": page.remaining_projected_token_count,
+            "token_count_quality": token_count_quality,
         }
+        selector_reason = str(result_metadata.pop("reason", "") or "")
+        status = "partial" if messages and not page.complete else ("ok" if messages else "empty")
+        reason = (
+            "page_boundary"
+            if status == "partial"
+            else (selector_reason or ("" if status == "ok" else "no_timeline_entries"))
+        )
+        suggested_next_actions = ["continue_page", "browse_memory_for_overview"] if status == "partial" else []
         return {
-            "status": "ok" if messages else "empty",
+            "status": status,
+            "reason": reason,
             **result_metadata,
             "projection": resolved_projection,
             "coverage": coverage,
+            "selected_logical_unit_count": page.total_logical_unit_count,
+            "selected_entry_count": page.total_entry_count,
+            "selected_projected_token_count": page.selected_projected_token_count,
+            "returned_logical_unit_count": page.logical_unit_count,
+            "returned_entry_count": page.entry_count,
+            "returned_projected_token_count": page.returned_projected_token_count,
+            "coverage_complete": page.complete,
+            "next_cursor": page.next_cursor,
+            "suggested_next_actions": suggested_next_actions,
             "message_count": len(messages),
             "messages": messages,
             "text": text,
