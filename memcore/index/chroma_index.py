@@ -27,8 +27,21 @@ _NEVER_MATCH = {"__memcore_never_match__": True}
 def _with_source_excludes(where: dict[str, Any], exclude_source_ids: list[str] | None) -> dict[str, Any]:
     out = dict(where or {})
     excluded = [str(source_id) for source_id in (exclude_source_ids or []) if str(source_id or "").strip()]
-    if excluded:
+    if not excluded:
+        return out
+    existing = out.get("source_id")
+    if isinstance(existing, dict):
+        source_clause = dict(existing)
+        prior_excluded = [str(item) for item in source_clause.get("$nin", [])]
+        source_clause["$nin"] = list(dict.fromkeys((*prior_excluded, *excluded)))
+        out["source_id"] = source_clause
+    elif existing is None:
         out["source_id"] = {"$nin": excluded}
+    else:
+        out.pop("source_id", None)
+        clauses = list(out.pop("$and", []))
+        clauses.extend(({"source_id": existing}, {"source_id": {"$nin": excluded}}))
+        out["$and"] = clauses
     return out
 
 

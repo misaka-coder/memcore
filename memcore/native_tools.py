@@ -118,6 +118,7 @@ def _dispatch_retrieve(
             "memory_facets",
             "about_roles",
             "time_hint",
+            "within_memory_id",
             "include_explicit",
             "kind_patterns",
         },
@@ -148,6 +149,10 @@ def _dispatch_retrieve(
     time_hint, error = _time_hint(args.get("time_hint"))
     if error:
         return _err("retrieve_for_turn", "invalid_arguments", error)
+    within_memory_id_value = args.get("within_memory_id")
+    if within_memory_id_value is not None and not isinstance(within_memory_id_value, str):
+        return _err("retrieve_for_turn", "invalid_arguments", "within_memory_id_must_be_string")
+    within_memory_id = _optional_string(within_memory_id_value)
     include_explicit = args.get("include_explicit", False)
     if not isinstance(include_explicit, bool):
         return _err("retrieve_for_turn", "invalid_arguments", "include_explicit_must_be_boolean")
@@ -175,6 +180,8 @@ def _dispatch_retrieve(
     }
     if time_hint:
         filters["time_hint"] = time_hint
+    if within_memory_id:
+        filters["within_memory_id"] = within_memory_id
     filters["include_explicit"] = include_explicit
     filters["kind_patterns"] = authorized_patterns
 
@@ -731,6 +738,14 @@ def _retrieve_schema() -> dict[str, Any]:
                         "description": "Legacy exclusive epoch alias; models should prefer end_at.",
                     },
                 },
+            },
+            "within_memory_id": {
+                "type": "string",
+                "description": (
+                    "Optional memory_id returned by browse_memory/open_memory. When set, dense and BM25 search "
+                    "are hard-limited to that node and its exact descendants before scoring; an empty result "
+                    "never falls back to unrelated history."
+                ),
             },
             "include_explicit": {
                 "type": "boolean",

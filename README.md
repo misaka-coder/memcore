@@ -31,7 +31,7 @@
 - **切片 5(读侧)✅**:`retrieval` —— 显式 retrieve 工具 → metadata 前置过滤 → raw/derived 分池混合检索 + RRF → 确定性分数与关系完整性检查；原始 query 始终保留，`entity_anchors` 高权重，`topic_terms` 只作普通辅助；`time_hint.start_at/end_at` 复用时间线的本地/ISO 解析并在评分前执行起点包含、终点不包含的硬过滤，未知答案不需要也不允许伪装成实体锚点；
   `build_prompt_context` 只拼可见三层,是否检索交给聊天模型调用工具决定。**读写侧全闭环。**
 - **时间线工具 ✅**:`read_timeline(...)` 支持无需 epoch 的 `time_range.start_at/end_at` 小时/分钟级读取，旧日期/时间段字段归一到同一 timestamp 路径，也支持以 raw `source_id` 为锚点读取前后完整 turn；默认 `conversation` 投影保留完整对话/事件并把大工具与材料轨迹变成可展开凭据，`full/tools` 可显式切换。默认无隐藏结果上限；调用者显式提供页面预算时才按完整 turn 分页并返回可校验 `next_cursor`。
-- **记忆目录导航 ✅**:`browse_memory(...)` 按确定性时间范围返回有界卡片目录与 raw 覆盖状态；`open_memory(memory_id, view=card/content/sources)` 可从摘要正文继续展开精确子摘要或完整 raw 逻辑单元。分页使用 namespace-safe 稳定键 cursor，不截断卡片/turn，缺失 lineage 明确返回 `partial`。
+- **记忆目录导航 ✅**:`browse_memory(...)` 按确定性时间范围返回有界卡片目录与 raw 覆盖状态；`open_memory(memory_id, view=card/content/sources)` 可从摘要正文继续展开精确子摘要或完整 raw 逻辑单元；`retrieve_for_turn(within_memory_id=...)` 可在已选节点的精确 lineage 内继续做 dense/BM25 模糊检索，实体条件放宽不会移除该边界，段内为空也不会退回全库。分页使用 namespace-safe 稳定键 cursor，不截断卡片/turn，缺失 lineage 明确返回 `partial`。
 - **精确条目展开 ✅**:`read_entry(source_id, detail)` 是 `open_memory(view="content")` 的 current-conversation raw-only 兼容适配；summary/semantic、越权 ID、密钥和本地路径不会伪装成 raw 正文。
 - **embedding 三条路 + 自检 ✅**:`HuggingFaceEmbeddingProvider`(本地 BGE-M3)/ `HTTPEmbeddingProvider`(OpenAI 兼容 API,纯 stdlib 零依赖)/ `HashedEmbeddingProvider`(仅测试)。
   `EmbeddingProvider` 同时提供 `embed_query/embed_queries` 与

@@ -78,8 +78,8 @@ memcore 会把 raw、summary、semantic、timeline 渲染成带日期和星期�
 推荐给聊天模型的工具说明:
 
 ```text
-retrieve_for_turn(query, entity_anchors?, topic_terms?, source_layers?, memory_facets?, about_roles?, time_hint?)
-用于模糊检索。query 始终参与检索；准确且已知的实体使用 entity_anchors，正在询问的未知人物/答案不能先猜成 anchor；动作、关系、属性和主题使用 topic_terms。已知具体时间时可传 time_hint={start_at,end_at}，使用与 read_timeline 相同的本地/ISO 时间规则，并在相似度计算前硬过滤；memory_facets/about_roles 也会在评分前裁剪候选。
+retrieve_for_turn(query, entity_anchors?, topic_terms?, source_layers?, memory_facets?, about_roles?, time_hint?, within_memory_id?)
+用于模糊检索。query 始终参与检索；准确且已知的实体使用 entity_anchors，正在询问的未知人物/答案不能先猜成 anchor；动作、关系、属性和主题使用 topic_terms。已知具体时间时可传 time_hint={start_at,end_at}，使用与 read_timeline 相同的本地/ISO 时间规则，并在相似度计算前硬过滤；memory_facets/about_roles 也会在评分前裁剪候选。已经通过 browse_memory/open_memory 选中一段记忆时，可传该 memory_id 作为 within_memory_id，只在该节点及其精确来源中继续模糊搜索；段内为空不会自动搜索其它历史。
 
 browse_memory(time_range? / date_from?, date_to?, node_types?, cursor?)
 用于宽范围历史概览。返回的是完整卡片页和 coverage，不是 Top-K，也不是截断 raw。page_complete=false 时下一次只传 cursor。
@@ -104,6 +104,7 @@ Python API/dispatcher 仍暂时接受旧 `read_entry(source_id, detail)`，但�
 | “7 月 22 日到 25 日都聊了什么?” | `browse_memory(date_from="2026-07-22",date_to="2026-07-25")`，选择相关 card 后 `open_memory(view="content")`；摘要不足才展开 sources |
 | “昨天 11 点到 12 点和我一起来的是谁?” | `read_timeline(time_range={"start_at":"昨天日期 11:00","end_at":"昨天日期 12:00"})`；从原话识别人名，不猜未知 entity anchor |
 | “大约那一小时、和 misaka 同行的人是谁，但还需按关系模糊找?” | `retrieve_for_turn(query="和 misaka 一起来玩的另一个人", entity_anchors=["misaka"], topic_terms=["同行","一起来玩"], time_hint={"start_at":"日期 11:00","end_at":"日期 12:00"})`；不填写未知答案的人名 |
+| “这张早茶卡片里提到的同行者是谁?” | `retrieve_for_turn(query="早茶 同行 账单", within_memory_id=card.memory_id, source_layers=["raw"])`；不知道姓名时不要猜 entity anchor，段内空结果也不要当作全库无记录 |
 | “我之前是不是说过喜欢可乐?” | `retrieve_for_turn(query="喜欢 可乐", entity_anchors=["可乐"], memory_facets=["preference"], about_roles=["user"])` |
 | “上周二那件事后来怎么样了?” | 先用时间锚点算日期,再 `read_timeline`;必要时补 `retrieve_for_turn` |
 | “谁负责基金复盘?” | 群聊场景优先带人物/计划关键词 `retrieve_for_turn`,必要时读时间线 |

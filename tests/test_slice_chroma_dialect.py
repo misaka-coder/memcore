@@ -13,7 +13,7 @@ import unittest
 
 from memcore.embedding.base import EmbeddingProvider
 from memcore.index.chroma_index import ChromaVectorIndex
-from memcore.index.chroma_index import _to_chroma_where
+from memcore.index.chroma_index import _to_chroma_where, _with_source_excludes
 
 _HAS_CHROMA = importlib.util.find_spec("chromadb") is not None
 
@@ -89,6 +89,23 @@ class WhereTranslation(unittest.TestCase):
     def test_source_exclude_nin_kept_as_operator_clause(self) -> None:
         out = _to_chroma_where({"user_id": "u1", "source_id": {"$nin": ["m1", "m2"]}})
         self.assertEqual(out, {"$and": [{"user_id": "u1"}, {"source_id": {"$nin": ["m1", "m2"]}}]})
+
+    def test_source_excludes_do_not_overwrite_lineage_include_scope(self) -> None:
+        scoped = _with_source_excludes(
+            {"user_id": "u1", "source_id": {"$in": ["episode", "raw"]}},
+            ["episode", "visible"],
+        )
+
+        self.assertEqual(
+            _to_chroma_where(scoped),
+            {
+                "$and": [
+                    {"user_id": "u1"},
+                    {"source_id": {"$in": ["episode", "raw"]}},
+                    {"source_id": {"$nin": ["episode", "visible"]}},
+                ]
+            },
+        )
 
     def test_or_clause_is_preserved(self) -> None:
         out = _to_chroma_where({"$or": [{"memory_facet__preference": True}, {"memory_facet__plan": True}]})
@@ -176,6 +193,17 @@ class ChromaIntegration(unittest.TestCase):
 
     def test_count_candidates_uses_same_filter_and_exclusions(self) -> None:
         where = {"tenant_id": "t", "user_id": "u1", "domain_id": "d"}
+
+        self.assertEqual(self.index.count_candidates(where=where), 1)
+        self.assertEqual(self.index.count_candidates(where=where, exclude_source_ids=["m1"]), 0)
+
+    def test_lineage_include_and_visible_exclude_are_both_enforced(self) -> None:
+        where = {
+            "tenant_id": "t",
+            "user_id": "u1",
+            "domain_id": "d",
+            "source_id": {"$in": ["m1", "m2"]},
+        }
 
         self.assertEqual(self.index.count_candidates(where=where), 1)
         self.assertEqual(self.index.count_candidates(where=where, exclude_source_ids=["m1"]), 0)

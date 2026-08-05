@@ -1448,6 +1448,7 @@ class MemorySystem:
         include_explicit: bool = False,
         cross_conversation: bool = False,
         exclude_source_ids: list[str] | None = None,
+        within_memory_id: str = "",
         max_matches: int = 0,
         result_token_budget: int = 0,
     ) -> RetrievalResult:
@@ -1466,6 +1467,7 @@ class MemorySystem:
                 include_explicit=include_explicit,
                 cross_conversation=cross_conversation,
                 exclude_source_ids=tuple(exclude_source_ids or ()),
+                within_memory_id=within_memory_id,
                 max_matches=max_matches,
                 result_token_budget=result_token_budget,
             ),

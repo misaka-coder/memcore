@@ -8,6 +8,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Mapping
 
 from .config import MemoryConfig
+from .errors import SchemaError
 from .index.base import VectorIndex
 from .index.metadata_filters import (
     INDEX_SCHEMA_KEY,
@@ -48,6 +49,7 @@ class RetrievalRequest:
     include_explicit: bool = False
     cross_conversation: bool = False
     exclude_source_ids: tuple[str, ...] = ()
+    within_memory_id: str = ""
     max_matches: int = 0
     result_token_budget: int = 0
 
@@ -61,6 +63,8 @@ class HardFilterPlan:
     source_layers: tuple[str, ...]
     time_hint: Mapping[str, Any]
     exclude_source_ids: tuple[str, ...]
+    within_memory_id: str
+    within_source_ids: tuple[str, ...]
     index_where: Mapping[str, Any]
 
 
@@ -129,6 +133,7 @@ class RetrievalResult:
     effective_filters: Mapping[str, Any] = field(default_factory=dict)
     relaxation_steps: tuple[str, ...] = ()
     candidate_counts: Mapping[str, int] = field(default_factory=dict)
+    lineage_scope: Mapping[str, Any] = field(default_factory=dict)
     entity_filter_relaxed: bool = False
     rejected_counts: Mapping[str, int] = field(default_factory=dict)
     token_usage: int = 0
@@ -151,6 +156,7 @@ class RetrievalResult:
             "effective_filters": dict(self.effective_filters),
             "relaxation_steps": list(self.relaxation_steps),
             "candidate_counts": dict(self.candidate_counts),
+            "lineage_scope": dict(self.lineage_scope),
             "entity_filter_relaxed": self.entity_filter_relaxed,
             "rejected_counts": dict(self.rejected_counts),
             "token_usage": self.token_usage,
@@ -181,6 +187,10 @@ def _flag_or_clause(keys: tuple[str, ...]) -> dict[str, Any]:
     if len(keys) == 1:
         return {keys[0]: True}
     return {"$or": [{key: True} for key in keys]}
+
+
+class _RetrievalUnavailableError(RuntimeError):
+    """A planning dependency or stored lineage cannot be served safely."""
 
 
 class ReadPipeline:
@@ -275,6 +285,10 @@ class ReadPipeline:
     def retrieve_result(self, *, namespace: Namespace, request: RetrievalRequest) -> RetrievalResult:
         try:
             plan = self._compile_plan(namespace=namespace, request=request)
+        except _RetrievalUnavailableError as exc:
+            return RetrievalResult(status="unavailable", reason=str(exc) or "lineage_unavailable")
+        except NotImplementedError:
+            return RetrievalResult(status="unavailable", reason="retrieval_store_unsupported")
         except (TypeError, ValueError) as exc:
             return RetrievalResult(status="invalid", reason=str(exc) or "invalid_filter")
         try:
@@ -298,6 +312,7 @@ class ReadPipeline:
         memory_facets: list[str] | None = None,
         about_roles: list[str] | None = None,
         exclude_source_ids: list[str] | None = None,
+        within_memory_id: str = "",
         kind_patterns: list[str] | None = None,
         include_explicit: bool = False,
         cross_conversation: bool = True,
@@ -318,6 +333,7 @@ class ReadPipeline:
                 include_explicit=bool(include_explicit),
                 cross_conversation=bool(cross_conversation),
                 exclude_source_ids=tuple(exclude_source_ids or ()),
+                within_memory_id=within_memory_id,
                 result_token_budget=result_token_budget,
             ),
         )
@@ -351,6 +367,12 @@ class ReadPipeline:
             raise ValueError("explicit_kind_patterns_required")
         time_hint = self._normalize_time_hint(request.time_hint)
         excluded = _filter_values(request.exclude_source_ids)
+        within_memory_id = self._normalize_within_memory_id(request.within_memory_id)
+        within_source_ids = self._resolve_within_source_ids(
+            namespace=namespace,
+            memory_id=within_memory_id,
+            cross_conversation=bool(request.cross_conversation),
+        )
         max_matches = int(request.max_matches or self.config.retrieval_limit)
         if max_matches < 1:
             raise ValueError("invalid_max_matches")
@@ -373,10 +395,15 @@ class ReadPipeline:
             include_explicit=bool(request.include_explicit),
             cross_conversation=bool(request.cross_conversation),
             exclude_source_ids=excluded,
+            within_memory_id=within_memory_id,
             max_matches=max_matches,
             result_token_budget=result_token_budget,
         )
-        hard_where = self._build_hard_where(namespace=namespace, request=normalized_request)
+        hard_where = self._build_hard_where(
+            namespace=namespace,
+            request=normalized_request,
+            within_source_ids=within_source_ids,
+        )
         hard = HardFilterPlan(
             namespace_key=(
                 namespace.tenant_id or "",
@@ -390,6 +417,8 @@ class ReadPipeline:
             source_layers=source_layers,
             time_hint=time_hint,
             exclude_source_ids=excluded,
+            within_memory_id=within_memory_id,
+            within_source_ids=within_source_ids,
             index_where=hard_where,
         )
         semantic = SemanticFilterPlan(
@@ -407,7 +436,50 @@ class ReadPipeline:
     def _normalize_time_hint(self, value: Mapping[str, Any]) -> dict[str, Any]:
         return normalize_retrieval_time_hint(timezone=self.timezone, value=value)
 
-    def _build_hard_where(self, *, namespace: Namespace, request: RetrievalRequest) -> dict[str, Any]:
+    @staticmethod
+    def _normalize_within_memory_id(value: Any) -> str:
+        if value is None:
+            return ""
+        if not isinstance(value, str):
+            raise ValueError("within_memory_id_must_be_string")
+        return value.strip()
+
+    def _resolve_within_source_ids(
+        self,
+        *,
+        namespace: Namespace,
+        memory_id: str,
+        cross_conversation: bool,
+    ) -> tuple[str, ...]:
+        if not memory_id:
+            return ()
+        try:
+            record = self.store.get_retrieval_record(
+                namespace=namespace,
+                source_id=memory_id,
+                cross_conversation=cross_conversation,
+            )
+        except SchemaError as exc:
+            raise _RetrievalUnavailableError(str(exc) or "ambiguous_memory_id") from exc
+        if record is None:
+            raise ValueError("within_memory_id_not_found_or_out_of_scope")
+        closure = self.store.resolve_lineage_source_ids(
+            namespace=namespace,
+            source_ids=(memory_id,),
+            cross_conversation=cross_conversation,
+            include_ancestors=False,
+        )
+        if closure.status != "resolved":
+            raise _RetrievalUnavailableError(closure.reason or "lineage_broken_or_cyclic")
+        return tuple(dict.fromkeys((memory_id, *closure.descendant_ids)))
+
+    def _build_hard_where(
+        self,
+        *,
+        namespace: Namespace,
+        request: RetrievalRequest,
+        within_source_ids: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
         tenant, user, domain = namespace.hard_key()
         where: dict[str, Any] = {
             "tenant_id": tenant,
@@ -421,6 +493,10 @@ class ReadPipeline:
         }
         if not request.cross_conversation:
             where["conversation_id"] = namespace.conversation_id or ""
+        if request.within_memory_id:
+            # Shared by dense and BM25 before scoring. Semantic/entity
+            # relaxation must never remove this admission boundary.
+            where["source_id"] = {"$in": list(within_source_ids)}
         hint = request.time_hint
         periods = list(hint.get("time_periods") or [])
         if periods:
@@ -529,7 +605,11 @@ class ReadPipeline:
             rejected=rejected,
         )
         if unsafe:
-            return RetrievalResult(status="unavailable", reason="index_filter_unsupported")
+            return RetrievalResult(
+                status="unavailable",
+                lineage_scope=self._lineage_scope(plan),
+                reason="index_filter_unsupported",
+            )
         derived_matches, unsafe, derived_strict, derived_effective, derived_relaxed = self._search_pool(
             plan=plan,
             layers=derived_layers,
@@ -537,7 +617,11 @@ class ReadPipeline:
             rejected=rejected,
         )
         if unsafe:
-            return RetrievalResult(status="unavailable", reason="index_filter_unsupported")
+            return RetrievalResult(
+                status="unavailable",
+                lineage_scope=self._lineage_scope(plan),
+                reason="index_filter_unsupported",
+            )
         candidate_counts = {
             "raw_strict": raw_strict,
             "raw_effective": raw_effective,
@@ -561,6 +645,7 @@ class ReadPipeline:
                 effective_filters=filters,
                 relaxation_steps=relaxation,
                 candidate_counts=candidate_counts,
+                lineage_scope=self._lineage_scope(plan),
                 entity_filter_relaxed=bool(relaxed_layers),
                 rejected_counts=rejected,
                 reason="token_counter_required",
@@ -572,6 +657,7 @@ class ReadPipeline:
                 effective_filters=filters,
                 relaxation_steps=relaxation,
                 candidate_counts=candidate_counts,
+                lineage_scope=self._lineage_scope(plan),
                 entity_filter_relaxed=bool(relaxed_layers),
                 rejected_counts=rejected,
                 reason="relation_store_unsupported",
@@ -586,6 +672,7 @@ class ReadPipeline:
             effective_filters=filters,
             relaxation_steps=relaxation,
             candidate_counts=candidate_counts,
+            lineage_scope=self._lineage_scope(plan),
             entity_filter_relaxed=bool(relaxed_layers),
             rejected_counts=rejected,
             token_usage=token_usage,
@@ -747,6 +834,8 @@ class ReadPipeline:
     def _record_satisfies_hard_plan(self, *, record: dict[str, Any], hard: HardFilterPlan) -> bool:
         source_id = str(record.get("source_id") or record.get("summary_id") or record.get("semantic_id") or "")
         if not source_id or source_id in hard.exclude_source_ids:
+            return False
+        if hard.within_source_ids and source_id not in hard.within_source_ids:
             return False
         namespace_key = (
             str(record.get("tenant_id") or ""),
@@ -971,6 +1060,10 @@ class ReadPipeline:
                 return None
 
         selected = sorted(selected, key=lambda item: item.seq_no)
+        if plan.hard.within_source_ids and any(
+            entry.source_id not in plan.hard.within_source_ids for entry in selected
+        ):
+            return None
         if any(
             not self._relation_entry_visible(entry, include_explicit=plan.hard.include_explicit) for entry in selected
         ):
@@ -1111,8 +1204,19 @@ class ReadPipeline:
             "entity_anchors": list(semantic.entity_anchors),
             "entity_relaxed_layers": list(entity_relaxed_layers),
             "topic_terms": list(plan.request.topic_terms),
+            "within_memory_id": plan.hard.within_memory_id,
             "index_schema_version": INDEX_SCHEMA_VERSION,
             "result_token_budget": plan.relation.result_token_budget,
+        }
+
+    @staticmethod
+    def _lineage_scope(plan: RetrievalQueryPlan) -> dict[str, Any]:
+        if not plan.hard.within_memory_id:
+            return {}
+        return {
+            "status": "resolved",
+            "within_memory_id": plan.hard.within_memory_id,
+            "candidate_source_count": len(plan.hard.within_source_ids),
         }
 
 

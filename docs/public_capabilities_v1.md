@@ -80,7 +80,7 @@ V2 使用实际 provider projection 的 token 预算规划完整 turn。这是�
 
 ### 4. 互补的记忆读取与证据导航工具
 
-- `retrieve_for_turn`：面向偏好、计划、关系、人物、主题和长期事实的模糊检索；支持用本地/ISO `time_hint.start_at/end_at` 在评分前硬过滤，并允许只凭已知人物、关系和时间发现未知答案；
+- `retrieve_for_turn`：面向偏好、计划、关系、人物、主题和长期事实的模糊检索；支持用本地/ISO `time_hint.start_at/end_at` 在评分前硬过滤，也可用 `within_memory_id` 把 dense/BM25 候选硬限制在已选节点及其精确后代中，允许只凭已知事件、关系和时间发现未知答案；段内为空不会放宽到全库；
 - `browse_memory`：面向多日/宽范围概览，按 SQLite 时间重叠返回小型 episodic/semantic 卡片，而不是把整段群聊 raw 塞回模型；结果同时报告已摘要、未摘要 live tail、broken lineage 和无损 cursor；
 - `open_memory`：统一打开 raw/episodic/semantic ID；`card` 看导航信息，`content` 看完整节点正文，`sources` 沿精确 lineage 返回子摘要卡或完整 raw 逻辑单元；
 - `read_timeline`：既可按 `start_at/end_at` 精确到小时/分钟读取，也可按旧日期/粗时段读取，或把 raw 检索命中扩成前后完整 turn；`conversation/full/tools` 决定证据密度，显式页面预算才会产生完整单元 cursor；
