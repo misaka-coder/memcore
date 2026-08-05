@@ -27,6 +27,12 @@ from .index.base import VectorIndex
 from .index.entry_builder import build_semantic_entry, build_summary_entry
 from .index.metadata_filters import INDEX_SCHEMA_KEY, INDEX_SCHEMA_VERSION
 from .llm.base import LLMClient, LLMRequest, ResponseFormat, TaskType
+from .memory_catalog import (
+    CATALOG_SCHEMA_VERSION,
+    collect_participant_refs,
+    count_logical_turns,
+    normalize_catalog_fields,
+)
 from .namespace import Namespace
 from .prompts import PromptOverrides, build_reinforcement_prompts, build_semantic_prompts, build_summary_prompts
 from .projection import (
@@ -254,7 +260,15 @@ class Compaction:
                     enable_flavor=self.config.enable_flavor,
                     reference_summary_text=self._render_reference_summaries(namespace),
                 ),
-                fallback={"diary_summary": "", "importance": 0.3, "key_events": [], "core_facts": []},
+                fallback={
+                    "diary_summary": "",
+                    "importance": 0.3,
+                    "key_events": [],
+                    "core_facts": [],
+                    "memory_title": "",
+                    "catalog_hint": "",
+                    "topic_headings": [],
+                },
             )
             if not call.ok or not _has_summary_content(call.data):
                 result["status"] = "failed"
@@ -427,6 +441,7 @@ class Compaction:
         visibility = (
             "default" if any(entry.retrieval_visibility.value == "default" for entry in entries) else "explicit"
         )
+        catalog = normalize_catalog_fields(payload)
         record = {
             "summary_id": summary_id,
             "kind": "memory.episode_summary",
@@ -441,6 +456,10 @@ class Compaction:
             "diary_summary": str(payload.get("diary_summary") or ""),
             "key_events": _str_list(payload.get("key_events")),
             "core_facts": _str_list(payload.get("core_facts")),
+            **catalog,
+            "participant_refs": collect_participant_refs(entries),
+            "source_turn_count": count_logical_turns(entries),
+            "source_entry_count": len(entries),
             "memory_metadata": metadata,
             "semantic_tags": _merge_unique(metadata.get("entity_anchors"), metadata.get("topic_terms")),
             "retrieval_visibility": visibility,
@@ -507,6 +526,9 @@ class Compaction:
             "importance": 0.2,
             "diary_summary": "；".join(facts),
             "core_facts": facts,
+            "participant_refs": collect_participant_refs(entries),
+            "source_turn_count": count_logical_turns(entries),
+            "source_entry_count": len(entries),
             "memory_metadata": {},
             "trace_metadata": summary_trace,
             "retrieval_visibility": "explicit",
@@ -589,7 +611,14 @@ class Compaction:
                 overrides=self.overrides,
                 enable_flavor=self.config.enable_flavor,
             ),
-            fallback={"semantic_summary": "", "importance": 0.4, "stable_facts": []},
+            fallback={
+                "semantic_summary": "",
+                "importance": 0.4,
+                "stable_facts": [],
+                "memory_title": "",
+                "catalog_hint": "",
+                "topic_headings": [],
+            },
         )
         if not call.ok or not _has_semantic_content(call.data):
             result["semantic_retry_pending"] += 1
@@ -626,6 +655,7 @@ class Compaction:
             "recurring_topics": _str_list(payload.get("recurring_topics")),
             "important_people": _str_list(payload.get("important_people")),
             "open_loops": _str_list(payload.get("open_loops")),
+            **normalize_catalog_fields(payload),
             "memory_metadata": semantic_metadata,
             "source_summary_ids": [str(s["summary_id"]) for s in batch],
         }
@@ -725,6 +755,9 @@ class Compaction:
             "recurring_topics": _merge_unique(target.get("recurring_topics"), incoming["recurring_topics"]),
             "important_people": _merge_unique(target.get("important_people"), incoming["important_people"]),
             "open_loops": _merge_unique(target.get("open_loops"), incoming["open_loops"]),
+            "memory_title": target.get("memory_title") or incoming.get("memory_title") or "",
+            "catalog_hint": target.get("catalog_hint") or incoming.get("catalog_hint") or "",
+            "topic_headings": _merge_unique(target.get("topic_headings"), incoming.get("topic_headings")),
         }
         call = self._call_json(
             TaskType.REINFORCEMENT,
@@ -737,6 +770,16 @@ class Compaction:
             fallback=fallback,
         )
         payload = call.data
+        catalog = normalize_catalog_fields(payload)
+        if not catalog["memory_title"]:
+            catalog["memory_title"] = str(fallback["memory_title"] or "")
+        if not catalog["catalog_hint"]:
+            catalog["catalog_hint"] = str(fallback["catalog_hint"] or "")
+        if not catalog["topic_headings"]:
+            catalog["topic_headings"] = list(fallback["topic_headings"])
+        catalog["catalog_schema_version"] = (
+            CATALOG_SCHEMA_VERSION if catalog["memory_title"] and catalog["catalog_hint"] else 0
+        )
         return {
             "semantic_id": target["semantic_id"],  # 同 id 覆盖 = 强化
             "timestamp": incoming["timestamp"],
@@ -752,6 +795,7 @@ class Compaction:
             "recurring_topics": _str_list(payload.get("recurring_topics")) or fallback["recurring_topics"],
             "important_people": _str_list(payload.get("important_people")) or fallback["important_people"],
             "open_loops": _str_list(payload.get("open_loops")) or fallback["open_loops"],
+            **catalog,
             "memory_metadata": _merge_memory_metadata(
                 target.get("memory_metadata"),
                 incoming["memory_metadata"],
@@ -847,6 +891,15 @@ class Compaction:
                 if part
             )
             lines.append(f"- [{head}]" if head else "- 阶段摘要")
+            memory_title = normalize_text(s.get("memory_title"))
+            catalog_hint = normalize_text(s.get("catalog_hint"))
+            topic_headings = _str_list(s.get("topic_headings"))
+            if memory_title:
+                lines.append(f"  记忆标题: {memory_title}")
+            if catalog_hint:
+                lines.append(f"  目录提示: {catalog_hint}")
+            if topic_headings:
+                lines.append("  主题: " + "; ".join(topic_headings))
             for key, label in (
                 ("diary_summary", "阶段回忆"),
                 ("key_events", "关键事件"),

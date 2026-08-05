@@ -22,7 +22,7 @@ from memcore import (
     SchemaError,
 )
 from memcore.namespace import Actor
-from memcore.store.migrations import CURRENT_SCHEMA_VERSION, _migrate_v1_to_v2
+from memcore.store.migrations import CURRENT_SCHEMA_VERSION, _migrate_v1_to_v2, _migrate_v2_to_v3
 
 
 class _NoopLLM(LLMClient):
@@ -206,6 +206,18 @@ def _create_v2_database(path: Path) -> None:
         connection.close()
 
 
+def _create_v3_database(path: Path) -> None:
+    _create_v2_database(path)
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        _migrate_v2_to_v3(connection)
+        connection.execute("PRAGMA user_version = 3")
+        connection.commit()
+    finally:
+        connection.close()
+
+
 def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
     return {str(row[1]) for row in connection.execute(f'PRAGMA table_info("{table}")').fetchall()}
 
@@ -284,11 +296,42 @@ class LatestSchemaTests(unittest.TestCase):
                         "row_version",
                     }.issubset(_columns(connection, "messages"))
                 )
+                self.assertTrue(
+                    {
+                        "memory_title",
+                        "catalog_hint",
+                        "topic_headings_json",
+                        "participant_refs_json",
+                        "source_turn_count",
+                        "source_entry_count",
+                        "catalog_schema_version",
+                    }.issubset(_columns(connection, "summaries"))
+                )
             finally:
                 connection.close()
 
 
 class V1MigrationTests(unittest.TestCase):
+    def test_v3_catalog_migration_backfills_metrics_without_rewriting_memory_content(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "v3.sqlite3"
+            _create_v3_database(path)
+
+            store = SQLiteMemoryStore(str(path))
+            summary = store.get_record_by_source_id("mixed-summary")
+            semantic = store.get_record_by_source_id("semantic-1")
+            store.close()
+
+            self.assertEqual(summary["diary_summary"], "对话事实与工具过程混合。")
+            self.assertEqual(summary["source_ids"], ["user-1", "call-1"])
+            self.assertEqual(summary["source_entry_count"], 2)
+            self.assertEqual(summary["source_turn_count"], 2)
+            self.assertEqual(summary["memory_title"], "")
+            self.assertEqual(summary["catalog_schema_version"], 0)
+            self.assertEqual(semantic["semantic_summary"], "用户偏好无糖饮料。")
+            self.assertEqual(semantic["memory_title"], "")
+            self.assertEqual(semantic["catalog_schema_version"], 0)
+
     def test_v2_database_is_converted_once_and_every_layer_is_marked_for_reindex(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "v2.sqlite3"
@@ -313,7 +356,7 @@ class V1MigrationTests(unittest.TestCase):
                 self.assertEqual(record["index_key"], "")
 
             reopened = SQLiteMemoryStore(str(path))
-            self.assertEqual(reopened.schema_version, 3)
+            self.assertEqual(reopened.schema_version, CURRENT_SCHEMA_VERSION)
             self.assertEqual(
                 reopened.get_record_by_source_id("user-1")["memory_metadata"],
                 records[0]["memory_metadata"],
@@ -376,6 +419,9 @@ class V1MigrationTests(unittest.TestCase):
             self.assertEqual(mixed["retrieval_visibility"], "default")
             self.assertEqual(mixed["memory_metadata"]["memory_facets"], ["preference"])
             self.assertEqual(mixed["memory_metadata"]["topic_terms"], ["可乐"])
+            self.assertEqual(mixed["source_entry_count"], 2)
+            self.assertEqual(mixed["source_turn_count"], 2)
+            self.assertEqual(mixed["catalog_schema_version"], 0)
             self.assertNotIn("legacy_categories", mixed["trace_metadata"])
             self.assertEqual(trace["kind"], "memory.operation_digest")
             self.assertEqual(trace["retrieval_visibility"], "explicit")

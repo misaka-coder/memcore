@@ -91,7 +91,12 @@ def build_raw_entry(record: dict[str, Any]) -> dict[str, Any]:
 
 def build_summary_entry(record: dict[str, Any]) -> dict[str, Any]:
     text = " ".join(
-        [str(record.get("diary_summary") or "")]
+        [
+            str(record.get("memory_title") or ""),
+            str(record.get("catalog_hint") or ""),
+            str(record.get("diary_summary") or ""),
+        ]
+        + [str(x) for x in (record.get("topic_headings") or [])]
         + [str(x) for x in (record.get("key_events") or [])]
         + [str(x) for x in (record.get("core_facts") or [])]
     )
@@ -109,7 +114,12 @@ def build_summary_entry(record: dict[str, Any]) -> dict[str, Any]:
 
 def build_semantic_entry(record: dict[str, Any]) -> dict[str, Any]:
     text = " ".join(
-        [str(record.get("semantic_summary") or "")]
+        [
+            str(record.get("memory_title") or ""),
+            str(record.get("catalog_hint") or ""),
+            str(record.get("semantic_summary") or ""),
+        ]
+        + [str(x) for x in (record.get("topic_headings") or [])]
         + [str(x) for x in (record.get("stable_facts") or [])]
         + [str(x) for x in (record.get("recurring_topics") or [])]
         + [str(x) for x in (record.get("important_people") or [])]

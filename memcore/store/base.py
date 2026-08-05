@@ -302,6 +302,18 @@ class MemoryStore(ABC):
         """cross_conversation=False(默认):只看当前会话;True:跨会话看同一用户(visible_memory_scope='user')。"""
         raise NotImplementedError
 
+    def get_episodic_summaries_by_time_range(
+        self,
+        *,
+        namespace: Namespace,
+        start_ts: int,
+        end_ts: int,
+        cross_conversation: bool = False,
+        include_explicit: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Return every overlapping episodic summary in deterministic time order."""
+        raise NotImplementedError
+
     @abstractmethod
     def get_recent_semantic_summaries(
         self, *, namespace: Namespace, limit: int | None = None, cross_conversation: bool = False

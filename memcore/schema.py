@@ -196,6 +196,9 @@ class SummaryRecord:
     key_events: list[str] = field(default_factory=list)
     core_facts: list[str] = field(default_factory=list)
     memory_metadata: MemoryMetadata = field(default_factory=MemoryMetadata)
+    memory_title: str = ""
+    catalog_hint: str = ""
+    topic_headings: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -210,6 +213,9 @@ class SemanticRecord:
     open_loops: list[str] = field(default_factory=list)
     memory_metadata: MemoryMetadata = field(default_factory=MemoryMetadata)
     reinforcement_count: int = 1
+    memory_title: str = ""
+    catalog_hint: str = ""
+    topic_headings: list[str] = field(default_factory=list)
 
 
 # 焊死的"必须存在"字段集合(供后续切片校验模型输出用)

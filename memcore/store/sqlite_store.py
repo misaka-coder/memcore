@@ -71,6 +71,8 @@ _JSON_FIELDS = {
     "summaries": {
         "key_events_json": "key_events",
         "core_facts_json": "core_facts",
+        "topic_headings_json": "topic_headings",
+        "participant_refs_json": "participant_refs",
         "semantic_tags_json": "semantic_tags",
         "memory_metadata_json": "memory_metadata",
         "source_ids_json": "source_ids",
@@ -81,6 +83,7 @@ _JSON_FIELDS = {
         "recurring_topics_json": "recurring_topics",
         "important_people_json": "important_people",
         "open_loops_json": "open_loops",
+        "topic_headings_json": "topic_headings",
         "semantic_tags_json": "semantic_tags",
         "memory_metadata_json": "memory_metadata",
         "source_summary_ids_json": "source_summary_ids",
@@ -1713,6 +1716,13 @@ class SQLiteMemoryStore(MemoryStore):
             "diary_summary": str(record.get("diary_summary") or ""),
             "key_events_json": _json_dumps(record.get("key_events") or []),
             "core_facts_json": _json_dumps(record.get("core_facts") or []),
+            "memory_title": str(record.get("memory_title") or ""),
+            "catalog_hint": str(record.get("catalog_hint") or ""),
+            "topic_headings_json": _json_dumps(record.get("topic_headings") or []),
+            "participant_refs_json": _json_dumps(record.get("participant_refs") or []),
+            "source_turn_count": max(0, int(record.get("source_turn_count") or 0)),
+            "source_entry_count": max(0, int(record.get("source_entry_count") or 0)),
+            "catalog_schema_version": max(0, int(record.get("catalog_schema_version") or 0)),
             "semantic_tags_json": _json_dumps(record.get("semantic_tags") or []),
             "memory_metadata_json": _json_dumps(record.get("memory_metadata") or {}),
             "source_ids_json": _json_dumps(record.get("source_ids") or []),
@@ -1770,6 +1780,10 @@ class SQLiteMemoryStore(MemoryStore):
             "recurring_topics_json": _json_dumps(record.get("recurring_topics") or []),
             "important_people_json": _json_dumps(record.get("important_people") or []),
             "open_loops_json": _json_dumps(record.get("open_loops") or []),
+            "memory_title": str(record.get("memory_title") or ""),
+            "catalog_hint": str(record.get("catalog_hint") or ""),
+            "topic_headings_json": _json_dumps(record.get("topic_headings") or []),
+            "catalog_schema_version": max(0, int(record.get("catalog_schema_version") or 0)),
             "semantic_tags_json": _json_dumps(record.get("semantic_tags") or []),
             "memory_metadata_json": _json_dumps(record.get("memory_metadata") or {}),
             "source_summary_ids_json": _json_dumps(record.get("source_summary_ids") or []),
@@ -2358,6 +2372,46 @@ class SQLiteMemoryStore(MemoryStore):
                 [*params, int(limit)],
             ).fetchall()
         return [self._row_to_record(r, "summaries") for r in rows]
+
+    def get_episodic_summaries_by_time_range(
+        self,
+        *,
+        namespace: Namespace,
+        start_ts: int,
+        end_ts: int,
+        cross_conversation: bool = False,
+        include_explicit: bool = False,
+    ) -> list[dict[str, Any]]:
+        if isinstance(start_ts, bool) or isinstance(end_ts, bool):
+            raise ValueError("catalog_time_range_requires_integer_timestamps")
+        try:
+            resolved_start = int(start_ts)
+            resolved_end = int(end_ts)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("catalog_time_range_requires_integer_timestamps") from exc
+        if resolved_start < 0 or resolved_end <= resolved_start:
+            raise ValueError("catalog_time_range_invalid")
+        scope_clause, params = self._scope_clause(
+            namespace,
+            with_conversation=not bool(cross_conversation),
+        )
+        visibility_clause = "" if include_explicit else " AND retrieval_visibility = 'default'"
+        effective_start = "CASE WHEN period_start_ts > 0 THEN period_start_ts ELSE timestamp END"
+        effective_end = "CASE WHEN period_end_ts > 0 THEN period_end_ts ELSE timestamp END"
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT * FROM summaries
+                WHERE {scope_clause}
+                  AND kind = 'memory.episode_summary'
+                  {visibility_clause}
+                  AND {effective_end} >= ?
+                  AND {effective_start} < ?
+                ORDER BY {effective_start} ASC, timestamp ASC, summary_id ASC
+                """,
+                [*params, resolved_start, resolved_end],
+            ).fetchall()
+        return [self._row_to_record(row, "summaries") for row in rows]
 
     def get_recent_semantic_summaries(
         self, *, namespace: Namespace, limit: int | None = None, cross_conversation: bool = False

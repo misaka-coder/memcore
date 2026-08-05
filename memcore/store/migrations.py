@@ -14,7 +14,7 @@ from typing import Any, Iterable
 
 from ..errors import SchemaError
 
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 
 _CORE_TABLES = frozenset({"messages", "summaries", "semantic_summaries"})
 _TRACE_CATEGORIES = frozenset({"event_trace", "material_trace", "tool_trace"})
@@ -112,6 +112,13 @@ LATEST_SCHEMA_STATEMENTS = (
         diary_summary TEXT NOT NULL DEFAULT '',
         key_events_json TEXT NOT NULL DEFAULT '[]',
         core_facts_json TEXT NOT NULL DEFAULT '[]',
+        memory_title TEXT NOT NULL DEFAULT '',
+        catalog_hint TEXT NOT NULL DEFAULT '',
+        topic_headings_json TEXT NOT NULL DEFAULT '[]',
+        participant_refs_json TEXT NOT NULL DEFAULT '[]',
+        source_turn_count INTEGER NOT NULL DEFAULT 0,
+        source_entry_count INTEGER NOT NULL DEFAULT 0,
+        catalog_schema_version INTEGER NOT NULL DEFAULT 0,
         semantic_tags_json TEXT NOT NULL DEFAULT '[]',
         memory_metadata_json TEXT NOT NULL DEFAULT '{}',
         source_ids_json TEXT NOT NULL DEFAULT '[]',
@@ -152,6 +159,10 @@ LATEST_SCHEMA_STATEMENTS = (
         recurring_topics_json TEXT NOT NULL DEFAULT '[]',
         important_people_json TEXT NOT NULL DEFAULT '[]',
         open_loops_json TEXT NOT NULL DEFAULT '[]',
+        memory_title TEXT NOT NULL DEFAULT '',
+        catalog_hint TEXT NOT NULL DEFAULT '',
+        topic_headings_json TEXT NOT NULL DEFAULT '[]',
+        catalog_schema_version INTEGER NOT NULL DEFAULT 0,
         semantic_tags_json TEXT NOT NULL DEFAULT '[]',
         memory_metadata_json TEXT NOT NULL DEFAULT '{}',
         source_summary_ids_json TEXT NOT NULL DEFAULT '[]',
@@ -264,6 +275,23 @@ LATEST_SCHEMA_STATEMENTS = (
     """,
 )
 
+_CATALOG_INDEX_STATEMENTS = (
+    """
+    CREATE INDEX IF NOT EXISTS idx_summaries_scope_period
+    ON summaries(
+        tenant_id, user_id, domain_id, conversation_id,
+        period_start_ts, period_end_ts, timestamp, summary_id
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_summaries_hard_scope_period
+    ON summaries(
+        tenant_id, user_id, domain_id,
+        period_start_ts, period_end_ts, timestamp, conversation_id, summary_id
+    )
+    """,
+)
+
 
 _V2_MESSAGE_COLUMNS = {
     "kind": "TEXT NOT NULL DEFAULT ''",
@@ -316,6 +344,23 @@ _V2_SEMANTIC_COLUMNS = {
     "index_key": "TEXT NOT NULL DEFAULT ''",
 }
 
+_V4_SUMMARY_COLUMNS = {
+    "memory_title": "TEXT NOT NULL DEFAULT ''",
+    "catalog_hint": "TEXT NOT NULL DEFAULT ''",
+    "topic_headings_json": "TEXT NOT NULL DEFAULT '[]'",
+    "participant_refs_json": "TEXT NOT NULL DEFAULT '[]'",
+    "source_turn_count": "INTEGER NOT NULL DEFAULT 0",
+    "source_entry_count": "INTEGER NOT NULL DEFAULT 0",
+    "catalog_schema_version": "INTEGER NOT NULL DEFAULT 0",
+}
+
+_V4_SEMANTIC_COLUMNS = {
+    "memory_title": "TEXT NOT NULL DEFAULT ''",
+    "catalog_hint": "TEXT NOT NULL DEFAULT ''",
+    "topic_headings_json": "TEXT NOT NULL DEFAULT '[]'",
+    "catalog_schema_version": "INTEGER NOT NULL DEFAULT 0",
+}
+
 _REQUIRED_COLUMNS = {
     "messages": frozenset(
         {
@@ -357,6 +402,7 @@ _REQUIRED_COLUMNS = {
             "diary_summary",
             "key_events_json",
             "core_facts_json",
+            *_V4_SUMMARY_COLUMNS,
             "semantic_tags_json",
             "memory_metadata_json",
             "source_ids_json",
@@ -384,6 +430,7 @@ _REQUIRED_COLUMNS = {
             "recurring_topics_json",
             "important_people_json",
             "open_loops_json",
+            *_V4_SEMANTIC_COLUMNS,
             "semantic_tags_json",
             "memory_metadata_json",
             "source_summary_ids_json",
@@ -480,7 +527,7 @@ def migrate_database(connection: sqlite3.Connection) -> int:
         else:
             if has_core != _CORE_TABLES:
                 raise SchemaError("sqlite_schema_partial_core_tables")
-            if version not in {0, 1, 2, CURRENT_SCHEMA_VERSION}:
+            if version not in {0, 1, 2, 3, CURRENT_SCHEMA_VERSION}:
                 raise SchemaError("sqlite_schema_unsupported_version")
             if version < 2:
                 _migrate_v1_to_v2(connection)
@@ -488,7 +535,10 @@ def migrate_database(connection: sqlite3.Connection) -> int:
                 _execute_statements(connection, LATEST_SCHEMA_STATEMENTS)
             if version < 3:
                 _migrate_v2_to_v3(connection)
+            if version < 4:
+                _migrate_v3_to_v4(connection)
 
+        _execute_statements(connection, _CATALOG_INDEX_STATEMENTS)
         _validate_latest_schema(connection)
         connection.execute(f"PRAGMA user_version = {CURRENT_SCHEMA_VERSION}")
         connection.commit()
@@ -575,6 +625,85 @@ def _migrate_v2_to_v3(connection: sqlite3.Connection) -> None:
         connection.execute(
             "UPDATE summaries SET trace_metadata_json = ? WHERE summary_id = ?",
             (_json_dumps(trace_metadata), str(row[0])),
+        )
+
+
+def _migrate_v3_to_v4(connection: sqlite3.Connection) -> None:
+    """Add catalog projections without calling an LLM or rewriting memory truth."""
+
+    _add_missing_columns(connection, "summaries", _V4_SUMMARY_COLUMNS)
+    _add_missing_columns(connection, "semantic_summaries", _V4_SEMANTIC_COLUMNS)
+    _backfill_summary_catalog_metrics(connection)
+
+
+def _backfill_summary_catalog_metrics(connection: sqlite3.Connection) -> None:
+    rows = connection.execute(
+        """
+        SELECT summary_id, tenant_id, user_id, domain_id, conversation_id, source_ids_json
+        FROM summaries ORDER BY summary_id
+        """
+    ).fetchall()
+    for summary_id, tenant_id, user_id, domain_id, conversation_id, encoded_source_ids in rows:
+        source_ids = _load_json_list(encoded_source_ids)
+        source_ids = list(dict.fromkeys(str(item or "").strip() for item in source_ids if str(item or "").strip()))
+        by_source: dict[str, tuple[str, str, str, str, str]] = {}
+        for offset in range(0, len(source_ids), 500):
+            batch = source_ids[offset : offset + 500]
+            placeholders = ",".join("?" for _ in batch)
+            if not placeholders:
+                continue
+            source_rows = connection.execute(
+                f"""
+                SELECT source_id, turn_id, actor_id, actor_display_name,
+                       target_actor_id, target_actor_display_name
+                FROM messages
+                WHERE source_id IN ({placeholders})
+                  AND tenant_id = ? AND user_id = ? AND domain_id = ? AND conversation_id = ?
+                """,
+                [
+                    *batch,
+                    str(tenant_id or ""),
+                    str(user_id or ""),
+                    str(domain_id or ""),
+                    str(conversation_id or ""),
+                ],
+            ).fetchall()
+            for row in source_rows:
+                by_source[str(row[0])] = (
+                    str(row[1] or ""),
+                    str(row[2] or ""),
+                    str(row[3] or ""),
+                    str(row[4] or ""),
+                    str(row[5] or ""),
+                )
+
+        logical_turns: set[str] = set()
+        participant_order: list[str] = []
+        participant_names: dict[str, str] = {}
+        for source_id in source_ids:
+            values = by_source.get(source_id)
+            if values is None:
+                continue
+            turn_id, actor_id, actor_name, target_id, target_name = values
+            logical_turns.add(turn_id or source_id)
+            for participant_id, display_name in ((actor_id, actor_name), (target_id, target_name)):
+                if not participant_id:
+                    continue
+                if participant_id not in participant_names:
+                    participant_order.append(participant_id)
+                    participant_names[participant_id] = ""
+                if display_name:
+                    participant_names[participant_id] = display_name
+        participants = [
+            {"actor_id": actor_id, "display_name": participant_names[actor_id]} for actor_id in participant_order
+        ]
+        connection.execute(
+            """
+            UPDATE summaries
+            SET participant_refs_json = ?, source_turn_count = ?, source_entry_count = ?
+            WHERE summary_id = ?
+            """,
+            (_json_dumps(participants), len(logical_turns), len(source_ids), str(summary_id)),
         )
 
 
@@ -898,6 +1027,14 @@ def _load_json_object(value: Any) -> dict[str, Any]:
     except (TypeError, ValueError):
         return {}
     return dict(parsed) if isinstance(parsed, dict) else {}
+
+
+def _load_json_list(value: Any) -> list[Any]:
+    try:
+        parsed = json.loads(str(value or "[]"))
+    except (TypeError, ValueError):
+        return []
+    return list(parsed) if isinstance(parsed, list) else []
 
 
 def _json_dumps(value: Any) -> str:
