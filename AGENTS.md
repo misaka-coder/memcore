@@ -41,7 +41,7 @@ ctx = mem.build_prompt_context(current=cur)
 ctx_text = mem.render_prompt_context(ctx)
 
 # Put ctx_text into the final chat model prompt.
-# Expose mem.retrieve_for_turn(current=cur, ...) and mem.read_timeline(...) as model tools.
+# Expose retrieve_for_turn, browse_memory, open_memory, and read_timeline as model tools.
 # If using memcore_json, append build_chat_output_contract_prompt(...).
 
 result = call_chat_model(...)
@@ -202,6 +202,31 @@ Recommended tool parameters:
 - `page_token_budget: int` optional; native dispatch uses the configured finite maximum when omitted/zero and caps larger values; direct trusted Python calls may use zero for unlimited diagnostics
 - `cursor: str` optional; when present, send the cursor alone because selector/view/budget are embedded
 
+### `browse_memory`
+
+Use this for a broad date span or when loading every raw message would be noisy.
+It returns a deterministic chronological catalog of compact episodic/semantic
+cards plus explicit stored-history coverage. Continue an incomplete page by
+calling it again with only `cursor`.
+
+Recommended tool parameters:
+
+- `time_range: {start_at, end_at}` optional
+- `date_from: YYYY-MM-DD` optional
+- `date_to: YYYY-MM-DD` optional
+- `node_types: list[str]` optional — `episodic`, `semantic`
+- `cross_conversation: bool` only if the product allows it
+- `page_size: int` optional
+- `cursor: str` optional; when present, send the cursor alone
+
+### `open_memory`
+
+Use this only with a `memory_id` returned by retrieval or `browse_memory`.
+`view="card"` repeats compact metadata, `view="content"` opens the selected
+raw/summary body, and `view="sources"` follows exact lineage to child episode
+cards or complete raw logical units. Use `sources` only when summary content is
+insufficient. Continue an incomplete sources page with only `cursor`.
+
 ### `load_material` optional
 
 If the host supports images/files, expose this as a provider-native tool backed by host file/derived storage. Use it after the model has found a material anchor in visible raw context, `read_timeline`, or an authorized explicit retrieval such as `retrieve_for_turn(include_explicit=True, kind_patterns=["material.*"])`.
@@ -217,7 +242,7 @@ Tell the chat model:
 
 - Use `read_timeline` for "yesterday", "last Tuesday", "that night", and exact hour/minute ranges.
 - If timeline status is `partial`, inspect selected/returned volume; either call `read_timeline(cursor=next_cursor)` without repeating the selector or use `browse_memory` for an overview.
-- Use `read_entry(source_id, detail="full")` when a compact operation/material evidence block is relevant.
+- Use `open_memory(memory_id=..., view="content")` when a compact memory result is relevant but its body is insufficient. `read_entry` is a raw-only Python/dispatcher compatibility API, not a model-facing tool for new integrations.
 - Use `retrieve_for_turn` for preferences, plans, long-term facts, people, topics, and fuzzy recall.
 - Pass only already-known names in `entity_anchors`. A person or answer being
   asked for is unknown evidence, not an anchor; use known people, relations,
@@ -240,7 +265,7 @@ Do not enable broad prefixes merely to avoid an empty result.
 When building the final chat model prompt, include:
 
 - Rendered visible memory from `render_prompt_context`.
-- Tool descriptions for `retrieve_for_turn`, `read_timeline`, and optional `load_material`.
+- Tool descriptions for `retrieve_for_turn`, `browse_memory`, `open_memory`, `read_timeline`, and optional `load_material`.
 - Time-anchor instruction from `docs/model_prompt_playbook_v1.md`.
 - Group-chat attribution instruction if `Actor` is used.
 - Optional `build_chat_output_contract_prompt(...)` if using memcore JSON.
@@ -348,6 +373,7 @@ When only integrating memcore into a host project, at minimum run the host app's
 - first message records raw memory;
 - rendered prompt contains visible memory with time anchors;
 - model can call `retrieve_for_turn`;
+- model can browse compact history with `browse_memory` and open a selected `memory_id` with `open_memory`;
 - model can call `read_timeline`;
 - assistant reply is recorded;
 - background compaction does not block the visible reply;

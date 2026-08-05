@@ -620,8 +620,8 @@ Current implementation status:
 Slice A  implemented locally and covered by package regression
 Slice B  implemented locally
 Slice C  implemented locally
-Slice D  pending
-Slice E  pending
+Slice D  implemented locally
+Slice E  in progress in Akane host (E1 timeline/open/receipt complete; browse pending)
 ```
 
 ### Slice A: catalog fields and summary generation
@@ -690,6 +690,14 @@ responsible for persisting that receipt instead of the full current-round body.
 
 Acceptance: the chat model can browse, open, retrieve-within, and read exact raw from the real host, and
 every partial/empty/failure status reaches the model without a generic silent fallback.
+
+Implementation status: E1 complete in Akane. The host projects package-owned
+`read_timeline` and `open_memory` specs, dispatches both through
+`dispatch_native_memory_tool`, preserves package text/navigation metadata for
+the active model round, and persists the package receipt instead of the result
+body. The obsolete model-visible `read_memory_entry` path and the host-owned
+timeline filtering/rendering authority were removed. `browse_memory` host
+exposure remains the next slice, so Slice E as a whole is not yet complete.
 
 ## 14. Test matrix
 
