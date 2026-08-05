@@ -79,7 +79,7 @@ memcore 会把 raw、summary、semantic、timeline 渲染成带日期和星期�
 
 ```text
 retrieve_for_turn(query, entity_anchors?, topic_terms?, source_layers?, memory_facets?, about_roles?, time_hint?, within_memory_id?)
-用于模糊检索。query 始终参与检索；准确且已知的实体使用 entity_anchors，正在询问的未知人物/答案不能先猜成 anchor；动作、关系、属性和主题使用 topic_terms。已知具体时间时可传 time_hint={start_at,end_at}，使用与 read_timeline 相同的本地/ISO 时间规则，并在相似度计算前硬过滤；memory_facets/about_roles 也会在评分前裁剪候选。已经通过 browse_memory/open_memory 选中一段记忆时，可传该 memory_id 作为 within_memory_id，只在该节点及其精确来源中继续模糊搜索；段内为空不会自动搜索其它历史。
+用于模糊检索。query 始终参与检索；准确且已知的实体使用 entity_anchors，正在询问的未知人物/答案不能先猜成 anchor；动作、关系、属性和主题使用 topic_terms。已知具体时间时可传 time_hint={start_at,end_at}，使用与 read_timeline 相同的本地/ISO 时间规则，并在相似度计算前硬过滤；memory_facets/about_roles 也会在评分前裁剪候选。已经通过 browse_memory/open_memory 选中一段记忆时，可传该 memory_id 作为 within_memory_id，只在该节点及其精确来源中继续模糊搜索；段内为空不会自动搜索其它历史。结果按命中位置返回 navigation：摘要层给 memory_id，raw 层给 source_id。片段够用就直接回答；需要完整摘要用 open_memory(content)，用户要原话/原始证据或摘要不足时用 open_memory(sources)，raw 只有缺相邻对话时才用 source_id 扩窗。已有有效命中后不要只换同义词继续检索；只有新增已知实体、时间或检索目标实质变化时才再次调用。
 
 browse_memory(time_range? / date_from?, date_to?, node_types?, cursor?)
 用于宽范围历史概览。返回的是完整卡片页和 coverage，不是 Top-K，也不是截断 raw。page_complete=false 时下一次只传 cursor。

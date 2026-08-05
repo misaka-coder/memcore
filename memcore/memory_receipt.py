@@ -149,7 +149,13 @@ def _selector_for(operation: str, arguments: Mapping[str, Any], result: Mapping[
 
 def _returned_memory_ids(operation: str, result: Mapping[str, Any]) -> list[str]:
     values: list[Any] = []
-    if operation == "browse_memory":
+    if operation == "retrieve_for_turn":
+        values.extend(
+            match.get("source_id")
+            for match in _mapping_items(result.get("matches"))
+            if str(match.get("layer") or "") in {"summary", "semantic_summary"}
+        )
+    elif operation == "browse_memory":
         values.extend(card.get("memory_id") for card in _mapping_items(result.get("cards")))
     elif operation in {"open_memory", "read_entry"}:
         if result.get("memory_id"):
@@ -167,11 +173,17 @@ def _returned_memory_ids(operation: str, result: Mapping[str, Any]) -> list[str]
 def _returned_source_ids(operation: str, result: Mapping[str, Any]) -> list[str]:
     if operation != "retrieve_for_turn":
         return []
-    values: list[Any] = []
-    for match in _mapping_items(result.get("matches")):
-        values.extend(match.get("source_ids") or [])
-        values.append(match.get("source_id"))
-    return _unique_strings(values)
+    # A retrieval match may carry the complete descendant lineage in
+    # ``source_ids``/``lineage``.  That evidence belongs to the real result,
+    # not to this compact retention anchor: copying it here can turn one
+    # summary hit into thousands of IDs and make an otherwise valid tool
+    # observation impossible to append.  Keep only the reloadable top-level
+    # raw anchor.  Summary roots are recorded separately as memory IDs above.
+    return _unique_strings(
+        match.get("source_id")
+        for match in _mapping_items(result.get("matches"))
+        if str(match.get("layer") or "raw") == "raw"
+    )
 
 
 def _returned_logical_unit_ids(operation: str, result: Mapping[str, Any]) -> list[str]:

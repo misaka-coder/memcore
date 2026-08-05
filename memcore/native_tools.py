@@ -737,7 +737,12 @@ def _retrieve_description() -> str:
         "Pass only entities already known from the question or context; a person or answer being asked for is not an "
         "entity anchor and must not be guessed. When a concrete local/ISO time is known, use time_hint.start_at/end_at; "
         "time is hard-filtered before semantic or keyword ranking. Use include_explicit with a precise kind_patterns "
-        "value only when tool, event, skill, or material records are needed."
+        "value only when tool, event, skill, or material records are needed. The result includes navigation IDs: if "
+        "a snippet is sufficient, answer immediately; for a summary hit that needs its full narrative use "
+        "open_memory(content), and when the user asks for original wording/evidence use open_memory(sources). A raw "
+        "source_id can be passed to read_timeline only when adjacent turns are missing. Do not repeatedly call this "
+        "tool with synonymous queries after a useful hit; retrieve again only when a new known entity, time clue, or "
+        "materially different search target becomes available."
     )
 
 

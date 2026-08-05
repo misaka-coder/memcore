@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from memcore import (
+    MAX_OPERATION_RETENTION_ANCHOR_BYTES,
     HashedEmbeddingProvider,
     InMemoryVectorIndex,
     LLMClient,
@@ -19,6 +20,7 @@ from memcore import (
     Namespace,
     SQLiteMemoryStore,
     build_memory_operation_receipt,
+    build_observation_entry,
     dispatch_native_memory_tool,
 )
 
@@ -164,11 +166,47 @@ class MemoryCatalogSliceD(unittest.TestCase):
         blob = json.dumps(first, ensure_ascii=False)
 
         self.assertEqual(first, second)
-        self.assertEqual(first["returned_source_ids"], ["raw-1", "raw-2"])
+        self.assertEqual(first["returned_source_ids"], ["raw-1"])
         self.assertNotIn("巨型检索正文", blob)
         self.assertNotIn("sk-abcdefghijklmnopqrstuvwxyz", blob)
         self.assertNotIn("C:\\Users\\alice", blob)
         self.assertEqual(len(first["result_hash"]), 64)
+
+    def test_retrieve_receipt_keeps_summary_root_not_large_descendant_lineage(self) -> None:
+        descendant_ids = [f"raw-{index:05d}" for index in range(2000)]
+        dispatched = {
+            "ok": True,
+            "status": "ok",
+            "result": {
+                "status": "found",
+                "matches": [
+                    {
+                        "layer": "summary",
+                        "source_id": "episode-fable",
+                        "source_ids": descendant_ids,
+                        "lineage": descendant_ids,
+                        "rendered_text": "摘要正文",
+                    }
+                ],
+            },
+        }
+
+        receipt = build_memory_operation_receipt("retrieve_for_turn", {"query": "Fable"}, dispatched)
+        encoded = json.dumps(receipt, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        observation = build_observation_entry(
+            kind="operation.memory.response",
+            correlation_id="memory-1",
+            semantic_text="完整结果由宿主另行保存",
+            payload={"output": dispatched["result"]},
+            status="success",
+            retention_anchor=receipt,
+        )
+
+        self.assertEqual(receipt["returned_memory_ids"], ["episode-fable"])
+        self.assertEqual(receipt["returned_source_ids"], [])
+        self.assertNotIn(descendant_ids[-1], encoded.decode("utf-8"))
+        self.assertLessEqual(len(encoded), MAX_OPERATION_RETENTION_ANCHOR_BYTES)
+        self.assertEqual(observation.trace_metadata["retention_anchor"], receipt)
 
 
 if __name__ == "__main__":

@@ -153,6 +153,8 @@ class RetrievalResult:
         return {
             "status": self.status,
             "matches": [match.to_dict() for match in self.matches],
+            "navigation": self.navigation,
+            "suggested_next_actions": self.suggested_next_actions,
             "effective_filters": dict(self.effective_filters),
             "relaxation_steps": list(self.relaxation_steps),
             "candidate_counts": dict(self.candidate_counts),
@@ -164,6 +166,45 @@ class RetrievalResult:
             "omitted_match_count": self.omitted_match_count,
             "reason": self.reason,
         }
+
+    @property
+    def navigation(self) -> list[dict[str, Any]]:
+        """Return only reloadable top-level IDs, never descendant lineage."""
+
+        items: list[dict[str, Any]] = []
+        for index, match in enumerate(self.matches, start=1):
+            source_id = str(match.source_id or "").strip()
+            if not source_id:
+                continue
+            item: dict[str, Any] = {"match_index": index, "layer": match.layer}
+            if match.layer in {"summary", "semantic_summary"}:
+                item["memory_id"] = source_id
+            else:
+                item["source_id"] = source_id
+                if match.turn_id:
+                    item["turn_id"] = match.turn_id
+                if match.timestamp > 0:
+                    item["timestamp"] = match.timestamp
+            items.append(item)
+        return items
+
+    @property
+    def suggested_next_actions(self) -> list[str]:
+        if not self.rendered_texts:
+            return ["answer_uncertain_unless_new_search_evidence_exists"]
+        layers = {match.layer for match in self.matches}
+        actions = ["answer_from_snippets_if_sufficient"]
+        if layers.intersection({"summary", "semantic_summary"}):
+            actions.extend(
+                (
+                    "open_memory_content_for_full_summary",
+                    "open_memory_sources_for_original_evidence",
+                )
+            )
+        if "raw" in layers:
+            actions.append("read_timeline_from_source_id_only_if_adjacent_context_is_needed")
+        actions.append("retrieve_again_only_with_new_entity_time_or_search_target_evidence")
+        return actions
 
 
 def _filter_values(values: Any) -> tuple[str, ...]:

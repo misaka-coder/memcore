@@ -136,9 +136,26 @@ not returned unless the host policy and model request explicitly authorize the
 corresponding kind.
 
 The structured/native result includes `matches`, rendered `snippets`, `count`,
-`effective_filters`, `candidate_counts`, `lineage_scope`, entity-relaxation
-diagnostics, token usage, and omission/truncation state. There is no LLM
-verifier pass after deterministic retrieval.
+`navigation`, `suggested_next_actions`, `effective_filters`, `candidate_counts`,
+`lineage_scope`, entity-relaxation diagnostics, token usage, and
+omission/truncation state. `navigation` pairs each returned position with the
+reloadable top-level ID: summary layers expose `memory_id`; raw layers expose
+`source_id` plus available turn/time anchors. It never copies a summary's
+descendant lineage.
+
+The intended loop is explicit:
+
+- answer immediately when the rendered snippet is sufficient;
+- use `open_memory(memory_id=..., view="content")` for the full summary;
+- use `open_memory(memory_id=..., view="sources")` when the user asks for
+  original wording/evidence or the summary is insufficient;
+- use a raw `source_id` with `read_timeline` only when adjacent turns are
+  missing;
+- do not issue synonymous retrievals after a useful hit. Retrieve again only
+  after obtaining a new known entity, time clue, or materially different
+  target.
+
+There is no LLM verifier pass after deterministic retrieval.
 
 ## `browse_memory`
 
@@ -395,6 +412,10 @@ model-visible result once and keep the receipt beside it as a retention anchor.
   same raw token lifecycle compacts it; it does not create a turn-scoped shadow;
 - compact receipts live beside results as retention anchors and may survive in
   the operation digest after the full body is compacted;
+- retrieval receipts retain only reloadable top-level `memory_id`/raw
+  `source_id` values. Full `source_ids` and lineage remain in the real result
+  and storage layer, so a large summary lineage cannot overflow the compact
+  retention anchor or be silently truncated;
 - native provider projection emits one result body, never `output` plus a
   second `data.output` rendering of the same evidence.
 

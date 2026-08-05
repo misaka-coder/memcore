@@ -553,8 +553,12 @@ The host also stores a compact operation receipt as retention metadata:
 }
 ```
 
-For `open_memory` and `read_timeline`, the receipt records returned node IDs or raw logical-unit IDs rather
-than duplicating the rendered corpus inside the receipt. It is a reload/coverage anchor and never replaces
+For `retrieve_for_turn`, the receipt records only reloadable top-level IDs:
+summary/semantic roots as `returned_memory_ids`, and raw anchors as
+`returned_source_ids`. It never copies a summary match's descendant
+`source_ids`/lineage. For `open_memory` and `read_timeline`, the receipt records
+returned node IDs or raw logical-unit IDs rather than duplicating the rendered
+corpus inside the receipt. It is a reload/coverage anchor and never replaces
 the complete observation body.
 
 Receipts use the existing operation/action-observation timeline semantics and explicit retrieval policy.

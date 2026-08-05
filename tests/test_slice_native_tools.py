@@ -16,6 +16,8 @@ from memcore import (
     MemoryConfig,
     MemorySystem,
     Namespace,
+    RetrievalMatch,
+    RetrievalResult,
     SQLiteMemoryStore,
     ToolDispatchPolicy,
     build_native_memory_tool_specs,
@@ -223,6 +225,70 @@ class NativeToolDispatch(unittest.TestCase):
         self.assertIn("跨会话隐藏 raw 可乐", blob)
         self.assertNotIn("当前会话可见 raw 可乐", blob)
         store.close()
+
+    def test_retrieve_result_exposes_reloadable_navigation_and_closed_loop_guidance(self) -> None:
+        class FakeMem:
+            config = SimpleNamespace()
+
+            def retrieve_for_turn_structured(self, **_kwargs):
+                common = {
+                    "correlation_id": "",
+                    "kind": "message.user",
+                    "semantic_score": 0.8,
+                    "bm25_score": 0.5,
+                    "fused_score": 0.9,
+                    "semantic_text": "",
+                }
+                return RetrievalResult(
+                    status="found",
+                    matches=(
+                        RetrievalMatch(
+                            source_ids=("episode-fable",),
+                            source_id="episode-fable",
+                            turn_id="",
+                            layer="summary",
+                            timestamp=1785727000,
+                            rendered_text="summary snippet",
+                            lineage=("raw-a", "raw-b"),
+                            **common,
+                        ),
+                        RetrievalMatch(
+                            source_ids=("raw-c",),
+                            source_id="raw-c",
+                            turn_id="turn-c",
+                            layer="raw",
+                            timestamp=1785727800,
+                            rendered_text="raw snippet",
+                            **common,
+                        ),
+                    ),
+                )
+
+        out = dispatch_native_memory_tool(
+            "retrieve_for_turn",
+            {"query": "Fable"},
+            mem=FakeMem(),
+            current={"source_id": "current"},
+        )
+
+        self.assertEqual(
+            out["result"]["navigation"],
+            [
+                {"match_index": 1, "layer": "summary", "memory_id": "episode-fable"},
+                {
+                    "match_index": 2,
+                    "layer": "raw",
+                    "source_id": "raw-c",
+                    "turn_id": "turn-c",
+                    "timestamp": 1785727800,
+                },
+            ],
+        )
+        self.assertIn("open_memory_sources_for_original_evidence", out["result"]["suggested_next_actions"])
+        self.assertIn(
+            "retrieve_again_only_with_new_entity_time_or_search_target_evidence",
+            out["result"]["suggested_next_actions"],
+        )
 
     def test_retrieve_dispatch_accepts_local_exact_time_without_unknown_entity(self) -> None:
         mem, store, index, emb = _shared_mem(conversation="live")
