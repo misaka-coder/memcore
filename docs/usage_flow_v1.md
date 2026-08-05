@@ -33,12 +33,14 @@ For normal host integration, read these files in order:
 1. `examples/minimal_chat_integration.py` - runnable chat-loop wiring.
 2. `README.md` - public API, lifecycle, and boundaries.
 3. This file - concise integration flow.
-4. `docs/model_prompt_playbook_v1.md` - prompt/tool instructions for the chat
+4. `docs/memory_read_api_v1.md` - exact read/navigation signatures, defaults,
+   return fields, native-tool projection, and cursor rules.
+5. `docs/model_prompt_playbook_v1.md` - prompt/tool instructions for the chat
    model.
-5. `docs/chat_output_adapter_v1.md` - optional final JSON contract and
+6. `docs/chat_output_adapter_v1.md` - optional final JSON contract and
    streaming speech parsing.
-6. `docs/memory_metadata_raw_retrieval_design_v1.md` - current metadata and raw-first retrieval semantics.
-7. `docs/raw_token_compaction_policy_v1.md` - token/ratio raw compaction.
+7. `docs/memory_metadata_raw_retrieval_design_v1.md` - current metadata and raw-first retrieval semantics.
+8. `docs/raw_token_compaction_policy_v1.md` - token/ratio raw compaction.
 
 If you are changing `memcore` itself, also inspect nearby tests before editing.
 

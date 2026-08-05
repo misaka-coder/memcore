@@ -11,11 +11,12 @@ Read these files in order before coding:
 1. `examples/minimal_chat_integration.py` — runnable minimal chat-loop wiring.
 2. `README.md` — current public API, lifecycle, boundaries.
 3. `docs/usage_flow_v1.md` — concise host and AI-agent integration flow.
-4. `docs/model_prompt_playbook_v1.md` — how to prompt the chat model so memory works well.
-5. `docs/design_highlights_v1.md` — why the system is designed this way.
-6. `docs/chat_output_adapter_v1.md` — optional final-output JSON contract and streaming speech parsing.
-7. `docs/metadata_prefilter_design_v1.md` — metadata prefilter semantics for retrieval.
-8. `docs/raw_token_compaction_policy_v1.md` — the single token/ratio raw compaction policy.
+4. `docs/memory_read_api_v1.md` — authoritative read/navigation API signatures and result contracts.
+5. `docs/model_prompt_playbook_v1.md` — how to prompt the chat model so memory works well.
+6. `docs/design_highlights_v1.md` — why the system is designed this way.
+7. `docs/chat_output_adapter_v1.md` — optional final-output JSON contract and streaming speech parsing.
+8. `docs/memory_metadata_raw_retrieval_design_v1.md` — current metadata and prefilter semantics.
+9. `docs/raw_token_compaction_policy_v1.md` — the single token/ratio raw compaction policy.
 
 If you are changing memcore itself, inspect nearby tests first and run the validation commands at the end of this file.
 
@@ -50,7 +51,6 @@ result = call_chat_model(...)
 parsed = parse_chat_output(
     result,
     mode="memcore_json",
-    categories=mem.config.categories,
     enable_flavor=mem.config.enable_flavor,
 )
 if not parsed.ok:
@@ -117,28 +117,18 @@ Start conservative:
 cfg = MemoryConfig(
     visible_memory_scope="conversation",
     enable_flavor=False,
+    retrieval_result_token_budget=0,
 )
 ```
 
 Use `visible_memory_scope="user"` only when the product wants cross-conversation continuity, such as companion apps.
 
-For finance or other domains, customize `categories` with a fixed enum. Example:
+`memory_facets` and `about_roles` are protocol constants rather than host-configurable
+category lists. Domain-specific names belong in `entity_anchors`, supporting actions
+and themes belong in `topic_terms`, and protocol identity belongs in typed `kind`
+values. Do not restore the removed `categories/subject_scopes/importance` runtime
+contract or add a second host-owned taxonomy beside the public schema.
 
-```python
-cfg = MemoryConfig(
-    categories=(
-        "risk_profile",
-        "investment_goal",
-        "asset_preference",
-        "constraint",
-        "plan_goal",
-        "life_event",
-        "memory_query",
-    )
-)
-```
-
-Never let the model invent category names. memcore will drop values outside the enum.
 Record tool calls/results with `append_action(...)` and `append_observation(...)`
 inside the same open turn. `record_tool_exchange(turn_id=...)` is only a thin
 convenience adapter. Operation lineage depends on typed roles and
@@ -171,13 +161,16 @@ Use this for fuzzy memory search. Prefer this over `retrieve` during a live turn
 
 Recommended tool parameters:
 
-- `query: str`
-- `keywords: list[str]`
+- `query: str` — always retained in dense/BM25 query construction
+- `entity_anchors: list[str]` — exact entities already known from the question/context
+- `topic_terms: list[str]` — actions, relations, attributes, and supporting topics
 - `source_layers: list[str]` — `raw`, `summary`, `semantic_summary`
-- `categories: list[str]`
-- `subject_scopes: list[str]` — `user`, `assistant`, `other`
-- `importance_min: float`
-- `time_hint: dict`
+- `memory_facets: list[str]` — fixed answer-type facets; omit rather than guess
+- `about_roles: list[str]` — who/what the historical content is about, not who spoke
+- `time_hint: dict` — known time evidence only
+- `within_memory_id: str` — optional hard lineage boundary from browse/open
+- `include_explicit: bool` plus `kind_patterns: list[str]` — only for a
+  host-authorized explicit trace/event/material read
 
 For exact fuzzy-retrieval bounds, use `time_hint={"start_at": ..., "end_at": ...}`
 with local or ISO 8601 strings. MemCore applies `MemorySystem.timezone` when an
@@ -292,8 +285,12 @@ Important model guidance:
 - For attribution questions such as who said, poked, promised, or owns a task, answer only from visible raw text or tool results. If evidence is missing, call `read_timeline`/`retrieve_for_turn` or say there is no clear record; do not guess a name.
 - For memory questions about birthdays, preferences, relationships, past statements, promises, or old events, do not answer from persona confidence. If the answer is not clearly visible, call `retrieve_for_turn` or `read_timeline`; if still unsupported, say there is no clear record instead of inventing one.
 - `memory_metadata` describes the host-selected annotation target, which may be a user message or an external event that triggered the reply; it never describes the assistant reply.
-- `memory_metadata.keywords` should be reusable tags, not sentences. Choose terms likely to be used in a future natural chat query; add broader/field/intent tags only when they improve recall, such as `可乐 / 饮料 / 偏好`.
-- If unsure about metadata, use empty arrays and lower `confidence`; do not invent tags.
+- `memory_metadata.entity_anchors` contains only exact known names/aliases;
+  `topic_terms` contains reusable action, relation, attribute, or topic terms,
+  not sentences. Do not put a guessed answer into either field.
+- If unsure about metadata, leave the uncertain arrays empty. `retrieval_priority`
+  is a small retrieval-order hint, not a confidence score; do not use it to
+  disguise uncertain labels.
 - Tool calls are not wrapped in memcore JSON. Only the final user-facing reply uses the JSON contract.
 
 ## Chat Output Adapter
@@ -304,7 +301,6 @@ If the host app can require final JSON output, use:
 from memcore import build_chat_output_contract_prompt, parse_chat_output
 
 contract = build_chat_output_contract_prompt(
-    categories=cfg.categories,
     enable_flavor=cfg.enable_flavor,
     enable_sentence_segments=True,
 )
@@ -313,7 +309,11 @@ contract = build_chat_output_contract_prompt(
 After the model returns:
 
 ```python
-parsed = parse_chat_output(raw_model_output, mode="memcore_json", categories=cfg.categories)
+parsed = parse_chat_output(
+    raw_model_output,
+    mode="memcore_json",
+    enable_flavor=cfg.enable_flavor,
+)
 if not parsed.ok:
     handle_model_output_error(parsed)  # retry or surface a structured failure
     return

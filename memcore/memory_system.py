@@ -2034,7 +2034,12 @@ class MemorySystem:
         page_size: int = 50,
         cursor: str = "",
     ) -> dict[str, Any]:
-        """Open one raw, episodic, or semantic node through a single lineage-aware facade."""
+        """Open one raw, episodic, or semantic node through a lineage-aware facade.
+
+        ``detail`` controls one raw content node. Episodic raw ``sources`` use
+        ``projection``: conversation keeps dialogue/events full and compacts
+        operation/material bodies; full/tools must be explicitly requested.
+        """
 
         from .memory_catalog import build_memory_card
         from .memory_navigation import (

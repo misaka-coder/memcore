@@ -101,8 +101,9 @@ def fake_chat_model(
     """Stand in for the host application's final chat model call.
 
     A real host would send `visible_memory`, tool results, and `output_contract`
-    to the chat model. If the model needs more memory, it should call the
-    host-exposed wrappers around `retrieve_for_turn` and `read_timeline` first.
+    to the chat model. Expose `retrieve_for_turn`, `browse_memory`,
+    `open_memory`, and `read_timeline`; this compact example exercises the
+    fuzzy-retrieval and exact-timeline branches.
     """
 
     _ = (user_text, visible_memory, timeline_text, output_contract)

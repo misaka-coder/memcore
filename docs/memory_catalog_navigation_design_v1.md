@@ -793,6 +793,7 @@ The design is complete only when all of these statements are true:
 After the slices land:
 
 - this document defines catalog and node navigation;
+- `memory_read_api_v1.md` defines the exact public signatures, defaults, result fields, and native projection behavior;
 - `raw_token_compaction_policy_v1.md` remains the only raw compaction policy;
 - `memory_metadata_raw_retrieval_design_v1.md` remains the metadata and raw-first semantic retrieval
   authority, updated only where `within_memory_id` extends it;

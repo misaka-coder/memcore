@@ -11,6 +11,7 @@
 - **贯穿**:时间锚点(带时区)、命名空间硬隔离、可选 flavor 层、提示词注入防线。
 
 实现说明按以下公开文档维护：[`usage_flow_v1.md`](docs/usage_flow_v1.md)、
+[`memory_read_api_v1.md`](docs/memory_read_api_v1.md)、
 [`memory_metadata_raw_retrieval_design_v1.md`](docs/memory_metadata_raw_retrieval_design_v1.md) 和
 [`model_prompt_playbook_v1.md`](docs/model_prompt_playbook_v1.md)。
 
