@@ -173,6 +173,44 @@ class MemoryCatalogNavigationTests(unittest.TestCase):
         )
         self.assertIn("和李嘉图一起", sources["text"])
 
+    def test_open_memory_batch_preserves_order_and_per_node_status(self) -> None:
+        self._raw("raw-a", "第一条原始证据", _ts(23, 11))
+        self._raw("raw-b", "第二条原始证据", _ts(23, 12))
+
+        opened = self.mem.open_memory(
+            memory_ids=["raw-b", "missing", "raw-a"],
+            view="content",
+        )
+
+        self.assertEqual(opened["status"], "partial")
+        self.assertEqual(opened["reason"], "some_memory_nodes_unavailable")
+        self.assertEqual(opened["result"]["requested_count"], 3)
+        self.assertEqual(opened["result"]["opened_count"], 2)
+        self.assertEqual(opened["result"]["failed_count"], 1)
+        self.assertEqual(
+            [item["memory_id"] for item in opened["result"]["items"]],
+            ["raw-b", "missing", "raw-a"],
+        )
+        self.assertEqual(
+            [item["status"] for item in opened["result"]["items"]],
+            ["ok", "empty", "ok"],
+        )
+        self.assertIn("第二条原始证据", opened["text"])
+        self.assertIn("第一条原始证据", opened["text"])
+        self.assertIn("memory_not_found_or_out_of_scope", opened["text"])
+
+    def test_open_memory_batch_rejects_sources_and_conflicting_selectors(self) -> None:
+        sources = self.mem.open_memory(memory_ids=["raw-a"], view="sources")
+        conflicting = self.mem.open_memory(memory_id="raw-a", memory_ids=["raw-b"])
+
+        self.assertEqual(sources["status"], "invalid_filter")
+        self.assertEqual(sources["reason"], "batch_sources_not_supported")
+        self.assertEqual(conflicting["status"], "invalid_filter")
+        self.assertEqual(
+            conflicting["reason"],
+            "memory_id_memory_ids_and_cursor_are_mutually_exclusive",
+        )
+
     def test_open_episode_sources_default_to_dialogue_with_reloadable_tool_evidence(self) -> None:
         handle = self.mem.begin_turn(
             stimuli=[

@@ -214,7 +214,10 @@ Recommended tool parameters:
 
 ### `open_memory`
 
-Use this only with a `memory_id` returned by retrieval or `browse_memory`.
+Use this only with IDs returned by retrieval or `browse_memory`. Pass one
+`memory_id`, or pass `memory_ids` to open several `card`/`content` nodes in one
+ordered batch. Batch results report status/reason per node. `sources` remains a
+single-ID operation because every source tree owns an independent cursor.
 `view="card"` repeats compact metadata, `view="content"` opens the selected
 raw/summary body, and `view="sources"` follows exact lineage to child episode
 cards or complete raw logical units. Raw sources default to
@@ -249,10 +252,14 @@ Tell the chat model:
 
 For provider-native tool loops, prefer `build_native_memory_tool_specs(...)` and
 `dispatch_native_memory_tool(...)` over legacy text wrappers. The dispatcher strictly rejects invalid filters instead of broadening them.
-It also returns a compact `receipt`. Send the full result through the active
-provider tool-result channel, but persist only the receipt as an
-`operation.memory.*` observation for cross-round recall; never duplicate a
-large raw/summary body into the timeline.
+It also returns a compact `receipt`. Persist the complete result that the model
+actually received as the observation in the same open turn, so later normal
+turns can continue discussing it until the unified raw token compactor removes
+that turn. Store the receipt beside that body as a small `retention_anchor` for
+IDs, coverage, cursor, and hashes; a receipt never replaces the observation.
+Do not serialize the same body into both `semantic_text` and a second rendered
+structure in the provider result, and never persist credentials, local paths,
+or binary file content.
 When a product allows explicit operation/event/material retrieval, pass a
 `ToolDispatchPolicy` with only the approved kind prefixes, for example
 `ToolDispatchPolicy(allow_explicit_trace=True, allowed_kind_prefixes=("material",))`.
@@ -378,7 +385,7 @@ When only integrating memcore into a host project, at minimum run the host app's
 - first message records raw memory;
 - rendered prompt contains visible memory with time anchors;
 - model can call `retrieve_for_turn`;
-- model can browse compact history with `browse_memory` and open a selected `memory_id` with `open_memory`;
+- model can browse compact history with `browse_memory`, open one selected `memory_id`, and batch-open several card/content IDs with `open_memory`;
 - model can call `read_timeline`;
 - assistant reply is recorded;
 - background compaction does not block the visible reply;

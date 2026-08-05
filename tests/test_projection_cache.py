@@ -496,6 +496,32 @@ class ProviderAdapterTests(ProjectionBase):
             ],
         )
 
+    def test_structured_tool_result_is_projected_once_without_data_output_echo(self) -> None:
+        handle = self.mem.begin_turn(
+            stimuli=[_stimulus("打开记忆", source_id="structured-question")],
+            turn_id="structured-result-turn",
+        )
+        self.mem.append_entry(_action("call-open", source_id="structured-action"), turn_id=handle.turn_id)
+        self.mem.append_observation(
+            turn_id=handle.turn_id,
+            kind="tool.open_memory.result",
+            correlation_id="call-open",
+            semantic_text='output:\n{"status":"ok","text":"七月证据"}',
+            payload={"output": {"status": "ok", "text": "七月证据"}},
+            source_id="structured-result",
+            status="success",
+            retention_anchor={"operation": "open_memory", "returned_memory_ids": ["episode-july"]},
+        )
+
+        openai = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE).payloads
+        anthropic = self.mem.build_context_projection(provider_profile=ANTHROPIC_PROFILE).payloads
+
+        expected = '{"status":"ok","text":"七月证据"}'
+        self.assertEqual(openai[-1]["content"], expected)
+        self.assertEqual(openai[-1]["content"].count("七月证据"), 1)
+        self.assertNotIn("data", openai[-1]["content"])
+        self.assertEqual(anthropic[-1]["content"][0]["content"], expected)
+
     def test_tool_preface_and_parallel_calls_share_the_original_assistant_message(self) -> None:
         handle = self.mem.begin_turn(
             stimuli=[_stimulus("同时查", source_id="preface-question")],

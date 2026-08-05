@@ -93,6 +93,7 @@ class NativeToolSpecs(unittest.TestCase):
         )
         self.assertIn("cursor", browse["parameters"]["properties"])
         opened = tools[2]["function"]
+        self.assertIn("memory_ids", opened["parameters"]["properties"])
         self.assertEqual(
             opened["parameters"]["properties"]["view"]["enum"],
             ["card", "content", "sources", None],
@@ -365,6 +366,41 @@ class NativeToolDispatch(unittest.TestCase):
         self.assertIn("聊了扬州早茶", evidence["result"]["text"])
         self.assertEqual(evidence["result"]["result_projection"], "rendered_text_with_navigation_metadata")
         self.assertEqual(evidence["receipt"]["returned_logical_unit_ids"], ["source:c1:raw-breakfast"])
+        store.close()
+
+    def test_open_memory_dispatch_batches_content_without_duplicate_bodies(self) -> None:
+        mem, store, _index, _emb = _shared_mem()
+        mem.record_user_turn("第一条批量证据", timestamp=_ts(2026, 4, 10, 9), source_id="raw-a")
+        mem.record_user_turn("第二条批量证据", timestamp=_ts(2026, 4, 10, 10), source_id="raw-b")
+
+        out = dispatch_native_memory_tool(
+            "open_memory",
+            {"memory_ids": ["raw-b", "missing", "raw-a"], "view": "content"},
+            mem=mem,
+        )
+
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["result"]["status"], "partial")
+        self.assertEqual(
+            [item["memory_id"] for item in out["result"]["result"]["items"]],
+            ["raw-b", "missing", "raw-a"],
+        )
+        self.assertEqual(
+            [item["status"] for item in out["result"]["result"]["items"]],
+            ["ok", "empty", "ok"],
+        )
+        self.assertIn("第一条批量证据", out["result"]["text"])
+        self.assertIn("第二条批量证据", out["result"]["text"])
+        self.assertNotIn("第一条批量证据", str(out["result"]["result"]))
+        self.assertEqual(out["receipt"]["returned_memory_ids"], ["raw-b", "raw-a"])
+
+        rejected = dispatch_native_memory_tool(
+            "open_memory",
+            {"memory_ids": ["raw-a", "raw-b"], "view": "sources"},
+            mem=mem,
+        )
+        self.assertFalse(rejected["ok"])
+        self.assertEqual(rejected["reason"], "batch_sources_not_supported")
         store.close()
 
     def test_read_timeline_dispatches_exact_time_range_without_unknown_entity(self) -> None:

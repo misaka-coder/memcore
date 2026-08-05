@@ -203,10 +203,12 @@ tool_result = dispatch_native_memory_tool(
 Send `tool_result` back through the model provider's native tool-result channel.
 The dispatcher also returns `tool_result["receipt"]`, a deterministic compact
 record containing selectors, returned IDs, coverage, cursor, request hash, and
-sanitized result hash. If the product wants cross-turn recall, persist that
-receipt as the observation payload; keep the full result only in the active
-provider tool loop. Do not duplicate raw text, summary bodies, snippets,
-credentials, files, or local paths into the timeline.
+sanitized result hash. Persist the complete result that the model actually saw
+as the observation in the same open turn. It then remains available to later
+normal turns until the unified raw token compactor processes that turn. Store
+the receipt beside the body as a small `retention_anchor`; it is navigation
+metadata and never a replacement for the result. Do not persist credentials,
+binary files, or local paths, and do not render one evidence body twice.
 
 For `open_memory(content/sources)`, the direct trusted Python facade keeps both
 structured records and rendered text for diagnostics. Native dispatch sends
@@ -214,17 +216,27 @@ only one rendered evidence body plus navigation metadata and logical-unit IDs,
 so the same raw page is not serialized twice into the model context.
 
 ```python
+import json
+
+provider_result = {key: value for key, value in tool_result.items() if key != "receipt"}
+provider_result_text = json.dumps(provider_result, ensure_ascii=False, sort_keys=True)
 mem.append_observation(
     turn_id=handle.turn_id,
     kind=f"operation.memory.{tool_call.name}.result",
     correlation_id=tool_call.id,
-    payload=tool_result["receipt"],
+    semantic_text=provider_result_text,
+    payload={"output": provider_result_text},
+    retention_anchor=tool_result["receipt"],
     status=tool_result["receipt"]["status"],
 )
 ```
 
 `build_memory_operation_receipt(...)` is public for non-native adapters that
 need the same receipt contract.
+
+`open_memory(memory_ids=[...], view="card"|"content")` batch-opens selected
+nodes in request order and reports each node independently. Use a single
+`memory_id` for `sources`, because its cursor belongs to one lineage tree.
 
 If the host app records tool calls or tool results into raw memory, prefer
 `record_tool_exchange(...)`. It writes typed action/observation records. Their

@@ -52,8 +52,12 @@ successful dispatch, the read's domain state remains in
 structured outer error instead. A host adapter may project this state into its
 own envelope, but must not rewrite or broaden the evidence.
 
-Persist only `receipt` across turns. The full result belongs to the active tool
-round and must not be copied into raw memory as a second truth source.
+Persist the complete result that the model actually received as the correlated
+observation in the same turn. It remains visible across later normal turns
+until that raw turn reaches the unified token compactor. Persist `receipt`
+beside the body as a compact retention/navigation anchor; it never substitutes
+for the result. The operation entry is explicit-only in normal retrieval, so
+reopening old evidence does not create a second conversational fact source.
 
 ## Domain status contracts
 
@@ -192,12 +196,13 @@ real-world event.
 
 ## `open_memory`
 
-Open a `memory_id` returned by retrieval or catalog browsing.
+Open one or several IDs returned by retrieval or catalog browsing.
 
 ```python
 open_memory(
     *,
     memory_id="",
+    memory_ids=None,
     view="card",
     detail="full",
     projection="conversation",
@@ -206,6 +211,13 @@ open_memory(
     cursor="",
 ) -> dict
 ```
+
+`memory_id` opens one node. `memory_ids=[...]` batch-opens `card` or `content`
+nodes in request order and returns per-node `status/reason`; one unavailable ID
+does not discard successful siblings. The two selectors are mutually
+exclusive. Batch `sources` returns `invalid_filter/batch_sources_not_supported`
+because each lineage tree has its own lossless cursor; call it once per selected
+tree instead.
 
 ### Views
 
@@ -368,8 +380,8 @@ timeline evidence, or explicit material retrieval. A loader may return original
 content, OCR/vision text, document chunks, or a structured
 `pending/unavailable/expired` state. MemCore rejects a loader result that claims
 a different `file_id`; it never fabricates content or treats an identifier as
-proof that the file was seen. As with memory reads, persist only the sanitized
-receipt after the active tool round.
+proof that the file was seen. As with memory reads, persist the sanitized
+model-visible result once and keep the receipt beside it as a retention anchor.
 
 ## Cache and persistence rules
 
@@ -379,9 +391,12 @@ receipt after the active tool round.
 - changing an API schema causes one expected prompt-prefix version change, not
   per-turn schema churn;
 - native `open_memory/read_timeline` results carry one evidence body, not two;
-- cross-turn operation memory stores the compact receipt, never another copy of
-  raw/summary/tool-result text;
-- complete tool payloads remain in SQLite and are reopened only on demand.
+- cross-turn operation memory keeps the one model-visible result body until the
+  same raw token lifecycle compacts it; it does not create a turn-scoped shadow;
+- compact receipts live beside results as retention anchors and may survive in
+  the operation digest after the full body is compacted;
+- native provider projection emits one result body, never `output` plus a
+  second `data.output` rendering of the same evidence.
 
 ## Minimal navigation examples
 
@@ -389,7 +404,7 @@ Broad group-chat overview:
 
 ```text
 browse_memory(date_from="2026-07-22", date_to="2026-07-25")
--> open_memory(memory_id=<episode>, view="content")
+-> open_memory(memory_ids=[<episode-a>, <episode-b>], view="content")
 -> answer from summary, or open_memory(memory_id=<episode>, view="sources")
 ```
 

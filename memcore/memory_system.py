@@ -2027,6 +2027,7 @@ class MemorySystem:
         self,
         *,
         memory_id: str = "",
+        memory_ids: list[str] | tuple[str, ...] | None = None,
         view: str = "card",
         detail: str = "full",
         projection: str = "conversation",
@@ -2034,11 +2035,16 @@ class MemorySystem:
         page_size: int = 50,
         cursor: str = "",
     ) -> dict[str, Any]:
-        """Open one raw, episodic, or semantic node through a lineage-aware facade.
+        """Open one or several raw, episodic, or semantic nodes through one facade.
 
         ``detail`` controls one raw content node. Episodic raw ``sources`` use
         ``projection``: conversation keeps dialogue/events full and compacts
         operation/material bodies; full/tools must be explicitly requested.
+
+        ``memory_ids`` is the batch form for ``card`` and ``content``. Results
+        preserve request order and report status/reason independently for each
+        node. Batch ``sources`` is deliberately rejected because each source
+        tree owns an independent cursor.
         """
 
         from .memory_catalog import build_memory_card
@@ -2060,6 +2066,68 @@ class MemorySystem:
             return {"status": "invalid_filter", "reason": reason, "memory_id": "", "view": "", "result": None}
 
         cursor_token = str(cursor or "").strip()
+        if memory_ids is not None:
+            if isinstance(memory_ids, (str, bytes, bytearray)):
+                return _invalid("memory_ids_must_be_array")
+            requested_ids = [str(item or "").strip() for item in memory_ids]
+            if any(not item for item in requested_ids):
+                return _invalid("memory_ids_must_not_contain_empty_values")
+            if str(memory_id or "").strip() or cursor_token:
+                return _invalid("memory_id_memory_ids_and_cursor_are_mutually_exclusive")
+            batch_view = str(view or "card").strip().lower()
+            if not requested_ids:
+                return _invalid("memory_ids_required")
+            if batch_view == "sources":
+                return _invalid("batch_sources_not_supported")
+            if batch_view not in {"card", "content"}:
+                return _invalid("invalid_memory_view")
+
+            opened = [
+                self.open_memory(
+                    memory_id=item,
+                    view=batch_view,
+                    detail=detail,
+                    projection=projection,
+                    cross_conversation=cross_conversation,
+                )
+                for item in requested_ids
+            ]
+            opened_count = sum(str(item.get("status") or "") == "ok" for item in opened)
+            failed_count = len(opened) - opened_count
+            if opened_count == len(opened):
+                status = "ok"
+                reason = ""
+            elif opened_count:
+                status = "partial"
+                reason = "some_memory_nodes_unavailable"
+            else:
+                status = "empty"
+                reason = "no_memory_nodes_opened"
+            text_parts: list[str] = []
+            for item in opened:
+                item_id = str(item.get("memory_id") or "")
+                item_status = str(item.get("status") or "failed")
+                item_reason = str(item.get("reason") or "")
+                header = f"[memory_id={item_id} status={item_status}]"
+                body = str(item.get("text") or "").strip()
+                text_parts.append("\n".join(part for part in (header, body or f"reason={item_reason}") if part))
+            return {
+                "status": status,
+                "reason": reason,
+                "memory_id": "",
+                "memory_ids": requested_ids,
+                "view": batch_view,
+                "detail": str(detail or "full").strip().lower(),
+                "projection": str(projection or "conversation").strip().lower(),
+                "cross_conversation": bool(cross_conversation),
+                "result": {
+                    "requested_count": len(requested_ids),
+                    "opened_count": opened_count,
+                    "failed_count": failed_count,
+                    "items": opened,
+                },
+                "text": "\n\n".join(text_parts),
+            }
         if cursor_token:
             if (
                 str(memory_id or "").strip()

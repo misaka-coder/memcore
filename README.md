@@ -59,7 +59,7 @@
 - 压缩重试:`llm_max_retries` 会传给注入的 `LLMClient`;最终仍失败时压缩层不标记已完成,下一轮继续重试。
 - **Chat Output Adapter ✅**:标准 JSON 输出契约、`speech` 流式解析、普通文本尽力分段、raw metadata 回写流程见 `docs/chat_output_adapter_v1.md`;工具调用阶段不套该 JSON,只在最终回复阶段输出 memcore JSON。
 - **稳定投影与缓存审计 ✅**:canonical/OpenAI/Anthropic provider projection、renderer/version、strict-prefix 验收、projection hash 与真实请求 audit;MemCore 保证前缀稳定,不替 provider 承诺缓存必命中。
-- **开放动作/结果时间线 ✅**:`append_action(...)` / `append_observation(...)` 可记录原生工具、JSON、XML、标签或宿主自定义协议；实际 provider 消息可冻结回 projection ledger。可选小型 `retention_anchor` 在 operation 压缩后保留资源 ID、版本、hash 等重载锚点，不复制完整结果。
+- **开放动作/结果时间线 ✅**:`append_action(...)` / `append_observation(...)` 可记录原生工具、JSON、XML、标签或宿主自定义协议；模型实际看到的完整结果与调用一起保留到统一 raw token 压缩，可选小型 `retention_anchor` 在 operation 压缩后继续保留资源 ID、版本、hash 等重载锚点。实际 provider 消息可冻结回 projection ledger。
 - **有界后台维护 ✅**:每次 `compact_due` 只提交一个 raw compaction generation 和一个 semantic batch；
   token 模式按配置比例一次选足最旧的完整 turn/component，不再被旧条目批次或独立 source 上限提前截断。
 
@@ -151,6 +151,8 @@ payload 收进 `host_state`。这样交付、打断等宿主状态在后续模�
 原生工具循环示意:
 
 ```python
+import json
+
 tools = build_native_memory_tool_specs()
 
 tool_payload = dispatch_native_memory_tool(
@@ -165,14 +167,18 @@ tool_payload = dispatch_native_memory_tool(
     ),
 )
 
-# 把 tool_payload 作为 provider 原生 tool_result 回给聊天模型。
-# 当前轮仍使用完整 tool_payload；跨轮只持久化 tool_payload["receipt"]，
-# 不要把 read_timeline/open_memory 的大段正文再复制进 raw。
+# receipt 是宿主侧导航锚点；把其余完整结果作为 provider 原生 tool_result 回给模型。
+provider_result = {key: value for key, value in tool_payload.items() if key != "receipt"}
+provider_result_text = json.dumps(provider_result, ensure_ascii=False, sort_keys=True)
+# 将模型实际看到的同一份结果写入 observation。它在后续回合继续可见，直到统一
+# raw token 差值压缩；receipt 只作为 operation digest 可保留的小型重载锚点。
 mem.append_observation(
     turn_id=handle.turn_id,
     kind=f"operation.memory.{tool_call.name}.result",
     correlation_id=tool_call.id,
-    payload=tool_payload["receipt"],
+    semantic_text=provider_result_text,
+    payload={"output": provider_result_text},
+    retention_anchor=tool_payload["receipt"],
     status=tool_payload["receipt"]["status"],
 )
 ```

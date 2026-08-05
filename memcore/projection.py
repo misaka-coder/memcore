@@ -913,9 +913,11 @@ class ProjectionAdapter:
 
     def _tool_result_content(self, entry: TimelineEntry) -> str:
         payload = dict(entry.payload)
-        output = payload.get("output")
-        if isinstance(output, str):
-            return output
+        if "output" in payload:
+            output, _ = _sanitize_value(payload.get("output"), key="output")
+            if isinstance(output, str):
+                return output
+            return json.dumps(output, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return self._render(entry).text
 
     @staticmethod

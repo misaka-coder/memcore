@@ -41,10 +41,10 @@ def build_memory_operation_receipt(
 ) -> dict[str, Any]:
     """Build the small cross-round record for one memory-tool operation.
 
-    The full current tool result remains available to the provider in the
-    active tool loop.  This receipt contains navigation IDs, coverage and
-    hashes only, so a host can persist it as an ``operation.memory.*``
-    observation without duplicating raw/summary bodies into the timeline.
+    This receipt contains navigation IDs, coverage and hashes only. Hosts may
+    retain it beside the complete model-visible observation as a compact
+    reload anchor that survives operation compaction; it never replaces the
+    observation body.
     """
 
     operation = str(tool_name or "").strip()
@@ -124,6 +124,7 @@ def _selector_for(operation: str, arguments: Mapping[str, Any], result: Mapping[
     if operation in {"open_memory", "read_entry"}:
         return {
             "memory_id": str(result.get("memory_id") or arguments.get("memory_id") or arguments.get("source_id") or ""),
+            "memory_ids": list(result.get("memory_ids") or arguments.get("memory_ids") or []),
             "view": str(result.get("view") or arguments.get("view") or "content"),
             "detail": str(result.get("detail") or arguments.get("detail") or "full"),
             "projection": str(result.get("projection") or arguments.get("projection") or "conversation"),
@@ -154,6 +155,11 @@ def _returned_memory_ids(operation: str, result: Mapping[str, Any]) -> list[str]
         if result.get("memory_id"):
             values.append(result.get("memory_id"))
         payload = result.get("result") if isinstance(result.get("result"), Mapping) else {}
+        values.extend(
+            item.get("memory_id")
+            for item in _mapping_items(payload.get("items"))
+            if str(item.get("status") or "") == "ok"
+        )
         values.extend(card.get("memory_id") for card in _mapping_items(payload.get("sources")))
     return _unique_strings(values)
 

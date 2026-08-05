@@ -259,11 +259,16 @@ def _dispatch_browse(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
 def _dispatch_open(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
     unknown = _unknown_keys(
         args,
-        {"memory_id", "view", "detail", "projection", "cross_conversation", "page_size", "cursor"},
+        {"memory_id", "memory_ids", "view", "detail", "projection", "cross_conversation", "page_size", "cursor"},
     )
     if unknown:
         return _err("open_memory", "invalid_arguments", f"unknown_arguments:{unknown}")
+    if args.get("memory_id") is not None and not isinstance(args.get("memory_id"), str):
+        return _err("open_memory", "invalid_arguments", "memory_id_must_be_string")
     memory_id = _optional_string(args.get("memory_id"))
+    memory_ids, error = _string_list(args.get("memory_ids"), "memory_ids")
+    if error:
+        return _err("open_memory", "invalid_arguments", error)
     view = _optional_string(args.get("view")) or "card"
     detail = _optional_string(args.get("detail")) or "full"
     projection = _optional_string(args.get("projection")) or "conversation"
@@ -282,6 +287,7 @@ def _dispatch_open(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
     if cursor and any(
         (
             bool(memory_id),
+            bool(memory_ids),
             args.get("view") is not None,
             args.get("detail") is not None,
             args.get("projection") is not None,
@@ -290,16 +296,21 @@ def _dispatch_open(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
         )
     ):
         return _err("open_memory", "invalid_arguments", "cursor_options_are_embedded")
-    if not cursor and not memory_id:
-        return _err("open_memory", "invalid_arguments", "memory_id_required")
+    if memory_id and memory_ids:
+        return _err("open_memory", "invalid_arguments", "memory_id_and_memory_ids_are_mutually_exclusive")
+    if not cursor and not memory_id and not memory_ids:
+        return _err("open_memory", "invalid_arguments", "memory_id_or_memory_ids_required")
     if view not in MEMORY_VIEWS:
         return _err("open_memory", "invalid_arguments", f"invalid_memory_view:{view}")
     if detail not in ENTRY_DETAILS:
         return _err("open_memory", "invalid_arguments", f"invalid_memory_detail:{detail}")
     if projection not in TIMELINE_PROJECTIONS:
         return _err("open_memory", "invalid_arguments", f"invalid_memory_projection:{projection}")
+    if memory_ids and view == "sources":
+        return _err("open_memory", "invalid_arguments", "batch_sources_not_supported")
     result = mem.open_memory(
         memory_id=memory_id,
+        memory_ids=memory_ids if memory_ids else None,
         view=view,
         detail=detail,
         projection=projection,
@@ -323,6 +334,19 @@ def _project_open_result_for_model(result: dict[str, Any]) -> dict[str, Any]:
     view = str(result.get("view") or "")
     node_type = str(result.get("node_type") or "")
     model_payload = dict(payload)
+    batch_items = payload.get("items")
+    if isinstance(batch_items, list):
+        projected_items: list[dict[str, Any]] = []
+        for item in batch_items:
+            if not isinstance(item, dict):
+                continue
+            projected = _project_open_result_for_model(item)
+            projected.pop("text", None)
+            projected_items.append(projected)
+        model_payload["items"] = projected_items
+        model_result["result"] = model_payload
+        model_result["result_projection"] = "batch_rendered_text_with_navigation_metadata"
+        return model_result
     if view == "content" and str(result.get("text") or ""):
         if node_type == "raw":
             model_payload.pop("content", None)
@@ -740,7 +764,9 @@ def _browse_description() -> str:
 
 def _open_description() -> str:
     return (
-        "Open one memory_id returned by browse_memory or retrieval. card repeats compact navigation metadata; content "
+        "Open one memory_id, or several memory_ids in one batch, returned by browse_memory or retrieval. Batch opening "
+        "supports card/content and reports each node independently in request order; sources uses one memory_id because "
+        "each source tree has its own cursor. card repeats compact navigation metadata; content "
         "returns the full summary or one raw entry; sources returns exact child episode cards or complete raw logical "
         "units. Sources default to conversation projection: dialogue/events stay full while operation/material bodies "
         "become reloadable compact evidence. Use projection=full or tools only when full operation evidence is actually "
@@ -931,6 +957,11 @@ def _open_schema() -> dict[str, Any]:
         "required": [],
         "properties": {
             "memory_id": {"type": "string", "description": "Memory id from a card or retrieval result."},
+            "memory_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Several memory ids to open in request order with card/content; mutually exclusive with memory_id and cursor.",
+            },
             "view": {"type": "string", "enum": list(MEMORY_VIEWS)},
             "detail": {
                 "type": "string",

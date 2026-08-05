@@ -535,9 +535,11 @@ always cache the prefix.
 
 ## 10. Tool-result persistence
 
-A large memory read must not be copied back into the raw timeline as another giant persistent payload.
-The current provider round may receive the requested content, but cross-round MemCore persistence stores
-a compact operation receipt:
+The model-visible memory read is itself an environment observation. The host stores that exact result once
+beside its action in the same open turn. It remains available to later ordinary turns until the one raw token
+compaction lifecycle processes that turn; there is no memory-tool-only turn overlay or fixed round TTL.
+
+The host also stores a compact operation receipt as retention metadata:
 
 ```json
 {
@@ -552,15 +554,16 @@ a compact operation receipt:
 ```
 
 For `open_memory` and `read_timeline`, the receipt records returned node IDs or raw logical-unit IDs rather
-than duplicating the rendered corpus. The original summary/raw content already exists in MemCore and can
-be reopened deterministically.
+than duplicating the rendered corpus inside the receipt. It is a reload/coverage anchor and never replaces
+the complete observation body.
 
 Receipts use the existing operation/action-observation timeline semantics and explicit retrieval policy.
 They do not become ordinary conversational semantic candidates merely because a tool was called.
 
-If the provider-specific tool protocol requires the full current result in history during the same turn,
-the host may freeze that request projection. Future prompt assembly must use the compact receipt or reopen
-the referenced evidence, not persist another authoritative copy of the content.
+Provider-specific request projections may be frozen in the projection ledger. Future prompt assembly uses
+the same stored observation body, preserving native tool-call/result boundaries; it must not render that
+body a second time as `data.output`. After compaction, the operation digest may retain the receipt while the
+dialogue episode summary records the user/final discussion with separate access and evidence timestamps.
 
 ## 11. Failure and status contract
 
@@ -671,7 +674,7 @@ guessing them as entity anchors or searching unrelated history.
 - remove unlimited-zero semantics from model-facing native dispatch;
 - keep complete-unit pagination and cursor validation;
 - report total projected volume and navigation suggestions;
-- persist memory-operation receipts instead of repeated full content;
+- persist one exact model-visible observation plus a compact retention receipt;
 - update the prompt playbook and public capability docs.
 
 Acceptance: the historical thousands-entry regression cannot generate an unbounded tool payload, while a
@@ -684,7 +687,8 @@ and remaining logical-unit/entry/token volume, return `partial/page_boundary`
 with navigation suggestions, preserve oversized turns whole, and use an
 explicit `estimated` fallback when no tokenizer is injected. Native dispatch
 also returns a deterministic compact receipt; host reintegration in Slice E is
-responsible for persisting that receipt instead of the full current-round body.
+responsible for persisting the exact model-visible body once and attaching the
+receipt as retention metadata.
 
 ### Slice E: host reintegration
 
@@ -700,9 +704,9 @@ every partial/empty/failure status reaches the model without a generic silent fa
 
 Implementation status: E1/E2 complete in Akane. The host projects package-owned
 `read_timeline`, `browse_memory`, and `open_memory` specs, dispatches them through
-`dispatch_native_memory_tool`, preserves package text/navigation metadata for
-the active model round, and persists the package receipt instead of the result
-body. The obsolete model-visible `read_memory_entry` path and the host-owned
+`dispatch_native_memory_tool`, preserves package text/navigation metadata across
+normal turns under the shared raw token lifecycle, and stores the package receipt
+beside the complete result body. The obsolete model-visible `read_memory_entry` path and the host-owned
 timeline filtering/rendering authority were removed. Akane's browse adapter only
 selects the authorized namespace; MemCore remains the sole authority for cards,
 coverage, paging, cursors, and receipts.
@@ -767,7 +771,7 @@ coverage, paging, cursors, and receipts.
 
 - stable memory navigation instruction and schemas do not vary per turn;
 - dynamic card/content/source results append only after the stable prefix;
-- tool receipts contain IDs/coverage/hash but not duplicated full raw or summary bodies;
+- tool observations retain the one model-visible body; receipts contain only IDs/coverage/hash and do not duplicate it;
 - frozen historical provider projections are not silently rewritten when card fields are backfilled;
 - result hashing is stable and excludes secrets/local paths.
 
