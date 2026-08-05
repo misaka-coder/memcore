@@ -1,6 +1,6 @@
 # Memory Catalog & Evidence Navigation Design V1
 
-> Status: approved implementation specification; Slice A-D implemented locally, Slice E pending
+> Status: implemented; Slice A-D in MemCore and Slice E in the Akane host
 > Date: 2026-08-05  
 > Scope: MemCore package; host products only provide identity, authorization, prompt assembly,
 > and channel delivery
@@ -621,7 +621,7 @@ Slice A  implemented locally and covered by package regression
 Slice B  implemented locally
 Slice C  implemented locally
 Slice D  implemented locally
-Slice E  in progress in Akane host (E1 timeline/open/receipt complete; browse pending)
+Slice E  implemented in Akane host (timeline/browse/open/receipt complete)
 ```
 
 ### Slice A: catalog fields and summary generation
@@ -691,13 +691,14 @@ responsible for persisting that receipt instead of the full current-round body.
 Acceptance: the chat model can browse, open, retrieve-within, and read exact raw from the real host, and
 every partial/empty/failure status reaches the model without a generic silent fallback.
 
-Implementation status: E1 complete in Akane. The host projects package-owned
-`read_timeline` and `open_memory` specs, dispatches both through
+Implementation status: E1/E2 complete in Akane. The host projects package-owned
+`read_timeline`, `browse_memory`, and `open_memory` specs, dispatches them through
 `dispatch_native_memory_tool`, preserves package text/navigation metadata for
 the active model round, and persists the package receipt instead of the result
 body. The obsolete model-visible `read_memory_entry` path and the host-owned
-timeline filtering/rendering authority were removed. `browse_memory` host
-exposure remains the next slice, so Slice E as a whole is not yet complete.
+timeline filtering/rendering authority were removed. Akane's browse adapter only
+selects the authorized namespace; MemCore remains the sole authority for cards,
+coverage, paging, cursors, and receipts.
 
 ## 14. Test matrix
 
