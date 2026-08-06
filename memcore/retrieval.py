@@ -283,17 +283,27 @@ class ReadPipeline:
         return ids
 
     def visible_lineage_source_ids(self, *, namespace: Namespace, now_ts: int) -> set[str]:
-        """Exclude visible entries plus every connected derived/raw lineage record."""
+        """Exclude visible entries plus their derived higher-level copies, but keep the raw
+        sources underneath visible summaries re-retrievable (asymmetric lineage exclusion).
+
+        A visible raw already showed its exact words, so its derived summary/semantic is
+        excluded to avoid returning a duplicate copy. A visible summary is a compression, so
+        its raw sources stay retrievable for detail questions; only the summary itself and
+        the aggregations above it are excluded. Descendants (the evidence below) are never
+        permanently hidden once their summary is visible.
+        """
         visible = self.visible_source_ids(namespace=namespace, now_ts=now_ts)
         if not visible:
             return set()
+        excluded = set(visible)
         closure = self.store.resolve_lineage_source_ids(
             namespace=namespace,
             source_ids=tuple(sorted(visible)),
             cross_conversation=self.config.visible_memory_scope == "user",
         )
         if closure.status == "resolved":
-            return set(closure.all_ids)
+            excluded.update(closure.ancestor_ids)
+            return excluded
         expanded = set(visible)
         for source_id in sorted(visible):
             item = self.store.resolve_lineage_source_ids(
@@ -302,7 +312,7 @@ class ReadPipeline:
                 cross_conversation=self.config.visible_memory_scope == "user",
             )
             if item.status == "resolved":
-                expanded.update(item.all_ids)
+                expanded.update(item.ancestor_ids)
         return expanded
 
     def _visible_semantic(self, *, namespace: Namespace, cross: bool, now_ts: int) -> list[dict[str, Any]]:

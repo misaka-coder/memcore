@@ -1422,7 +1422,7 @@ SQLite 保存当前 index generation 和每条 entry 的 indexed generation。ki
 - 显式 `tool.*` seed 只返回同一 `correlation_id` 下的完整 action/terminal observation branch；未闭合 branch 计入 `incomplete_relation` 并整体拒绝；
 - `event.*` seed 返回事件及其关联 final；关系邻居仍重新检查 Namespace、conversation、trust、visibility、annotation 与 never policy；
 - summary/semantic 使用 Store lineage closure；semantic 命中会压掉其 source summary/raw，断裂、循环或跨 Namespace lineage 会从 index 隔离并计入结构化 diagnostics；
-- `retrieve_for_turn` 的 visible exclusion 已扩为上下游 lineage closure，当前 prompt 已见 raw 不能通过 derived 层绕回；
+- `retrieve_for_turn` 的 visible exclusion 改为非对称 lineage：排除可见记录及其上层 derived 副本，避免已见 raw 从 derived 层绕回；可见 summary/semantic 的下游 raw 证据不再被永久排除，可从历史中语义找回具体原话（2026-08-06 修正生产"已摘要即不可命中"问题）；
 - token budget 对序列化后的完整 match 计数。可容纳时保留完整组，剩余预算不足时整体省略；单组自身超预算时只返回显式 truncated anchor，`semantic_text` 不保留未计费副本；
 - 没有 relations 的旧记录不会再做 `seq_no ± N` 推测，只返回自身；Akane 与云端 Bot 当前已经使用这套关系扩窗语义。
 

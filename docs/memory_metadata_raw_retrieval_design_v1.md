@@ -337,7 +337,7 @@ tool provenance / source lineage / material status
 
 ```text
 1. 编译不可放宽的安全 HardFilterPlan
-2. 排除当前 prompt 已可见记录及完整 lineage closure
+2. 排除当前 prompt 已可见记录及其上层 derived 副本(非对称:下游 raw 证据不排除)
 3. 按 memory_facets / about_roles / entity_anchors 前置裁剪
 4. 分别在 raw 与 derived 辅助池中执行 dense/BM25
 5. raw 结果优先返回，summary/semantic 作为不与 raw 竞争排序位置的辅助结果
@@ -422,12 +422,17 @@ semantic_summary → 只按当前长期记忆内容使用
 当前可见阶段摘要
 当前可见长期记忆
 当前用户输入
-以上记录连接的全部上下游 lineage closure
+以上可见记录的上层 derived 副本(ancestor:摘要/长期记忆的再聚合)
 ```
 
-这是基于来源关系的去重，不是文本相似度去重。
+这是基于来源关系的去重，不是文本相似度去重。排除方向是**非对称**的：
 
-检索结果内部如果 raw、summary、semantic 代表同一来源，普通查询保留 raw。不能让包含当前可见 raw 的摘要从 derived 层旁路返回。
+- 可见 raw：排除自己及其派生 summary/semantic，避免高层记忆绕回来重复返回。
+- 可见 summary/semantic：排除自己及上层聚合，**不排除它覆盖的下游 raw**——原话已从可见窗口压走，必须能通过普通语义检索重新召回。
+- 当前用户输入始终排除。
+- namespace/权限/时间/显式授权与 lineage 合法性仍然保持硬边界。
+
+检索结果内部如果 raw、summary、semantic 代表同一来源，普通查询保留 raw，派生副本在结果合并阶段去重。不能让包含当前可见 raw 的摘要从 derived 层旁路返回。
 
 显式调用 `read_timeline(anchor_source_id=<raw>)` 属于模型主动索取附近证据，不等同于普通检索重复召回；其返回内部仍按 raw `source_id` 去重。
 
@@ -880,9 +885,10 @@ derived pool : entry_type in (summary, semantic_summary) + 同样边界
 
 `retrieve_for_turn_structured()` 继续在评分前调用 `visible_lineage_source_ids()`，但测试必须覆盖：
 
-- 可见 raw 的 summary/semantic ancestor 被排除；
-- 可见 summary 的 raw descendants 和 semantic ancestor 被排除；
-- 可见 semantic 的 summary/raw descendants 被排除；
+- 可见 raw 的 summary/semantic ancestor 被排除，其派生摘要不能旁路重复返回；
+- 可见 summary 的 raw descendants 可被普通语义检索召回，summary 自身及其 semantic ancestor 被排除；
+- 可见 semantic 的 summary/raw descendants 可被召回，semantic 自身被排除；
+- `within_memory_id` 指向可见 summary 时，其 raw 证据仍可命中（不再被错误的 visible closure 清空）；
 - 当前 input source ID 被排除；
 - lineage 缺失或成环时返回结构化 unavailable，不退化成可能重复的宽搜。
 

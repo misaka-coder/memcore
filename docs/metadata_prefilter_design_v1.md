@@ -281,7 +281,7 @@ Chroma metadata 只保存 str/int/float/bool 等标量,所以布尔字段适合�
 - 放宽阶段每一级都重新调用 index,且 where 逐级减少约束。
 - Chroma `_to_chroma_where()` 支持 `$and/$or` 递归翻译。
 - InMemory semantic/BM25 在候选阶段排除不匹配 metadata,不是最终结果后筛。
-- `retrieve_for_turn()` 的可见三层 `exclude_source_ids` 及其上下游 lineage closure 合入前置过滤,不允许 raw/derived 互相旁路重复返回。
+- `retrieve_for_turn()` 的可见三层 `exclude_source_ids` 及其**上层 derived ancestor** 合入前置过滤,不允许已见 raw 从 derived 层旁路重复返回;可见 summary/semantic 的下游 raw 证据保留可检索(非对称排除)。
 
 ## 非目标
 
