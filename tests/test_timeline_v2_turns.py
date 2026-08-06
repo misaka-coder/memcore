@@ -169,12 +169,19 @@ class TimelineContractsTests(unittest.TestCase):
         self.assertEqual(action.trace_metadata["retention_anchor"]["schema_hash"], "sha256:abc")
         self.assertEqual(observation.turn_role, TurnRole.OBSERVATION)
         self.assertEqual(observation.trace_metadata["status"], "success")
-        with self.assertRaisesRegex(SchemaError, "operation_retention_anchor_too_large"):
-            build_action_entry(
-                kind="operation.catalog.request",
-                correlation_id="too-large",
-                retention_anchor={"value": "x" * (MAX_OPERATION_RETENTION_ANCHOR_BYTES + 1)},
-            )
+
+    def test_oversized_retention_anchor_is_non_fatal_and_flagged(self) -> None:
+        oversized = build_action_entry(
+            kind="operation.catalog.request",
+            correlation_id="too-large",
+            retention_anchor={"value": "x" * (MAX_OPERATION_RETENTION_ANCHOR_BYTES + 1)},
+        )
+        self.assertEqual(
+            oversized.trace_metadata["retention_anchor"]["value"],
+            "x" * (MAX_OPERATION_RETENTION_ANCHOR_BYTES + 1),
+        )
+        self.assertEqual(oversized.trace_metadata["retention_anchor_status"], "oversized")
+        self.assertGreater(oversized.trace_metadata["retention_anchor_bytes"], MAX_OPERATION_RETENTION_ANCHOR_BYTES)
 
 
 class BasicTurnCompletionTests(TurnLifecycleBase):

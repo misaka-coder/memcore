@@ -18,6 +18,7 @@ _KIND_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)+$")
 _ID_PATTERN = re.compile(r"^[^\x00-\x1f\x7f]{1,256}$")
 OPERATION_RETENTION_ANCHOR_KEY = "retention_anchor"
 OPERATION_RETENTION_ANCHOR_STATUS_KEY = "retention_anchor_status"
+OPERATION_RETENTION_ANCHOR_BYTES_KEY = "retention_anchor_bytes"
 MAX_OPERATION_RETENTION_ANCHOR_BYTES = 4096
 
 
@@ -289,15 +290,6 @@ def _operation_trace_metadata(
     if anchor is None:
         return trace
     normalized = _json_object(anchor, "operation_retention_anchor_must_be_object")
-    encoded = json.dumps(
-        normalized,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-    if len(encoded) > MAX_OPERATION_RETENTION_ANCHOR_BYTES:
-        raise SchemaError("operation_retention_anchor_too_large")
     trace[OPERATION_RETENTION_ANCHOR_KEY] = normalized
     return _normalize_retention_trace(trace)
 
@@ -307,24 +299,31 @@ def _normalize_retention_trace(trace: dict[str, Any]) -> dict[str, Any]:
     if raw is None:
         return trace
     anchor = _json_object(raw, "operation_retention_anchor_must_be_object")
+    from .projection import sanitize_projection_payload
+
+    safe_payload, status = sanitize_projection_payload({"role": "user", "content": anchor})
+    clean = safe_payload.get("content")
+    stored = dict(clean) if isinstance(clean, Mapping) else {"value": clean}
+    trace[OPERATION_RETENTION_ANCHOR_KEY] = stored
     encoded = json.dumps(
-        anchor,
+        stored,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
         allow_nan=False,
     ).encode("utf-8")
-    if len(encoded) > MAX_OPERATION_RETENTION_ANCHOR_BYTES:
-        raise SchemaError("operation_retention_anchor_too_large")
-    from .projection import sanitize_projection_payload
-
-    safe_payload, status = sanitize_projection_payload({"role": "user", "content": anchor})
-    clean = safe_payload.get("content")
-    trace[OPERATION_RETENTION_ANCHOR_KEY] = dict(clean) if isinstance(clean, Mapping) else {"value": clean}
-    if status.value != "complete":
+    oversized = len(encoded) > MAX_OPERATION_RETENTION_ANCHOR_BYTES
+    if oversized:
+        # Non-fatal: keep the full anchor so tool receipts are never lost; the
+        # oversized status and byte count make the condition observable instead
+        # of turning an auxiliary field into a whole-record write failure.
+        trace[OPERATION_RETENTION_ANCHOR_STATUS_KEY] = "oversized"
+        trace[OPERATION_RETENTION_ANCHOR_BYTES_KEY] = len(encoded)
+    elif status.value != "complete":
         trace[OPERATION_RETENTION_ANCHOR_STATUS_KEY] = status.value
     else:
         trace.pop(OPERATION_RETENTION_ANCHOR_STATUS_KEY, None)
+        trace.pop(OPERATION_RETENTION_ANCHOR_BYTES_KEY, None)
     return trace
 
 
