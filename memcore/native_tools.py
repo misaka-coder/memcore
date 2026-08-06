@@ -855,12 +855,21 @@ def _retrieve_schema() -> dict[str, Any]:
             },
             "include_explicit": {
                 "type": "boolean",
-                "description": "Whether this query intentionally needs explicit trace/event/material records.",
+                "description": (
+                    "Whether this query needs explicit trace/event/material records. "
+                    "Set true only WITH kind_patterns "
+                    '(e.g. ["tool.*"]); true without kind_patterns is rejected '
+                    "and returns nothing. Leave false for ordinary chat."
+                ),
             },
             "kind_patterns": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Exact kinds or trailing-wildcard prefixes authorized by the host.",
+                "description": (
+                    'Kinds of explicit trace/event/material records to include (e.g. "tool.*"). '
+                    "Only valid together with include_explicit=true; "
+                    "omit both unless tool/material traces are specifically needed."
+                ),
             },
         },
     }
