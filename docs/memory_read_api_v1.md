@@ -109,7 +109,10 @@ Python return type is `list[str]`. Hosts that need diagnostics may call
 `retrieve_for_turn_structured(...)` and inspect its `RetrievalResult`.
 
 `retrieve_for_turn` defaults `cross_conversation=True` while retaining the hard
-tenant/user/domain namespace and excluding the current prompt-visible lineage.
+tenant/user/domain namespace and applying asymmetric prompt-visible exclusion:
+visible raw entries exclude their derived summary/semantic ancestors, while
+visible summary/semantic entries do not permanently hide their downstream raw
+evidence.
 The native model schema keeps that scope host-owned: it requires `current`,
 searches the authorized user's conversations, and does not expose
 `cross_conversation`, arbitrary result limits, token budgets, or exclusion IDs
@@ -118,8 +121,9 @@ explicitly when implementing product policy or diagnostics.
 
 Important parameters:
 
-- `current`: the current raw record; its source and all prompt-visible lineage
-  are excluded before scoring;
+- `current`: the current raw record; its source is excluded before scoring,
+  together with the prompt-visible records and only their derived ancestors
+  (downstream raw evidence under a visible summary remains retrievable);
 - `query`: always participates in dense and BM25 retrieval;
 - `entity_anchors`: only exact entities already known from the question or
   context; never guess the answer being asked for;
