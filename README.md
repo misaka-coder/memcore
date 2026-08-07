@@ -15,6 +15,13 @@
 [`memory_metadata_raw_retrieval_design_v1.md`](docs/memory_metadata_raw_retrieval_design_v1.md) 和
 [`model_prompt_playbook_v1.md`](docs/model_prompt_playbook_v1.md)。
 
+> **真实基线：语义检索不是记忆的唯一入口。** 在一次匿名线上审计中，20 次
+> `retrieve_for_turn` 没有产生可直接支持答案的结果，但聊天模型仍通过
+> `browse_memory`、`open_memory` 和 `read_timeline` 解决了大部分记忆问题。
+> 这类“检索失败后仍能继续定位、展开和核验”的能力称为
+> **Agentic Memory Navigation**。数据、案例、成本与证据边界见
+> [`agentic_memory_navigation_evaluation_20260806.md`](docs/agentic_memory_navigation_evaluation_20260806.md)。
+
 ## 当前进度
 
 - **切片 1(边界)✅**:字段契约 `schema` + `MemoryConfig` + `Namespace`(五层)+ 四类 base 接口
