@@ -77,6 +77,7 @@ class ProjectionStatus(_TextEnum):
     REQUEST_FROZEN = "request_frozen"
     MEDIA_OMITTED = "media_omitted"
     SKIPPED_UNSAFE = "skipped_unsafe"
+    SETTLED = "settled"
 
 
 _STATUS_PRIORITY = {
@@ -89,6 +90,10 @@ _STATUS_PRIORITY = {
     # rendering/safety statuses; media omission is still carried by the sanitized
     # payload marker and the request audit's ``media_omitted`` flag.
     ProjectionStatus.REQUEST_FROZEN: 4,
+    # Settled history projection is a frozen, deterministic compact record of a
+    # closed turn (终局紧凑投影账本)。它比 REQUEST_FROZEN 更接近历史终态: 一旦建立,
+    # request builder 只从 settled 账本读取, 不再重新投影该 turn。
+    ProjectionStatus.SETTLED: 5,
 }
 
 
@@ -406,6 +411,7 @@ class ContextProjection:
     entry_projection_hashes: tuple[EntryProjectionHash, ...]
     compaction_generation: int
     projection_generation: int
+    has_compact_history: bool = False
 
     @property
     def payloads(self) -> tuple[dict[str, Any], ...]:
@@ -813,17 +819,18 @@ class ProjectionAdapter:
         *,
         provider_profile: str,
         start_index: int = 0,
+        observation_decider: Callable[[TimelineEntry, str], tuple[str, str]] | None = None,
     ) -> tuple[ProjectionMessageInput, ...]:
         profile = _validated_profile(provider_profile)
         if profile not in STANDARD_PROJECTION_PROFILES:
             raise SchemaError("projection_profile_unsupported")
         visible = [entry for entry in entries if entry.prompt_visible]
         if profile == OPENAI_PROFILE:
-            raw = self._project_openai(visible)
+            raw = self._project_openai(visible, observation_decider=observation_decider)
         elif profile == ANTHROPIC_PROFILE:
-            raw = self._project_anthropic(visible)
+            raw = self._project_anthropic(visible, observation_decider=observation_decider)
         else:
-            raw = self._project_canonical(visible)
+            raw = self._project_canonical(visible, observation_decider=observation_decider)
         return tuple(replace(message, projection_index=start_index + index) for index, message in enumerate(raw))
 
     def project_memory_record(
@@ -932,12 +939,19 @@ class ProjectionAdapter:
             "rejected",
         }
 
-    def _project_canonical(self, entries: Sequence[TimelineEntry]) -> list[ProjectionMessageInput]:
+    def _project_canonical(
+        self,
+        entries: Sequence[TimelineEntry],
+        *,
+        observation_decider: Callable[[TimelineEntry, str], tuple[str, str]] | None = None,
+    ) -> list[ProjectionMessageInput]:
         messages: list[ProjectionMessageInput] = []
         for entry in entries:
             rendered = self._render(entry)
             role = "assistant" if entry.origin.value == "assistant" else "user"
             content = self._assistant_final_text(entry) if entry.turn_role is TurnRole.FINAL else rendered.text
+            if entry.turn_role is TurnRole.OBSERVATION and observation_decider is not None:
+                _, content = observation_decider(entry, content)
             messages.append(
                 ProjectionMessageInput(
                     provider_profile=CANONICAL_PROFILE,
@@ -951,7 +965,12 @@ class ProjectionAdapter:
             )
         return messages
 
-    def _project_openai(self, entries: Sequence[TimelineEntry]) -> list[ProjectionMessageInput]:
+    def _project_openai(
+        self,
+        entries: Sequence[TimelineEntry],
+        *,
+        observation_decider: Callable[[TimelineEntry, str], tuple[str, str]] | None = None,
+    ) -> list[ProjectionMessageInput]:
         messages: list[ProjectionMessageInput] = []
         index = 0
         while index < len(entries):
@@ -1007,10 +1026,13 @@ class ProjectionAdapter:
                 continue
             rendered = self._render(entry)
             if entry.turn_role is TurnRole.OBSERVATION:
+                content = self._tool_result_content(entry)
+                if observation_decider is not None:
+                    _, content = observation_decider(entry, content)
                 payload = {
                     "role": "tool",
                     "tool_call_id": entry.correlation_id,
-                    "content": self._tool_result_content(entry),
+                    "content": content,
                 }
             elif entry.origin.value == "assistant":
                 payload = {
@@ -1035,7 +1057,12 @@ class ProjectionAdapter:
             index += 1
         return messages
 
-    def _project_anthropic(self, entries: Sequence[TimelineEntry]) -> list[ProjectionMessageInput]:
+    def _project_anthropic(
+        self,
+        entries: Sequence[TimelineEntry],
+        *,
+        observation_decider: Callable[[TimelineEntry, str], tuple[str, str]] | None = None,
+    ) -> list[ProjectionMessageInput]:
         messages: list[ProjectionMessageInput] = []
         index = 0
         while index < len(entries):
@@ -1085,10 +1112,13 @@ class ProjectionAdapter:
                     index += 1
                 content = []
                 for item in batch:
+                    result_content = self._tool_result_content(item)
+                    if observation_decider is not None:
+                        _, result_content = observation_decider(item, result_content)
                     result_block = {
                         "type": "tool_result",
                         "tool_use_id": item.correlation_id,
-                        "content": self._tool_result_content(item),
+                        "content": result_content,
                     }
                     if self._tool_result_is_error(item):
                         result_block["is_error"] = True

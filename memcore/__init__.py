@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from .config import MemoryConfig
+from .config import MemoryConfig, OperationProjectionPolicy
 from .compaction_v2 import (
     CompactionResult,
     CompactionSnapshot,
@@ -140,6 +140,7 @@ __all__ = [
     "dispatch_native_memory_tool",
     # 配置 / 命名空间
     "MemoryConfig",
+    "OperationProjectionPolicy",
     "ChatOutputConfig",
     "ChatOutputMode",
     "ChatOutputParseResult",

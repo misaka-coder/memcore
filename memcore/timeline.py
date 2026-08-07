@@ -511,6 +511,31 @@ class TurnHandle:
     stimuli: tuple[TimelineEntry, ...]
     annotation_target_ids: tuple[str, ...]
     opened_at: int
+    operation_projection_policy: str = "full_until_raw_compaction"
+
+
+@dataclass(frozen=True)
+class TurnProjectionSettlement:
+    """Turn 级终局紧凑投影的稳定结算记录(文档 §6 数据契约)。
+
+    字段职责对应 settled 账本, 不因当前未接入 request builder 而省略。
+    policy 与 settlement_status 均为稳定 wire value。
+    """
+
+    turn_id: str
+    policy: str = "full_until_raw_compaction"
+    settlement_status: str = "settled"
+    settlement_schema_version: int = 1
+    provider_profile: str = ""
+    terminal_source_id: str = ""
+    full_projection_hash: str = ""
+    settled_projection_hash: str = ""
+    first_changed_projection_index: int = -1
+    full_projected_tokens: int = 0
+    settled_projected_tokens: int = 0
+    token_count_quality: str = ""
+    reason: str = ""
+    settled_at: int = 0
 
 
 @dataclass(frozen=True)

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from memcore import (
+    EntryOrigin,
     HashedEmbeddingProvider,
     InMemoryVectorIndex,
     LLMClient,
@@ -19,7 +20,9 @@ from memcore import (
     RetrievalMatch,
     RetrievalResult,
     SQLiteMemoryStore,
+    TimelineEntryInput,
     ToolDispatchPolicy,
+    TurnRole,
     build_native_memory_tool_specs,
     dispatch_native_memory_tool,
 )
@@ -593,6 +596,143 @@ class NativeToolDispatch(unittest.TestCase):
         self.assertEqual(out["status"], "file_id_mismatch")
         self.assertIn("requested=file_img_001", out["reason"])
         store.close()
+
+
+class BatchOpenProjectionContract(unittest.TestCase):
+    """模型侧批量 open_memory 投影契约: 顶层 text 汇总完整正文, items 只留导航元数据。
+
+    宿主真实调用链(Akane manager.open_memory)走 dispatch_native_memory_tool("open_memory", ...),
+    因此契约锁定在 dispatch 返回上, 而不是直接测 mem.open_memory。
+    渲染格式含 output/data 两处正文副本, 故"只出现一次"断言改为"出现次数等于单条渲染基线,
+    批量不放大重复"。
+    """
+
+    SENTINEL_A = "SENTINEL_AAAAA_UNIQUE_BODY_ONE" * 20
+    SENTINEL_B = "SENTINEL_BBBBB_UNIQUE_BODY_TWO" * 20
+
+    def _mem_with_two_raw_bodies(self):
+        mem, store, _index, _emb = _shared_mem(conversation="c1")
+        mem.begin_turn(
+            turn_id="batch-turn",
+            opened_at=1000,
+            stimuli=[
+                TimelineEntryInput(
+                    source_id="u1",
+                    kind="message.user",
+                    origin=EntryOrigin.USER,
+                    turn_role=TurnRole.STIMULUS,
+                    semantic_text="查两下",
+                    payload={"text": "查两下"},
+                    timestamp=1000,
+                    compatibility_role="user",
+                )
+            ],
+        )
+        a = mem.record_tool_exchange(
+            turn_id="batch-turn",
+            tool_name="web_search",
+            tool_call_id="call_a",
+            tool_input={"query": "a"},
+            result=self.SENTINEL_A,
+            source="web",
+            source_id_prefix="tooltrace:pa",
+        )
+        b = mem.record_tool_exchange(
+            turn_id="batch-turn",
+            tool_name="web_search",
+            tool_call_id="call_b",
+            tool_input={"query": "b"},
+            result=self.SENTINEL_B,
+            source="web",
+            source_id_prefix="tooltrace:pb",
+        )
+        committed = mem.complete_turn(
+            turn_id="batch-turn",
+            semantic_text="查完了。",
+            provider_output_raw="查完了。",
+        )
+        self.assertEqual(committed.status, "completed")
+        return mem, store, a["tool_result"]["source_id"], b["tool_result"]["source_id"]
+
+    def test_batch_open_content_keeps_full_bodies_in_top_level_text(self) -> None:
+        mem, store, s1, s2 = self._mem_with_two_raw_bodies()
+        try:
+            disp = dispatch_native_memory_tool(
+                "open_memory",
+                {"memory_ids": [s1, s2], "view": "content", "detail": "full"},
+                mem=mem,
+            )
+            self.assertTrue(disp["ok"], disp)
+            top = disp["result"]["text"]
+            self.assertIn(self.SENTINEL_A, top)
+            self.assertIn(self.SENTINEL_B, top)
+            self.assertLess(top.find(self.SENTINEL_A), top.find(self.SENTINEL_B))
+
+            single = dispatch_native_memory_tool(
+                "open_memory", {"memory_id": s1, "view": "content", "detail": "full"}, mem=mem
+            )
+            baseline_a = single["result"]["text"].count(self.SENTINEL_A)
+            self.assertEqual(top.count(self.SENTINEL_A), baseline_a)
+            single_b = dispatch_native_memory_tool(
+                "open_memory", {"memory_id": s2, "view": "content", "detail": "full"}, mem=mem
+            )
+            self.assertEqual(
+                top.count(self.SENTINEL_B),
+                single_b["result"]["text"].count(self.SENTINEL_B),
+            )
+
+            items = disp["result"]["result"]["items"]
+            self.assertEqual(len(items), 2)
+            self.assertEqual([it["memory_id"] for it in items], [s1, s2])
+            for it in items:
+                self.assertEqual(it["status"], "ok")
+                self.assertEqual(it["node_type"], "raw")
+                self.assertNotIn(self.SENTINEL_A, it.get("text") or "")
+                self.assertNotIn(self.SENTINEL_B, it.get("text") or "")
+            self.assertEqual(
+                disp["result"]["result_projection"],
+                "batch_rendered_text_with_navigation_metadata",
+            )
+        finally:
+            store.close()
+
+    def test_batch_open_reports_missing_nodes_structured(self) -> None:
+        mem, store, s1, _s2 = self._mem_with_two_raw_bodies()
+        try:
+            disp = dispatch_native_memory_tool(
+                "open_memory",
+                {"memory_ids": [s1, "no-such-id"], "view": "content", "detail": "full"},
+                mem=mem,
+            )
+            self.assertTrue(disp["ok"])
+            self.assertEqual(disp["result"]["status"], "partial")
+            self.assertEqual(disp["result"]["reason"], "some_memory_nodes_unavailable")
+            body = disp["result"]["result"]
+            self.assertEqual(body["requested_count"], 2)
+            self.assertEqual(body["opened_count"], 1)
+            self.assertEqual(body["failed_count"], 1)
+            missing = next(it for it in body["items"] if it.get("memory_id") == "no-such-id")
+            self.assertEqual(missing["status"], "empty")
+            self.assertEqual(missing["reason"], "memory_not_found_or_out_of_scope")
+        finally:
+            store.close()
+
+    def test_sources_batch_and_cursor_mixing_stay_rejected(self) -> None:
+        mem, store, s1, s2 = self._mem_with_two_raw_bodies()
+        try:
+            sources = dispatch_native_memory_tool("open_memory", {"memory_ids": [s1, s2], "view": "sources"}, mem=mem)
+            self.assertFalse(sources["ok"])
+            self.assertEqual(sources["status"], "invalid_arguments")
+            self.assertEqual(sources["reason"], "batch_sources_not_supported")
+
+            mixed = dispatch_native_memory_tool(
+                "open_memory", {"cursor": "abc", "memory_id": s1, "view": "content"}, mem=mem
+            )
+            self.assertFalse(mixed["ok"])
+            self.assertEqual(mixed["status"], "invalid_arguments")
+            self.assertEqual(mixed["reason"], "cursor_options_are_embedded")
+        finally:
+            store.close()
 
 
 if __name__ == "__main__":

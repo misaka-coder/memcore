@@ -336,6 +336,16 @@ class Compaction:
         bundle: TurnBundle,
         provider_profile: str,
     ) -> list[ProjectionMessage]:
+        from .settlement import load_settled_projection
+
+        settled = load_settled_projection(
+            self.store,
+            namespace=namespace,
+            turn_id=bundle.turn_id,
+            provider_profile=provider_profile,
+        )
+        if settled is not None:
+            return settled
         return self.projection_ledger.freeze_turn_entries(
             namespace=namespace,
             turn_id=bundle.turn_id,

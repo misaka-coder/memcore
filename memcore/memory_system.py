@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import time
 import uuid
@@ -16,7 +17,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from .compaction import Compaction
-from .config import MemoryConfig
+from .config import MemoryConfig, OperationProjectionPolicy
 from .embedding.base import EmbeddingProvider
 from .errors import NamespaceError, SchemaError
 from .index.base import VectorIndex
@@ -63,6 +64,7 @@ from .timeline import (
     TurnAbortResult,
     TurnCompletion,
     TurnHandle,
+    TurnProjectionSettlement,
     TurnStatus,
     build_action_entry,
     build_observation_entry,
@@ -227,6 +229,7 @@ class MemorySystem:
                 annotation_target_ids=targets,
                 turn_id=turn_id,
                 opened_at=now,
+                operation_projection_policy=self.config.operation_projection_policy,
             )
         except NotImplementedError as exc:
             raise SchemaError("store_timeline_v2_unsupported") from exc
@@ -450,7 +453,14 @@ class MemorySystem:
             raise SchemaError("store_timeline_v2_unsupported") from exc
         if not result.completed:
             return result
-        return self._refresh_completion_after_index(result)
+        refreshed = self._refresh_completion_after_index(result)
+        self._settle_turn_after_completion(
+            turn_id=normalized_turn_id,
+            provider_profile=provider_profile,
+            terminal_source_id=str(getattr(refreshed.final_entry, "source_id", "") or resolved_source_id),
+            settled_at=completed_at,
+        )
+        return refreshed
 
     def abort_turn(self, turn_id: str, *, reason: str, closed_at: int | None = None) -> TurnAbortResult:
         try:
@@ -462,6 +472,102 @@ class MemorySystem:
             )
         except NotImplementedError as exc:
             raise SchemaError("store_timeline_v2_unsupported") from exc
+
+    def _settle_turn_after_completion(
+        self,
+        *,
+        turn_id: str,
+        provider_profile: str,
+        terminal_source_id: str,
+        settled_at: int,
+    ) -> "TurnProjectionSettlement | None":
+        """complete_turn 成功后按冻结策略建立终局紧凑投影(文档 §5/§12)。
+
+        - full_until_raw_compaction: 不建立任何 settlement(默认零行为差异);
+        - compact_after_terminal: 确定性生成 settled/settled_noop, 失败时结构化降级
+          full_fallback。settlement 失败绝不影响已经提交的 final 回复。
+        幂等: upsert first-write-wins, 重试 complete_turn 不会生成不同 hash。
+        """
+        try:
+            frozen_turn = self.store.get_turn(namespace=self.namespace, turn_id=turn_id)
+        except NotImplementedError:
+            return None
+        if frozen_turn is None:
+            return None
+        frozen_policy = str(frozen_turn.operation_projection_policy or "full_until_raw_compaction")
+        if frozen_policy != OperationProjectionPolicy.COMPACT_AFTER_TERMINAL.value:
+            return None
+        from .settlement import (
+            SETTLED_PROJECTION_SCHEMA_VERSION,
+            build_settlement_plan,
+            full_fallback_plan,
+        )
+
+        profile = normalize_provider_profile(provider_profile or self.config.projection_profile)
+        try:
+            entries = self.store.get_turn_entries(namespace=self.namespace, turn_id=turn_id)
+            authoritative = self._projection_ledger.freeze_turn_entries(
+                namespace=self.namespace,
+                turn_id=turn_id,
+                entries=entries,
+                provider_profile=profile,
+            )
+            plan = build_settlement_plan(
+                self._projection,
+                entries,
+                provider_profile=profile,
+                authoritative_messages=authoritative,
+                count_text=self.token_counter.count_text if self.token_counter is not None else None,
+                token_count_quality=self.token_counter.quality if self.token_counter is not None else "estimated",
+            )
+        except Exception as exc:  # noqa: BLE001
+            detail = str(exc) if isinstance(exc, SchemaError) else ""
+            reason = f"{type(exc).__name__}:{detail}" if detail else type(exc).__name__
+            plan = full_fallback_plan(turn_id=turn_id, provider_profile=profile, reason=reason)
+
+        settlement = TurnProjectionSettlement(
+            turn_id=turn_id,
+            policy=frozen_policy,
+            settlement_status=plan.settlement_status,
+            settlement_schema_version=SETTLED_PROJECTION_SCHEMA_VERSION,
+            provider_profile=profile,
+            terminal_source_id=terminal_source_id,
+            full_projection_hash=plan.full_projection_hash,
+            settled_projection_hash=plan.settled_projection_hash,
+            first_changed_projection_index=plan.first_changed_projection_index,
+            full_projected_tokens=plan.full_projected_tokens,
+            settled_projected_tokens=plan.settled_projected_tokens,
+            token_count_quality=plan.token_count_quality,
+            reason=plan.reason,
+            settled_at=int(settled_at),
+        )
+        try:
+            self.store.commit_turn_projection_settlement(
+                namespace=self.namespace,
+                settlement=settlement,
+                projections=list(plan.messages) if plan.settlement_status == "settled" else [],
+            )
+        except Exception as exc:  # noqa: BLE001
+            fallback = TurnProjectionSettlement(
+                turn_id=turn_id,
+                policy=frozen_policy,
+                settlement_status="full_fallback",
+                settlement_schema_version=SETTLED_PROJECTION_SCHEMA_VERSION,
+                provider_profile=profile,
+                terminal_source_id=terminal_source_id,
+                reason=f"settlement_persist_failed:{type(exc).__name__}",
+                settled_at=int(settled_at),
+            )
+            try:
+                self.store.commit_turn_projection_settlement(
+                    namespace=self.namespace,
+                    settlement=fallback,
+                    projections=[],
+                )
+            except Exception:  # noqa: BLE001
+                return None
+            return fallback
+        return settlement
 
     def recover_stale_open_turns(
         self,
@@ -557,7 +663,45 @@ class MemorySystem:
             entry_projection_hashes=build_entry_projection_hashes(messages),
             compaction_generation=compaction_generation,
             projection_generation=projection_generation,
+            has_compact_history=any(message.projection_status is ProjectionStatus.SETTLED for message in messages),
         )
+
+    def settlement_metrics(self) -> list[dict[str, Any]]:
+        """安全审计指标(文档 §13): 只含指标, 不含任何 prompt 正文/payload。
+
+        每个 closed turn 一行 settlement 指标; saved/ratio 由账本字段确定性计算。
+        turn_id 以 sha256 前 16 位 hash 暴露, 不泄露原始 ID 语义。
+        """
+        settlements = self.store.list_turn_projection_settlements(namespace=self.namespace)
+        metrics: list[dict[str, Any]] = []
+        for settlement in settlements:
+            full_tokens = int(settlement.get("full_projected_tokens") or 0)
+            settled_tokens = int(settlement.get("settled_projected_tokens") or 0)
+            saved = max(0, full_tokens - settled_tokens)
+            metrics.append(
+                {
+                    "operation_projection_policy": str(settlement.get("policy") or ""),
+                    "settlement_status": str(settlement.get("settlement_status") or ""),
+                    "turn_id_hash": hashlib.sha256(
+                        str(settlement.get("turn_id") or "").encode("utf-8", errors="ignore")
+                    ).hexdigest()[:16],
+                    "provider_profile": str(settlement.get("provider_profile") or ""),
+                    "full_projected_tokens": full_tokens,
+                    "settled_projected_tokens": settled_tokens,
+                    "saved_projected_tokens": saved,
+                    "saved_ratio": round(saved / full_tokens, 4) if full_tokens else 0.0,
+                    "first_changed_projection_index": int(
+                        -1
+                        if settlement.get("first_changed_projection_index") is None
+                        else settlement.get("first_changed_projection_index")
+                    ),
+                    "full_projection_hash": str(settlement.get("full_projection_hash") or ""),
+                    "settled_projection_hash": str(settlement.get("settled_projection_hash") or ""),
+                    "token_count_quality": str(settlement.get("token_count_quality") or ""),
+                    "fallback_reason": str(settlement.get("reason") or ""),
+                }
+            )
+        return metrics
 
     def _freeze_turn_projection(
         self,
@@ -566,6 +710,16 @@ class MemorySystem:
         entries: list[TimelineEntry],
         provider_profile: str,
     ) -> list[ProjectionMessage]:
+        from .settlement import load_settled_projection
+
+        settled = load_settled_projection(
+            self.store,
+            namespace=self.namespace,
+            turn_id=turn_id,
+            provider_profile=provider_profile,
+        )
+        if settled is not None:
+            return settled
         try:
             return self._projection_ledger.freeze_turn_entries(
                 namespace=self.namespace,

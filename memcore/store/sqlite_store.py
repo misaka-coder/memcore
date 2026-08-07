@@ -21,7 +21,10 @@ import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import replace
-from typing import Any, Iterator
+from typing import TYPE_CHECKING, Any, Iterator
+
+if TYPE_CHECKING:
+    from ..timeline import TurnProjectionSettlement
 
 from ..errors import NamespaceError, SchemaError
 from ..compaction_v2 import (
@@ -226,6 +229,7 @@ class SQLiteMemoryStore(MemoryStore):
         annotation_target_ids: list[str],
         turn_id: str = "",
         opened_at: int = 0,
+        operation_projection_policy: str = "full_until_raw_compaction",
     ) -> TurnHandle:
         if not stimulus_entries:
             raise SchemaError("turn_stimulus_required")
@@ -278,8 +282,8 @@ class SQLiteMemoryStore(MemoryStore):
                 INSERT INTO turns(
                     turn_id, tenant_id, user_id, domain_id, conversation_id, status,
                     stimulus_source_ids_json, annotation_target_ids_json,
-                    opened_at, row_version
-                ) VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, 1)
+                    opened_at, operation_projection_policy, row_version
+                ) VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, 1)
                 """,
                 (
                     normalized_turn_id,
@@ -290,6 +294,7 @@ class SQLiteMemoryStore(MemoryStore):
                     _json_dumps([item.source_id for item in prepared]),
                     _json_dumps(list(targets)),
                     opened,
+                    str(operation_projection_policy or "full_until_raw_compaction").strip(),
                 ),
             )
             self._ensure_conversation_state_locked(namespace=namespace, updated_at=opened)
@@ -304,6 +309,7 @@ class SQLiteMemoryStore(MemoryStore):
                 stimuli=tuple(stored),
                 annotation_target_ids=targets,
                 opened_at=opened,
+                operation_projection_policy=str(operation_projection_policy or "full_until_raw_compaction").strip(),
             )
 
     def append_entry(self, *, namespace: Namespace, entry: TimelineEntryInput) -> TimelineEntry:
@@ -1311,6 +1317,21 @@ class SQLiteMemoryStore(MemoryStore):
         source_ids: tuple[str, ...],
     ) -> dict[str, tuple[str, ...]]:
         scope_clause, params = self._scope_clause(namespace, with_conversation=True)
+        wanted = set(source_ids)
+        # settled 历史投影优先: 已冻结的 compact turn 的权威 hash 在 settled 账本,
+        # 与 request builder / compaction 的 _freeze_bundle_projection 一致。
+        settled_hashes: dict[str, list[str]] = {}
+        for row in self._conn.execute(
+            "SELECT source_ids_json, payload_hash FROM settled_prompt_projection WHERE provider_profile = ?",
+            (provider_profile,),
+        ).fetchall():
+            for source_id in self._json_list(row["source_ids_json"]):
+                if source_id in wanted:
+                    settled_hashes.setdefault(source_id, []).append(str(row["payload_hash"] or ""))
+        if set(settled_hashes) == wanted:
+            return {source_id: tuple(values) for source_id, values in settled_hashes.items()}
+        remaining = wanted - set(settled_hashes)
+        hashes: dict[str, list[str]] = {source_id: list(values) for source_id, values in settled_hashes.items()}
         rows = self._conn.execute(
             f"""
             SELECT source_ids_json, payload_hash FROM prompt_projections
@@ -1319,11 +1340,9 @@ class SQLiteMemoryStore(MemoryStore):
             """,
             [*params, provider_profile],
         ).fetchall()
-        wanted = set(source_ids)
-        hashes: dict[str, list[str]] = {}
         for row in rows:
             for source_id in self._json_list(row["source_ids_json"]):
-                if source_id in wanted:
+                if source_id in remaining:
                     hashes.setdefault(source_id, []).append(str(row["payload_hash"] or ""))
         return {source_id: tuple(values) for source_id, values in hashes.items()}
 
@@ -1477,6 +1496,7 @@ class SQLiteMemoryStore(MemoryStore):
             stimuli=tuple(item for item in stimuli if item.source_id in stimulus_ids),
             annotation_target_ids=tuple(self._json_list(row["annotation_target_ids_json"])),
             opened_at=int(row["opened_at"] or 0),
+            operation_projection_policy=str(row["operation_projection_policy"] or "full_until_raw_compaction").strip(),
         )
 
     def _ensure_conversation_state_locked(self, *, namespace: Namespace, updated_at: int) -> None:
@@ -2133,6 +2153,256 @@ class SQLiteMemoryStore(MemoryStore):
                 return None
             self._assert_scope_owner(row, namespace, id_label=f"turn_id={normalized!r}")
             return self._turn_handle_from_row(row)
+
+    def upsert_turn_projection_settlement(
+        self,
+        *,
+        namespace: Namespace,
+        settlement: "TurnProjectionSettlement",
+    ) -> bool:
+        """Idempotently persist one frozen turn settlement (first write wins).
+
+        Returns True when the row was inserted, False when an identical-key row already
+        existed (重试幂等: 不覆盖已冻结 settlement, 不会生成不同 hash)。
+        """
+        with self._lock, self._conn:
+            inserted = self._conn.execute(
+                """
+                INSERT INTO turn_projection_settlement(
+                    tenant_id, user_id, domain_id, conversation_id, turn_id, provider_profile,
+                    policy, settlement_status, settlement_schema_version, terminal_source_id,
+                    full_projection_hash, settled_projection_hash, first_changed_projection_index,
+                    full_projected_tokens, settled_projected_tokens, token_count_quality,
+                    reason, settled_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(
+                    tenant_id, user_id, domain_id, conversation_id, turn_id, provider_profile
+                ) DO NOTHING
+                """,
+                (
+                    namespace.tenant_id or "",
+                    namespace.user_id,
+                    namespace.domain_id or "",
+                    namespace.conversation_id or "",
+                    str(settlement.turn_id or "").strip(),
+                    str(settlement.provider_profile or "").strip(),
+                    str(settlement.policy or "full_until_raw_compaction").strip(),
+                    str(settlement.settlement_status or "settled").strip(),
+                    int(settlement.settlement_schema_version or 1),
+                    str(settlement.terminal_source_id or "").strip(),
+                    str(settlement.full_projection_hash or "").strip(),
+                    str(settlement.settled_projection_hash or "").strip(),
+                    int(
+                        settlement.first_changed_projection_index
+                        if settlement.first_changed_projection_index is not None
+                        else -1
+                    ),
+                    int(settlement.full_projected_tokens or 0),
+                    int(settlement.settled_projected_tokens or 0),
+                    str(settlement.token_count_quality or "").strip(),
+                    str(settlement.reason or "").strip(),
+                    int(settlement.settled_at or 0),
+                ),
+            )
+        return inserted.rowcount > 0
+
+    def commit_turn_projection_settlement(
+        self,
+        *,
+        namespace: Namespace,
+        settlement: "TurnProjectionSettlement",
+        projections: list[ProjectionMessageInput],
+    ) -> bool:
+        """Atomically publish the settlement row and every settled provider message."""
+
+        if any(not isinstance(item, ProjectionMessageInput) for item in projections):
+            raise TypeError("projections must contain ProjectionMessageInput values")
+        turn_id = self._normalize_relation_id(str(settlement.turn_id or ""), field="turn_id")
+        profile = str(settlement.provider_profile or "").strip().lower()
+        policy = str(settlement.policy or "").strip()
+        status = str(settlement.settlement_status or "").strip()
+        if not profile:
+            raise SchemaError("settlement_provider_profile_required")
+        if status not in {"settled", "settled_noop", "full_fallback"}:
+            raise SchemaError("settlement_status_invalid")
+        if status == "settled" and not projections:
+            raise SchemaError("settled_projection_rows_required")
+        if status != "settled" and projections:
+            raise SchemaError("non_settled_projection_rows_not_allowed")
+        if projections:
+            if any(item.provider_profile != profile for item in projections):
+                raise SchemaError("settled_projection_profile_mismatch")
+            if [item.projection_index for item in projections] != list(range(len(projections))):
+                raise SchemaError("settled_projection_index_sequence_corrupt")
+            if stable_projection_hash([item.payload for item in projections]) != str(
+                settlement.settled_projection_hash or ""
+            ):
+                raise SchemaError("settled_projection_set_hash_mismatch")
+
+        with self._lock, self._conn:
+            turn = self._conn.execute("SELECT * FROM turns WHERE turn_id = ?", (turn_id,)).fetchone()
+            if turn is None:
+                raise SchemaError("turn_not_found")
+            self._assert_scope_owner(turn, namespace, id_label=f"turn_id={turn_id!r}")
+            if str(turn["status"] or "") != TurnStatus.CLOSED.value:
+                raise SchemaError("settlement_turn_must_be_closed")
+            if str(turn["operation_projection_policy"] or "full_until_raw_compaction") != policy:
+                raise SchemaError("settlement_policy_mismatch")
+            existing = self._conn.execute(
+                """
+                SELECT 1 FROM turn_projection_settlement
+                WHERE tenant_id = ? AND user_id = ? AND domain_id = ? AND conversation_id = ?
+                  AND turn_id = ? AND provider_profile = ?
+                """,
+                (
+                    namespace.tenant_id or "",
+                    namespace.user_id,
+                    namespace.domain_id or "",
+                    namespace.conversation_id or "",
+                    turn_id,
+                    profile,
+                ),
+            ).fetchone()
+            if existing is not None:
+                return False
+
+            if projections:
+                expected_source_ids = tuple(
+                    str(row["source_id"])
+                    for row in self._conn.execute(
+                        """
+                        SELECT source_id FROM messages
+                        WHERE turn_id = ? AND prompt_visible = 1
+                        ORDER BY seq_no
+                        """,
+                        (turn_id,),
+                    ).fetchall()
+                )
+                covered_source_ids = tuple(source_id for item in projections for source_id in item.source_ids)
+                if covered_source_ids != expected_source_ids:
+                    raise SchemaError("settled_projection_source_coverage_mismatch")
+
+            self._conn.execute(
+                """
+                INSERT INTO turn_projection_settlement(
+                    tenant_id, user_id, domain_id, conversation_id, turn_id, provider_profile,
+                    policy, settlement_status, settlement_schema_version, terminal_source_id,
+                    full_projection_hash, settled_projection_hash, first_changed_projection_index,
+                    full_projected_tokens, settled_projected_tokens, token_count_quality,
+                    reason, settled_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    namespace.tenant_id or "",
+                    namespace.user_id,
+                    namespace.domain_id or "",
+                    namespace.conversation_id or "",
+                    turn_id,
+                    profile,
+                    policy,
+                    status,
+                    int(settlement.settlement_schema_version or 1),
+                    str(settlement.terminal_source_id or "").strip(),
+                    str(settlement.full_projection_hash or "").strip(),
+                    str(settlement.settled_projection_hash or "").strip(),
+                    int(
+                        settlement.first_changed_projection_index
+                        if settlement.first_changed_projection_index is not None
+                        else -1
+                    ),
+                    int(settlement.full_projected_tokens or 0),
+                    int(settlement.settled_projected_tokens or 0),
+                    str(settlement.token_count_quality or "").strip(),
+                    str(settlement.reason or "").strip(),
+                    int(settlement.settled_at or 0),
+                ),
+            )
+            settlement_id = f"{turn_id}:{profile}"
+            for item in projections:
+                self._conn.execute(
+                    """
+                    INSERT INTO settled_prompt_projection(
+                        settlement_id, projection_index, provider_profile,
+                        source_ids_json, payload_json, payload_hash, projection_status
+                    ) VALUES (?, ?, ?, ?, ?, ?, 'settled')
+                    """,
+                    (
+                        settlement_id,
+                        int(item.projection_index),
+                        profile,
+                        _json_dumps(list(item.source_ids)),
+                        _json_dumps(dict(item.payload)),
+                        stable_projection_hash(item.payload),
+                    ),
+                )
+        return True
+
+    def get_turn_projection_settlement(
+        self,
+        *,
+        namespace: Namespace,
+        turn_id: str,
+        provider_profile: str,
+    ) -> dict[str, Any] | None:
+        normalized_turn_id = str(turn_id or "").strip()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM turn_projection_settlement WHERE turn_id = ? AND provider_profile = ?",
+                (normalized_turn_id, str(provider_profile or "").strip()),
+            ).fetchone()
+            if row is None:
+                return None
+            self._assert_scope_owner(row, namespace, id_label=f"settlement={normalized_turn_id!r}")
+            return dict(row)
+
+    def list_settled_projections(self, *, settlement_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM settled_prompt_projection WHERE settlement_id = ? ORDER BY projection_index",
+                (str(settlement_id or "").strip(),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_turn_projection_settlements(self, *, namespace: Namespace) -> list[dict[str, Any]]:
+        scope_clause, scope_params = self._scope_clause(namespace, with_conversation=True)
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT * FROM turn_projection_settlement WHERE {scope_clause} ORDER BY settled_at",
+                tuple(scope_params),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def upsert_settled_prompt_projection(
+        self,
+        *,
+        settlement_id: str,
+        projection_index: int,
+        provider_profile: str,
+        message: Any,
+        projection_status: str = "settled",
+    ) -> None:
+        payload = dict(getattr(message, "payload", {}) or {})
+        payload_hash = stable_projection_hash(payload)
+        source_ids = tuple(getattr(message, "source_ids", ()) or ())
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO settled_prompt_projection(
+                    settlement_id, projection_index, provider_profile,
+                    source_ids_json, payload_json, payload_hash, projection_status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(settlement_id, projection_index) DO NOTHING
+                """,
+                (
+                    str(settlement_id or "").strip(),
+                    int(projection_index),
+                    str(provider_profile or "").strip(),
+                    _json_dumps([str(item) for item in source_ids]),
+                    _json_dumps(payload),
+                    str(payload_hash or "").strip(),
+                    str(projection_status or "settled").strip(),
+                ),
+            )
 
     def get_turn_entries(self, *, namespace: Namespace, turn_id: str) -> list[TimelineEntry]:
         """Return one turn in sequence order without allowing cross-owner fallback."""

@@ -14,8 +14,26 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from enum import Enum
 
 from .errors import ConfigError
+
+
+class OperationProjectionPolicy(str, Enum):
+    """稳定 wire value: 持久化并进入 settled hash, 已发布值不得改名/删除/复用或改语义。
+
+    已弃用值仍必须支持历史读取与确定性重放; schema 升级只允许新增值。
+    """
+
+    FULL_UNTIL_RAW_COMPACTION = "full_until_raw_compaction"
+    COMPACT_AFTER_TERMINAL = "compact_after_terminal"
+
+    def __str__(self) -> str:
+        return self.value
+
+    @classmethod
+    def stable_values(cls) -> list[str]:
+        return [item.value for item in cls]
 
 
 @dataclass
@@ -62,6 +80,13 @@ class MemoryConfig:
     enable_flavor: bool = False  # 温度层(mood/口吻);默认关 = 纯事实
     enable_importance_decay: bool = False  # 开启后:长期记忆可见窗口按"随时间衰减的重要度"排序,而非纯recency
     importance_half_life_days: float = 90.0  # 衰减半衰期(天):越久未强化,重要度按指数减半
+
+    # --- 工具结果终局紧凑投影 ---
+    # 枚举值见 OperationProjectionPolicy(稳定 wire value, 永不改名)。默认保持旧行为:
+    # full_until_raw_compaction = 完整 action/observation 直到 raw compaction 由
+    # operation_digest 接替, 不新增 settlement 元数据。compact_after_terminal 由后续
+    # 切片接入, 本字段仅用于 begin_turn 冻结与 schema 落库。
+    operation_projection_policy: str = "full_until_raw_compaction"
 
     def __post_init__(self) -> None:
         self.validate()
@@ -126,3 +151,11 @@ class MemoryConfig:
             raise ConfigError(
                 f"visible_memory_scope must be 'conversation' or 'user', got {self.visible_memory_scope!r}"
             )
+
+        policy_value = str(self.operation_projection_policy or "").strip().lower()
+        if policy_value not in OperationProjectionPolicy.stable_values():
+            raise ConfigError(
+                "operation_projection_policy must be a stable wire value in "
+                f"{OperationProjectionPolicy.stable_values()}, got {self.operation_projection_policy!r}"
+            )
+        self.operation_projection_policy = policy_value

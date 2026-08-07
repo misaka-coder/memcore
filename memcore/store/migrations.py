@@ -14,7 +14,7 @@ from typing import Any, Iterable
 
 from ..errors import SchemaError
 
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 
 _CORE_TABLES = frozenset({"messages", "summaries", "semantic_summaries"})
 _TRACE_CATEGORIES = frozenset({"event_trace", "material_trace", "tool_trace"})
@@ -200,6 +200,7 @@ LATEST_SCHEMA_STATEMENTS = (
         opened_at INTEGER NOT NULL DEFAULT 0,
         closed_at INTEGER NOT NULL DEFAULT 0,
         close_reason TEXT NOT NULL DEFAULT '',
+        operation_projection_policy TEXT NOT NULL DEFAULT 'full_until_raw_compaction',
         row_version INTEGER NOT NULL DEFAULT 1
     )
     """,
@@ -272,6 +273,54 @@ LATEST_SCHEMA_STATEMENTS = (
             turn_id, attempt, provider_profile
         )
     )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS turn_projection_settlement (
+        tenant_id TEXT NOT NULL DEFAULT '',
+        user_id TEXT NOT NULL,
+        domain_id TEXT NOT NULL DEFAULT '',
+        conversation_id TEXT NOT NULL DEFAULT '',
+        turn_id TEXT NOT NULL,
+        provider_profile TEXT NOT NULL,
+        policy TEXT NOT NULL DEFAULT 'full_until_raw_compaction',
+        settlement_status TEXT NOT NULL DEFAULT 'settled',
+        settlement_schema_version INTEGER NOT NULL DEFAULT 1,
+        terminal_source_id TEXT NOT NULL DEFAULT '',
+        full_projection_hash TEXT NOT NULL DEFAULT '',
+        settled_projection_hash TEXT NOT NULL DEFAULT '',
+        first_changed_projection_index INTEGER NOT NULL DEFAULT -1,
+        full_projected_tokens INTEGER NOT NULL DEFAULT 0,
+        settled_projected_tokens INTEGER NOT NULL DEFAULT 0,
+        token_count_quality TEXT NOT NULL DEFAULT '',
+        reason TEXT NOT NULL DEFAULT '',
+        settled_at INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(
+            tenant_id, user_id, domain_id, conversation_id,
+            turn_id, provider_profile
+        )
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_settlement_scope_turn
+    ON turn_projection_settlement(
+        tenant_id, user_id, domain_id, conversation_id, turn_id, provider_profile
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS settled_prompt_projection (
+        settlement_id TEXT NOT NULL,
+        projection_index INTEGER NOT NULL,
+        provider_profile TEXT NOT NULL DEFAULT '',
+        source_ids_json TEXT NOT NULL DEFAULT '[]',
+        payload_json TEXT NOT NULL DEFAULT '{}',
+        payload_hash TEXT NOT NULL DEFAULT '',
+        projection_status TEXT NOT NULL DEFAULT 'settled',
+        PRIMARY KEY(settlement_id, projection_index)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_settled_projection_profile
+    ON settled_prompt_projection(settlement_id, projection_index, provider_profile)
     """,
 )
 
@@ -527,7 +576,7 @@ def migrate_database(connection: sqlite3.Connection) -> int:
         else:
             if has_core != _CORE_TABLES:
                 raise SchemaError("sqlite_schema_partial_core_tables")
-            if version not in {0, 1, 2, 3, CURRENT_SCHEMA_VERSION}:
+            if version not in {0, 1, 2, 3, 4, CURRENT_SCHEMA_VERSION}:
                 raise SchemaError("sqlite_schema_unsupported_version")
             if version < 2:
                 _migrate_v1_to_v2(connection)
@@ -537,6 +586,8 @@ def migrate_database(connection: sqlite3.Connection) -> int:
                 _migrate_v2_to_v3(connection)
             if version < 4:
                 _migrate_v3_to_v4(connection)
+            if version < 5:
+                _migrate_v4_to_v5(connection)
 
         _execute_statements(connection, _CATALOG_INDEX_STATEMENTS)
         _validate_latest_schema(connection)
@@ -634,6 +685,16 @@ def _migrate_v3_to_v4(connection: sqlite3.Connection) -> None:
     _add_missing_columns(connection, "summaries", _V4_SUMMARY_COLUMNS)
     _add_missing_columns(connection, "semantic_summaries", _V4_SEMANTIC_COLUMNS)
     _backfill_summary_catalog_metrics(connection)
+
+
+_V5_TURN_COLUMNS = {"operation_projection_policy": "TEXT NOT NULL DEFAULT 'full_until_raw_compaction'"}
+
+
+def _migrate_v4_to_v5(connection: sqlite3.Connection) -> None:
+    """Add the settled-compact projection schema without rewriting memory truth."""
+
+    _add_missing_columns(connection, "turns", _V5_TURN_COLUMNS)
+    _execute_statements(connection, LATEST_SCHEMA_STATEMENTS)
 
 
 def _backfill_summary_catalog_metrics(connection: sqlite3.Connection) -> None:

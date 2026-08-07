@@ -11,7 +11,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from ..timeline import TurnProjectionSettlement
 
 from ..compaction_v2 import (
     CompactionSnapshot,
@@ -80,6 +83,7 @@ class MemoryStore(ABC):
         annotation_target_ids: list[str],
         turn_id: str = "",
         opened_at: int = 0,
+        operation_projection_policy: str = "full_until_raw_compaction",
     ) -> TurnHandle:
         raise NotImplementedError
 
@@ -246,6 +250,53 @@ class MemoryStore(ABC):
 
     def get_turn(self, *, namespace: Namespace, turn_id: str) -> TurnHandle | None:
         """Namespace-safe turn lookup for lifecycle resume/idempotency."""
+        raise NotImplementedError
+
+    def upsert_turn_projection_settlement(
+        self,
+        *,
+        namespace: Namespace,
+        settlement: "TurnProjectionSettlement",
+    ) -> bool:
+        """Idempotently persist one frozen turn settlement (first write wins)."""
+        raise NotImplementedError
+
+    def commit_turn_projection_settlement(
+        self,
+        *,
+        namespace: Namespace,
+        settlement: "TurnProjectionSettlement",
+        projections: list[ProjectionMessageInput],
+    ) -> bool:
+        """Atomically publish one settlement and its complete provider projection set."""
+        raise NotImplementedError
+
+    def get_turn_projection_settlement(
+        self,
+        *,
+        namespace: Namespace,
+        turn_id: str,
+        provider_profile: str,
+    ) -> dict[str, Any] | None:
+        raise NotImplementedError
+
+    def list_settled_projections(self, *, settlement_id: str) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    def list_turn_projection_settlements(self, *, namespace: Namespace) -> list[dict[str, Any]]:
+        """List namespace-scoped settlement rows (no prompt payloads) for observability."""
+        raise NotImplementedError
+
+    def upsert_settled_prompt_projection(
+        self,
+        *,
+        settlement_id: str,
+        projection_index: int,
+        provider_profile: str,
+        message: Any,
+        projection_status: str = "settled",
+    ) -> None:
+        """Idempotently persist one frozen settled provider message (first write wins)."""
         raise NotImplementedError
 
     def get_turn_entries(self, *, namespace: Namespace, turn_id: str) -> list[TimelineEntry]:
