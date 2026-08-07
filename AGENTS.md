@@ -17,6 +17,8 @@ Read these files in order before coding:
 7. `docs/chat_output_adapter_v1.md` — optional final-output JSON contract and streaming speech parsing.
 8. `docs/memory_metadata_raw_retrieval_design_v1.md` — current metadata and prefilter semantics.
 9. `docs/raw_token_compaction_policy_v1.md` — the single token/ratio raw compaction policy.
+10. `docs/operation_projection_settlement_v1.md` — optional final-after-tool
+    settlement, reload API, prompt rule, metrics, and migration behavior.
 
 If you are changing memcore itself, inspect nearby tests first and run the validation commands at the end of this file.
 
@@ -254,9 +256,14 @@ For provider-native tool loops, prefer `build_native_memory_tool_specs(...)` and
 `dispatch_native_memory_tool(...)` over legacy text wrappers. The dispatcher strictly rejects invalid filters instead of broadening them.
 It also returns a compact `receipt`. Persist the complete result that the model
 actually received as the observation in the same open turn, so later normal
-turns can continue discussing it until the unified raw token compactor removes
-that turn. Store the receipt beside that body as a small `retention_anchor` for
-IDs, coverage, cursor, and hashes; a receipt never replaces the observation.
+turns can continue discussing it. The default `full_until_raw_compaction` policy
+keeps the full provider projection until unified raw compaction. Hosts may opt in
+to `compact_after_terminal`; it still stores and exposes the full result during
+the open tool loop, then projects a reloadable `source_id` card after final. Add
+the stable readback prompt rule and expose `open_memory(content)` as specified in
+`docs/operation_projection_settlement_v1.md`. Store the receipt beside that body
+as a small `retention_anchor` for IDs, coverage, cursor, and hashes; a receipt
+never replaces the observation.
 Do not serialize the same body into both `semantic_text` and a second rendered
 structure in the provider result, and never persist credentials, local paths,
 or binary file content.

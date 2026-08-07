@@ -68,6 +68,20 @@ If no counter is provided, MemCore remains usable and applies its conservative
 UTF-8 estimate. Compaction results always expose `token_count_quality`, so an
 estimate is never presented as an exact provider tokenizer.
 
+## Interaction with terminal operation settlement
+
+`MemoryConfig.operation_projection_policy="compact_after_terminal"` may replace
+large closed-turn observation bodies with deterministic reloadable cards before
+raw compaction becomes due. The raw planner counts the same settled provider
+projection that `build_context_projection()` will actually send, so it does not
+keep charging the removed full body or maintain a second hidden token window.
+
+This changes projected pressure, not raw truth or compaction boundaries. The later
+raw compactor still selects complete terminal components, creates episodic and
+operation-derived records, and preserves source lineage. Settlement metrics and raw
+compaction result fields are separate observability surfaces. See
+[`operation_projection_settlement_v1.md`](operation_projection_settlement_v1.md).
+
 ## Atomicity and lineage
 
 For each selected generation MemCore:

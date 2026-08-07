@@ -56,6 +56,20 @@ projection ledger 生成确定性的 provider messages：
 - 旧记录的投影默认不会因为 renderer 升级而被静默重写；
 - 新内容只追加在尾部，模型请求的历史前缀可以做严格 prefix 验收。
 
+工具结果另有一个默认关闭的终局投影策略：
+
+- `full_until_raw_compaction`（默认）保持完整 provider 历史；
+- `compact_after_terminal` 在 assistant final 提交后，将足够大的 observation 正文
+  换成带原始 `source_id` 的确定性可回读卡片；当前开放 turn、action 参数、final、
+  SQLite 真相和真实 provider 扩展字段不变；
+- settlement 按 turn 开始时冻结的策略原子发布，失败结构化降级 `full_fallback`，
+  不影响已经交付的 final；
+- `ContextProjection.has_compact_history` 和 `MemorySystem.settlement_metrics()`
+  让宿主稳定注入回读提示并观测节省，不暴露正文。
+
+接入契约见
+[`operation_projection_settlement_v1.md`](operation_projection_settlement_v1.md)。
+
 这保证的是“传给 provider 的前缀可证明稳定”，不是替任何 provider 承诺
 缓存一定命中。最终 hit/miss 仍由 provider 的缓存策略决定。
 
@@ -118,7 +132,9 @@ V2 使用实际 provider projection 的 token 预算规划完整 turn。这是�
   messages，不会被默认 native-tool fallback 改写；
 - operation entry 可逐条附带小型 `retention_anchor`，在 raw 压缩后保留资源 ID、
   版本、schema hash 或结果引用；压缩前模型实际看到的完整结果作为同一 observation
-  保留，压缩后由 operation digest/anchor 与对话摘要分别承接操作和讨论；
+  写入真相源。默认 full 策略让其完整投影到 raw compaction；可选 terminal
+  settlement 仅将已关闭 turn 的 provider-visible 正文换成可回读卡片；之后仍由
+  operation digest/anchor 与对话摘要分别承接操作和讨论；
 - `record_tool_exchange(turn_id=...)` 生成关联到同一 turn 的 action/observation；
 - `record_external_event()` 生成 `event.*` 中性结构化块；
 - `record_material_reference()` / `record_material_cleanup()` 只保存 file_id、
@@ -194,6 +210,8 @@ MemCore 不需要为每个 Bot 复制一套业务逻辑。
 - MemCore 保证稳定前缀和可诊断审计，不保证 PinAI、DeepSeek 或其他 provider
   的缓存服务必然命中；
 - 历史 standalone 数据通过有界维护逐步压缩，不会被一次性清仓或静默丢弃。
+- schema v5 为新 turn 冻结终局投影策略；旧 closed turn 迁移后保持默认 full，
+  不在启动时批量重写历史或伪造 settlement。
 
 ## 最小入口
 
@@ -201,7 +219,9 @@ MemCore 不需要为每个 Bot 复制一套业务逻辑。
 
 1. [`README.md`](../README.md)；
 2. [`usage_flow_v1.md`](usage_flow_v1.md)；
-3. [`model_prompt_playbook_v1.md`](model_prompt_playbook_v1.md)；
-4. [`memory_metadata_raw_retrieval_design_v1.md`](memory_metadata_raw_retrieval_design_v1.md)。
+3. [`memory_read_api_v1.md`](memory_read_api_v1.md)；
+4. [`operation_projection_settlement_v1.md`](operation_projection_settlement_v1.md)；
+5. [`model_prompt_playbook_v1.md`](model_prompt_playbook_v1.md)；
+6. [`memory_metadata_raw_retrieval_design_v1.md`](memory_metadata_raw_retrieval_design_v1.md)。
 
 测试、构建和授权信息以仓库根目录 README 为准。

@@ -12,6 +12,7 @@
 
 实现说明按以下公开文档维护：[`usage_flow_v1.md`](docs/usage_flow_v1.md)、
 [`memory_read_api_v1.md`](docs/memory_read_api_v1.md)、
+[`operation_projection_settlement_v1.md`](docs/operation_projection_settlement_v1.md)、
 [`memory_metadata_raw_retrieval_design_v1.md`](docs/memory_metadata_raw_retrieval_design_v1.md) 和
 [`model_prompt_playbook_v1.md`](docs/model_prompt_playbook_v1.md)。
 
@@ -66,7 +67,8 @@
 - 压缩重试:`llm_max_retries` 会传给注入的 `LLMClient`;最终仍失败时压缩层不标记已完成,下一轮继续重试。
 - **Chat Output Adapter ✅**:标准 JSON 输出契约、`speech` 流式解析、普通文本尽力分段、raw metadata 回写流程见 `docs/chat_output_adapter_v1.md`;工具调用阶段不套该 JSON,只在最终回复阶段输出 memcore JSON。
 - **稳定投影与缓存审计 ✅**:canonical/OpenAI/Anthropic provider projection、renderer/version、strict-prefix 验收、projection hash 与真实请求 audit;MemCore 保证前缀稳定,不替 provider 承诺缓存必命中。
-- **开放动作/结果时间线 ✅**:`append_action(...)` / `append_observation(...)` 可记录原生工具、JSON、XML、标签或宿主自定义协议；模型实际看到的完整结果与调用一起保留到统一 raw token 压缩，可选小型 `retention_anchor` 在 operation 压缩后继续保留资源 ID、版本、hash 等重载锚点。实际 provider 消息可冻结回 projection ledger。
+- **开放动作/结果时间线 ✅**:`append_action(...)` / `append_observation(...)` 可记录原生工具、JSON、XML、标签或宿主自定义协议；模型实际看到的完整结果与调用一起写入统一时间线。默认策略把完整 provider 投影保留到 raw token 压缩；可选 `compact_after_terminal` 在 final 后把足够大的旧 observation 变为可按 `source_id` 回读的冻结卡片，不修改 SQLite 原文、action、final 或真实 provider wire。小型 `retention_anchor` 仍只在 operation 压缩后保留资源 ID、版本、hash 等重载锚点。
+- **终局工具投影 settlement ✅**:`MemoryConfig.operation_projection_policy` 提供稳定 wire value `full_until_raw_compaction`（默认）与 `compact_after_terminal`；策略在 `begin_turn` 冻结，settlement 原子发布并支持 `settled/settled_noop/full_fallback`，`build_context_projection().has_compact_history` 和 `settlement_metrics()` 提供宿主提示与安全观测。完整 API、回读闭环、缓存规则和迁移语义见 [`operation_projection_settlement_v1.md`](docs/operation_projection_settlement_v1.md)。
 - **有界后台维护 ✅**:每次 `compact_due` 只提交一个 raw compaction generation 和一个 semantic batch；
   token 模式按配置比例一次选足最旧的完整 turn/component，不再被旧条目批次或独立 source 上限提前截断。
 
@@ -94,6 +96,8 @@ OCR、视觉描述、文档 chunks 或当前清理状态;memcore 不保存文件
 宿主中立的动作/结果接入、非原生协议真实投影与可选压缩锚点见
 [`docs/operation_timeline_v1.md`](docs/operation_timeline_v1.md)，可运行示例见
 [`examples/non_native_operation_timeline.py`](examples/non_native_operation_timeline.py)。
+final 后的可回读工具结果投影、策略配置、指标与批量恢复契约见
+[`docs/operation_projection_settlement_v1.md`](docs/operation_projection_settlement_v1.md)。
 
 ## 端到端用法
 
@@ -177,8 +181,9 @@ tool_payload = dispatch_native_memory_tool(
 # receipt 是宿主侧导航锚点；把其余完整结果作为 provider 原生 tool_result 回给模型。
 provider_result = {key: value for key, value in tool_payload.items() if key != "receipt"}
 provider_result_text = json.dumps(provider_result, ensure_ascii=False, sort_keys=True)
-# 将模型实际看到的同一份结果写入 observation。它在后续回合继续可见，直到统一
-# raw token 差值压缩；receipt 只作为 operation digest 可保留的小型重载锚点。
+# 将模型实际看到的同一份结果写入 observation。默认策略会让它在后续回合保持完整；
+# compact_after_terminal 则只在本 turn final 后把 provider 历史换成可回读卡片。
+# receipt 只作为 operation digest 可保留的小型重载锚点，不能替代完整 observation。
 mem.append_observation(
     turn_id=handle.turn_id,
     kind=f"operation.memory.{tool_call.name}.result",
@@ -269,12 +274,17 @@ memcore 是**纯机制**:它不含任何具体人格、领域调教或模型权�
 
 ## 公共 API
 
-`import memcore` 暴露:`MemorySystem`、`MemoryConfig`、`Namespace`/`Actor`、`PromptOverrides`、
+`import memcore` 暴露:`MemorySystem`、`MemoryConfig` / `OperationProjectionPolicy`、`Namespace`/`Actor`、`PromptOverrides`、
 `LLMClient`/`LLMRequest`/`LLMResult`、`MemoryStore`/`VectorIndex`/`EmbeddingProvider`/`TokenCounter` 接口、
 默认实现 `SQLiteMemoryStore`/`InMemoryVectorIndex`/`HashedEmbeddingProvider`/`HuggingFaceEmbeddingProvider`/`HTTPEmbeddingProvider`、
 `verify_embedding`、`build_native_memory_tool_specs` / `dispatch_native_memory_tool` / `build_memory_operation_receipt`、
 `build_action_entry` / `build_observation_entry`、Timeline V2 与 projection 契约、
 `MemoryMetadata`/`SummaryRecord`/`SemanticRecord`、异常类。
+
+`MemorySystem` 上的 `build_context_projection()`、`settlement_metrics()` 以及
+`open_memory(memory_id|memory_ids, ...)` 构成终局工具结果的投影、观测和回读闭环；
+精确契约见
+[`docs/operation_projection_settlement_v1.md`](docs/operation_projection_settlement_v1.md)。
 
 ## 跑测试
 

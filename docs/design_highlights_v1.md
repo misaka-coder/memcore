@@ -178,6 +178,18 @@ memcore 把语义检索视为快速入口，而不是记忆可达性的唯一闸
 “答案正确但证据路径叙述错误”的边界见
 [`agentic_memory_navigation_evaluation_20260806.md`](agentic_memory_navigation_evaluation_20260806.md)。
 
+### 21. 工具结果可以终局沉降，但不是删除历史
+
+`compact_after_terminal` 只在 assistant final 成功提交后改变 provider-visible
+observation：长正文变成带 `source_id`、状态、hash 和 `open_memory(content)` 路径的
+冻结卡片。当前多轮工具循环始终看完整结果，action/final 与 SQLite 原文不变；短结果
+或收益不足的卡片保持 full，未知 provider 形状结构化回退 full。
+
+这是一种确定性的 reference offload，不需要额外 LLM 摘要，也不把第二份语义摘要
+变成权威。模型仍知道自己调用过什么、参数是什么、结果在哪里，并能按需批量恢复。
+完整 API 见
+[`operation_projection_settlement_v1.md`](operation_projection_settlement_v1.md)。
+
 ## 适合什么场景
 
 - 长期陪伴型 AI:用户偏好、关系、计划、相处时间、情绪余温。

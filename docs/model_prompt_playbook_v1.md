@@ -14,6 +14,8 @@ memcore 不替宿主写完整人格 prompt,但建议把下面这些规则拼到�
 - read_timeline: 按 ISO 或本地 `start_at/end_at` 精确到小时/分钟读取原始对话，无需计算 epoch；也可按旧日期/粗时段读取，或用 retrieve 返回的 raw source_id 读取前后完整轮次。结果可能按完整轮次无损分页，不会静默截断。
 - load_material: 若宿主支持图片/文件,按 file_id 读取当前可用的原文件、OCR、视觉描述、文档 chunks 或清理状态。
 
+部分已完成轮次的历史工具结果可能显示为 `[compact_reloadable]` 紧凑回执。这不代表结果丢失：当前开放工具轮始终保留完整结果，旧回执则保留 tool、call_id、status 和 source_id。当前问题确实依赖旧结果中的具体正文时，用 `open_memory(memory_id=source_id, view="content", detail="full")` 单条或批量恢复；已有 final/回执足够时不要机械回读。
+
 把工具当作你的可用能力和结构化信息通道,不是摆设。凡是答案依赖未在当前 prompt 中明确可见的事实、旧记忆、精确时间线、人物归因、承诺、偏好、关系或平台事件时,请主动调用合适的工具求证。一次工具结果不够时,可以根据结果继续调用工具补查,直到足以回答或确认没有明确记录。
 
 当用户提到“昨天/今天/明天/上周/上周二/最近/刚才”等相对时间时,必须结合 prompt 里的日期、星期和时间段锚点理解。
@@ -54,6 +56,7 @@ memory_metadata 标注的是宿主指定的本轮记忆目标,可能是用户消
 - 固定前缀要保持字面稳定:顺序、空格、换行、字段名、工具 schema 不要每轮重排。
 - 不要把当前时间、可见三层记忆、检索结果、随机 request id 混进固定 system prompt 前部。
 - `render_prompt_context(ctx)` 每轮都会变,应放在稳定规则之后;它的存在不影响前面的固定规则命中缓存。
+- 启用 `compact_after_terminal` 时，把“紧凑工具结果可按 source_id 回读”的说明固定放在稳定工具规则里；不要等第一张卡片出现后才临时改变 system prompt。切回 full 策略但 `build_context_projection().has_compact_history=true` 时，旧 settled 历史仍可见，应继续保留同一说明。
 - 长文本问答里,若同一份财报/研报会被连续追问,把原文放在问题之前并保持完全一致;后续问题只追加在原文之后。
 - 需要变更人格、工具契约或领域枚举时,把它当成 prompt 版本升级;版本稳定后不要频繁微调标点。
 
@@ -85,7 +88,7 @@ browse_memory(time_range? / date_from?, date_to?, node_types?, cursor?)
 用于宽范围历史概览。返回的是完整卡片页和 coverage，不是 Top-K，也不是截断 raw。page_complete=false 时下一次只传 cursor。
 
 open_memory(memory_id? / memory_ids?, view?, detail?, projection?, cursor?)
-用于打开已选节点。多个相关节点需要 card/content 时优先一次传 memory_ids，结果保持请求顺序并逐项给 status/reason；不要因一个 ID 失败而忽略其它成功正文。card 只看目录信息；content 看完整摘要或单条 raw；sources 返回精确子证据并保持完整逻辑单元，且只接受单个 memory_id。sources 默认 `projection=conversation`：对话/事件完整，operation/Skill/tool/material 只返回 kind、source_id、correlation_id、状态和小型锚点，不复制大型输入/结果正文。紧凑轨迹已足够理解“调用过什么、哪次请求对应哪个结果、成功还是失败”；只有回答确实依赖工具正文时，才打开该 source_id 的 content，或显式使用 `projection=full/tools`。sources 分页未完成时下一次只传 cursor。
+用于打开已选节点。多个相关节点或 `[compact_reloadable]` 工具结果需要 card/content 时优先一次传 memory_ids，结果保持请求顺序并逐项给 status/reason；不要因一个 ID 失败而忽略其它成功正文。card 只看目录信息；content 看完整摘要或单条 raw；sources 返回精确子证据并保持完整逻辑单元，且只接受单个 memory_id。sources 默认 `projection=conversation`：对话/事件完整，operation/Skill/tool/material 只返回 kind、source_id、correlation_id、状态和小型锚点，不复制大型输入/结果正文。紧凑轨迹已足够理解“调用过什么、哪次请求对应哪个结果、成功还是失败”；只有回答确实依赖工具正文时，才打开该 source_id 的 content，或显式使用 `projection=full/tools`。sources 分页未完成时下一次只传 cursor。
 
 read_timeline(time_range?, date_from?, date_to?, time_periods?, anchor_source_id?, before_turns?, after_turns?, projection?, page_token_budget?, cursor?)
 time_range 使用 start_at/end_at 做起点包含、终点不包含的精确读取；日期模式读取整天或粗时段；anchor 模式从一条 raw 命中扩展前后完整 turn。conversation/full/tools 决定读取密度。模型侧始终有宿主配置的有限页面预算：省略/传 0 使用该预算，传更大值不会越过宿主上限。`status=partial` 时先看 selected/returned 数量和 token 总量：需要精确后续证据就只传 cursor 继续；用户要宽范围概览则改用 browse_memory。不要重复原选择器，也不要把 partial 当作完整覆盖。单个超大 turn 仍完整返回并标记 oversized_unit。

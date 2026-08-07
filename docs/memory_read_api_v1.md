@@ -294,6 +294,25 @@ mem.open_memory(
 )
 ```
 
+The same `open_memory(content)` contract is used by terminal operation projection
+settlement. When `MemoryConfig.operation_projection_policy` is
+`compact_after_terminal`, a closed turn may show a `[compact_reloadable]` provider
+history card containing the raw observation `source_id`. Pass that ID as
+`memory_id`; no settlement-specific read tool is required. Several selected cards
+can be restored in one ordered call:
+
+```python
+mem.open_memory(
+    memory_ids=["tool-result-a", "tool-result-b"],
+    view="content",
+    detail="full",
+)
+```
+
+This batch form is valid for `card` and `content` only. `sources` remains single-ID
+or cursor-only. Full terminal settlement configuration and lifecycle are documented
+in [`operation_projection_settlement_v1.md`](operation_projection_settlement_v1.md).
+
 To inspect every operation body in one episode, explicitly use
 `projection="full"` or `projection="tools"`.
 

@@ -148,11 +148,24 @@ or other small lookup key.
 
 ## Cache behavior
 
-Timeline entries and their provider projections are append-only. Once an actual
-request projection has been frozen, later turns reuse it byte-for-byte until an
-explicit compaction or migration replaces that history segment. Adding a new
-action/result therefore appends a suffix; it does not require changing the stable
-system prompt or all previously projected messages.
+Timeline truth is append-only. With the default
+`operation_projection_policy="full_until_raw_compaction"`, once an actual request
+projection has been frozen, later turns reuse it byte-for-byte until raw compaction
+or migration replaces that history segment. Adding a new action/result therefore
+appends a suffix; it does not require changing the stable system prompt or all
+previously projected messages.
+
+The optional `compact_after_terminal` policy introduces one controlled projection
+transition after the assistant final commits: large observation bodies become
+deterministic reloadable cards while action parameters, final speech, provider
+extensions, and SQLite truth remain unchanged. The settled payload set is then
+frozen and reused on restart. The current open tool loop is never settled.
+
+Hosts enabling this policy must add one stable model rule explaining that a compact
+`source_id` can be reopened with `open_memory(view="content")`; do not inject that
+rule dynamically only after the first compact result appears. Exact configuration,
+status, metrics, batch readback, migration, and rollback contracts are authoritative
+in [`operation_projection_settlement_v1.md`](operation_projection_settlement_v1.md).
 
 This makes dynamic catalogs and loaded instructions possible without requiring
 them. A host with a small stable tool set can still keep all tool descriptions in

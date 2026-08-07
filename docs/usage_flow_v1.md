@@ -35,12 +35,14 @@ For normal host integration, read these files in order:
 3. This file - concise integration flow.
 4. `docs/memory_read_api_v1.md` - exact read/navigation signatures, defaults,
    return fields, native-tool projection, and cursor rules.
-5. `docs/model_prompt_playbook_v1.md` - prompt/tool instructions for the chat
+5. `docs/operation_projection_settlement_v1.md` - optional terminal tool-result
+   compaction, stable policy values, readback, metrics, and cache behavior.
+6. `docs/model_prompt_playbook_v1.md` - prompt/tool instructions for the chat
    model.
-6. `docs/chat_output_adapter_v1.md` - optional final JSON contract and
+7. `docs/chat_output_adapter_v1.md` - optional final JSON contract and
    streaming speech parsing.
-7. `docs/memory_metadata_raw_retrieval_design_v1.md` - current metadata and raw-first retrieval semantics.
-8. `docs/raw_token_compaction_policy_v1.md` - token/ratio raw compaction.
+8. `docs/memory_metadata_raw_retrieval_design_v1.md` - current metadata and raw-first retrieval semantics.
+9. `docs/raw_token_compaction_policy_v1.md` - token/ratio raw compaction.
 
 If you are changing `memcore` itself, also inspect nearby tests before editing.
 
@@ -68,6 +70,8 @@ ctx_text = mem.render_prompt_context(ctx)
 # Put ctx_text into the final chat model prompt.
 # Expose wrappers around:
 # - mem.retrieve_for_turn(current=cur, ...)
+# - mem.browse_memory(...)
+# - mem.open_memory(...)
 # - mem.read_timeline(...)
 
 raw_model_output = call_chat_model(...)
@@ -88,6 +92,7 @@ completed = mem.complete_turn(
     memory_annotation=parsed.memory_metadata,
     annotation_status="accepted_model",
     timestamp=now_ts2,
+    provider_profile="openai_chat",  # the profile actually used for this final
 )
 if not completed.completed:
     handle_memory_commit_error(completed)
@@ -115,9 +120,10 @@ atomic and conversation-scoped; it does not delete timeline entries or replace
 the immediate abort path.
 
 If the host dynamically selects a provider, pass the actual projection profile
-used by the completed request, for example
-`mem.compact_due_background(provider_profile="openai_chat")`. Omitting it keeps
-the configured `MemoryConfig.projection_profile` fallback.
+to `complete_turn(provider_profile=...)` so optional terminal settlement freezes
+the same wire profile, and pass it again to
+`compact_due_background(provider_profile=...)` for raw token planning. Omitting
+either keeps the configured `MemoryConfig.projection_profile` fallback.
 
 ## Required Host Pieces
 
@@ -208,11 +214,14 @@ Send `tool_result` back through the model provider's native tool-result channel.
 The dispatcher also returns `tool_result["receipt"]`, a deterministic compact
 record containing selectors, returned IDs, coverage, cursor, request hash, and
 sanitized result hash. Persist the complete result that the model actually saw
-as the observation in the same open turn. It then remains available to later
-normal turns until the unified raw token compactor processes that turn. Store
-the receipt beside the body as a small `retention_anchor`; it is navigation
-metadata and never a replacement for the result. Do not persist credentials,
-binary files, or local paths, and do not render one evidence body twice.
+as the observation in the same open turn. Under the default
+`full_until_raw_compaction` policy it remains fully projected to later turns until
+the unified raw token compactor processes that turn. Under
+`compact_after_terminal`, the open tool loop is still full, but after final the
+provider-visible observation may become a frozen reloadable card. Store the receipt
+beside the body as a small `retention_anchor`; it is navigation metadata and never a
+replacement for the result. Do not persist credentials, binary files, or local
+paths, and do not render one evidence body twice.
 
 For `open_memory(content/sources)`, the direct trusted Python facade keeps both
 structured records and rendered text for diagnostics. Native dispatch sends
@@ -237,6 +246,23 @@ mem.append_observation(
 
 `build_memory_operation_receipt(...)` is public for non-native adapters that
 need the same receipt contract.
+
+For high-volume tool results, configure the optional terminal projection policy:
+
+```python
+from memcore import MemoryConfig, OperationProjectionPolicy
+
+config = MemoryConfig(
+    operation_projection_policy=OperationProjectionPolicy.COMPACT_AFTER_TERMINAL.value,
+)
+```
+
+This policy does not summarize with an LLM and does not delete raw truth. It replaces
+only sufficiently large closed-turn observation bodies with deterministic cards that
+carry the exact raw `source_id`. Consume history normally with
+`build_context_projection()`, expose `open_memory`, and add the stable readback rule
+from [`operation_projection_settlement_v1.md`](operation_projection_settlement_v1.md)
+to the final model prompt. Do not call store settlement methods directly.
 
 `open_memory(memory_ids=[...], view="card"|"content")` batch-opens selected
 nodes in request order and reports each node independently. Use a single
@@ -359,7 +385,9 @@ When an AI agent integrates `memcore`, follow this order:
 7. Commit parsed `memory_metadata` to the host-selected annotation target.
 8. Record the assistant turn with clean speech, not broken JSON.
 9. Run background compaction after the visible reply path.
-10. Keep API keys, local paths, logs, databases, and cached model files out of
+10. If `compact_after_terminal` is enabled, keep its readback instruction stable,
+    expose `open_memory(content)`, and monitor `settlement_metrics()`.
+11. Keep API keys, local paths, logs, databases, and cached model files out of
     prompts, docs, snapshots, and commits.
 
 Normal integration should not require reading private memcore modules.
