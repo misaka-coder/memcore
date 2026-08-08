@@ -42,6 +42,43 @@ injects its own store or index, it owns that dependency's lifecycle.
 `MemorySystem.close()` closes only a runtime created by that `MemorySystem`; it
 does not close an injected store, index, embedding client, or shared runtime.
 
+## Required `LLMClient` contract
+
+The injected memory LLM must implement the public abstract interface rather
+than a loose `call(system, user)` helper:
+
+```python
+from memcore import LLMClient, LLMRequest, LLMResult, TaskType
+
+class MyMemoryLLM(LLMClient):
+    def call(self, request: LLMRequest) -> LLMResult:
+        # request.task_type is SUMMARY, SEMANTIC, or REINFORCEMENT.
+        data = call_structured_model(
+            system=request.system_prompt,
+            user=request.user_prompt,
+            json_mode=request.response_format.value == "json",
+            timeout=request.timeout_s,
+        )
+        return LLMResult(ok=True, data=data, attempts=1)
+```
+
+`LLMRequest` fields are `task_type`, `system_prompt`, `user_prompt`,
+`response_format` (currently `json`), `timeout_s`, `max_retries`,
+`temperature`, optional `fallback`, and provider-specific `extra`.
+`TaskType` values are `summary`, `semantic`, and `reinforcement`.
+
+The adapter must return `LLMResult`, not a raw string/dict. On a provider or
+JSON failure return `LLMResult(ok=False, data=fallback, error=..., attempts=...)`
+with a safe fallback supplied by MemCore. Do not raise a bare provider exception
+through `call()` and do not return half-parsed JSON: compaction uses the
+structured result to choose retry/deferred/fallback states without committing an
+empty summary.
+
+`LLMResult.degraded_to_fallback` should be true when the returned `data` is a
+fallback rather than a successful model result. Preserve `latency_ms` and
+`attempts` when the host can measure them; these fields are operational
+telemetry, not memory content.
+
 ## `MemoryConfig`
 
 All fields are validated during construction. Invalid values raise
@@ -179,6 +216,18 @@ Changing model revision, query/document task behavior, normalization, or output
 dimension changes the vector space. Reflect that change in the provider
 `name/version/dimension` identity and rebuild or switch the index collection;
 never mix incompatible vectors.
+
+### Custom embedding provider
+
+An injected `EmbeddingProvider` must expose a positive `dimension`, implement
+`embed_text(text)`, and return one vector per input from `embed_texts(texts)`.
+Role-aware providers may override `embed_query/embed_queries` and
+`embed_document/embed_documents`; the index uses document methods for upsert and
+query methods for retrieval. Returned vector lengths must equal `dimension`.
+
+`TokenCounter` is optional but, when supplied, must implement
+`count_text(text) -> int`. Override `quality` with `estimated` for a coarse
+counter; MemCore never presents that estimate as provider billing usage.
 
 ## Index choices and restart behavior
 
