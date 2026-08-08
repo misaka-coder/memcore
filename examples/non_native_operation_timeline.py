@@ -12,6 +12,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from memcore import (
+    AnnotationStatus,
     OPENAI_PROFILE,
     EntryOrigin,
     HashedEmbeddingProvider,
@@ -116,7 +117,7 @@ def main() -> None:
                 turn_id=handle.turn_id,
                 semantic_text="当前可以使用 search 和 weather。",
                 provider_output_raw="当前可以使用 search 和 weather。",
-                annotation_status="accepted",
+                annotation_status=AnnotationStatus.ACCEPTED_HOST,
                 memory_annotation={"topic_terms": ["能力目录"]},
                 source_id="final-1",
                 provider_profile=OPENAI_PROFILE,

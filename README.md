@@ -16,6 +16,29 @@
 [`memory_metadata_raw_retrieval_design_v1.md`](docs/memory_metadata_raw_retrieval_design_v1.md) 和
 [`model_prompt_playbook_v1.md`](docs/model_prompt_playbook_v1.md)。
 
+## 给 AI 编码助手的入口
+
+不要只把一句“接入 MemCore”交给 AI。请先让它读取根目录 `AGENTS.md`，再读取
+[`docs/ai_integration_checklist_v1.md`](docs/ai_integration_checklist_v1.md)。这份清单集中列出
+最容易漏掉并导致拒绝或行为失真的硬规则：
+
+- `MemorySystem` 必须注入 `LLMClient`、生产 embedding、有效 IANA `timezone`
+  和含 `user_id` 的 `Namespace`；
+- timeline `kind` 必须是小写 namespaced value；普通工具采用
+  `tool.<lowercase_name>.call/result`；
+- 需要模型回复的请求必须走
+  `begin_turn → action/observation → complete_turn/abort_turn`，不能用 standalone
+  `record_user_turn()` 冒充开放 turn；
+- 工具结果必须保存模型实际看到的同一份正文，并用相同 `turn_id/correlation_id`
+  关联；receipt 只能是小型回读锚点；
+- provider profile、真实请求投影、稳定 Prompt 前缀、后台 compaction 和重启
+  reindex 都由宿主显式接好；
+- `pending/partial/unavailable/conflict` 必须按结构化状态处理，不能改写成空结果或
+  假成功。
+
+AI 完成接入前必须跑清单末尾的聚焦验收；“字段存在”不等于真实 provider 请求、
+工具轨迹、缓存前缀和三层记忆已经接通。
+
 > **真实基线：语义检索不是记忆的唯一入口。** 在一次匿名线上审计中，20 次
 > `retrieve_for_turn` 没有产生可直接支持答案的结果，但聊天模型仍通过
 > `browse_memory`、`open_memory` 和 `read_timeline` 解决了大部分记忆问题。
