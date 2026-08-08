@@ -135,6 +135,42 @@ Important parameters:
 - `include_explicit` + `kind_patterns`: host-authorized explicit trace/event/
   material retrieval. They do not open arbitrary kinds.
 
+Trusted Python code that needs domain status and diagnostics should use:
+
+```python
+result = mem.retrieve_for_turn_structured(
+    current=current_raw,
+    query=query,
+    exclude_source_ids=None,
+    entity_anchors=None,
+    topic_terms=None,
+    source_layers=None,
+    memory_facets=None,
+    about_roles=None,
+    time_hint=None,
+    kind_patterns=None,
+    include_explicit=False,
+    cross_conversation=True,
+    within_memory_id="",
+    max_matches=0,
+    result_token_budget=0,
+)
+```
+
+`max_matches=0` uses `MemoryConfig.retrieval_limit`; a positive value is still
+capped by that configured maximum. `result_token_budget=0` is unlimited. A
+positive result budget requires an injected `TokenCounter`; otherwise the
+result is `unavailable/token_counter_required` rather than a guessed character
+cut. These controls belong to trusted host policy and are intentionally absent
+from the model-facing native schema.
+
+For diagnostics outside a live model turn, `retrieve_structured(query, ...)`
+accepts the same filters but has no `current`/visible-lineage exclusion and
+defaults `cross_conversation=False`. Prefer the turn-aware method in live chat.
+It additionally returns `unavailable/lineage_store_unsupported` or
+`failed/lineage_resolution_failed` if safe visible-lineage exclusion cannot be
+resolved.
+
 Normal retrieval excludes operation/tool/material traces. Full tool evidence is
 not returned unless the host policy and model request explicitly authorize the
 corresponding kind.

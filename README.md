@@ -91,7 +91,10 @@ OCR、视觉描述、文档 chunks 或当前清理状态;memcore 不保存文件
 
 设计亮点说明见 `docs/design_highlights_v1.md`;接入聊天模型时建议先读 `docs/model_prompt_playbook_v1.md`。
 如果让 AI 编码助手接入本库,请先把根目录 `AGENTS.md` 交给它读;独立接入流程见
-`docs/usage_flow_v1.md`。
+`docs/usage_flow_v1.md`。构造参数与全部 `MemoryConfig` 约束见
+[`docs/configuration_api_v1.md`](docs/configuration_api_v1.md)；写入 turn、状态返回、
+维护与危险删除接口见
+[`docs/write_lifecycle_and_maintenance_api_v1.md`](docs/write_lifecycle_and_maintenance_api_v1.md)。
 模型服务前缀缓存友好的 prompt 拼接顺序见 `docs/model_prompt_playbook_v1.md` 的“缓存友好 Prompt 布局”。
 宿主中立的动作/结果接入、非原生协议真实投影与可选压缩锚点见
 [`docs/operation_timeline_v1.md`](docs/operation_timeline_v1.md)，可运行示例见
@@ -141,6 +144,13 @@ mem.complete_turn(
 future = mem.compact_due_background()          # 聊天链路推荐后台沉淀,不阻塞用户可见回复
 # 可忽略 future 做 fire-and-forget;测试/脚本可 future.result() 读取压缩统计
 ```
+
+上例的 `embedding="BAAI/bge-m3"` 是本地已缓存模型的快捷写法，内部采用
+`local_files_only=True`，不会在生产启动时偷偷下载权重。全新环境请先安装
+`memcore[huggingface]` 并预下载模型、显式构造
+`HuggingFaceEmbeddingProvider(local_files_only=False)` 完成受控下载，或使用
+`HTTPEmbeddingProvider`。完整构造与上线自检见
+[`docs/configuration_api_v1.md`](docs/configuration_api_v1.md)。
 
 宿主应在模型或交付异常的 `finally` 路径立即调用 `abort_turn()`。为处理进程崩溃、
 强制关机等无法执行 `finally` 的情况，启动或新一轮开始前可按产品超时策略调用：
@@ -270,13 +280,14 @@ memcore 是**纯机制**:它不含任何具体人格、领域调教或模型权�
 
 记忆的硬隔离边界是 Namespace 的 `hard_key`(tenant/user/domain)。**`actor` 是软标签**(群聊里"谁说的"),
 **不进硬隔离、同一 user_id 下所有 actor 共享记忆池**。要"按人隔离",必须把"人"映射到 **user_id**,不能指望 actor。
-(检索 where 按 hard_key 过滤;`ChromaVectorIndex` 已内置 where 方言适配,把多条件转成 Chroma 的 `$and` 语法。)
+(检索 where 必须按 hard_key 前置过滤。仓库包含 Chroma 后端实现，但它当前尚未
+进入稳定顶层公共导出；第三方接入不要依赖私有 import path。)
 
 ## 公共 API
 
 `import memcore` 暴露:`MemorySystem`、`MemoryConfig` / `OperationProjectionPolicy`、`Namespace`/`Actor`、`PromptOverrides`、
 `LLMClient`/`LLMRequest`/`LLMResult`、`MemoryStore`/`VectorIndex`/`EmbeddingProvider`/`TokenCounter` 接口、
-默认实现 `SQLiteMemoryStore`/`InMemoryVectorIndex`/`HashedEmbeddingProvider`/`HuggingFaceEmbeddingProvider`/`HTTPEmbeddingProvider`、
+默认实现 `SQLiteMemoryStore`/`InMemoryVectorIndex`/`HashedEmbeddingProvider`/`HuggingFaceEmbeddingProvider`/`HTTPEmbeddingProvider`/`RoleAwareHTTPEmbeddingProvider`、
 `verify_embedding`、`build_native_memory_tool_specs` / `dispatch_native_memory_tool` / `build_memory_operation_receipt`、
 `build_action_entry` / `build_observation_entry`、Timeline V2 与 projection 契约、
 `MemoryMetadata`/`SummaryRecord`/`SemanticRecord`、异常类。

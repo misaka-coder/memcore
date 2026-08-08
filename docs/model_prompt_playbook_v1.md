@@ -247,7 +247,10 @@ memcore 的硬隔离是 `tenant_id / user_id / domain_id`;`actor` 是同一记�
 
 接入方要做:
 
-- 群聊消息调用 `record_user_turn(..., actor=Actor(stable_id=平台稳定ID, display_name=当前昵称))`。
+- 需要模型回复的群聊消息作为 `begin_turn(stimuli=[TimelineEntryInput(...)])`
+  的 stimulus，并传入 `actor=Actor(stable_id=平台稳定ID,
+  display_name=当前昵称)`。只有不触发模型回复的独立消息才使用
+  `record_user_turn(...)`。
 - 稳定 ID 用平台不会变的 ID;昵称只做显示。
 - 最终 prompt 告诉模型保留发言人归因。
 
@@ -265,11 +268,17 @@ memcore 的硬隔离是 `tenant_id / user_id / domain_id`;`actor` 是同一记�
 
 正确流程:
 
-1. 用户消息先 `record_user_turn`。
+1. 用户消息或外部事件先通过 `begin_turn(...)` 写成 stimulus，得到开放的
+   `turn_id` 和当前 raw `source_id`。
 2. 宿主拼可见三层 + 工具说明 + 输出契约。
-3. 模型按需调用 `retrieve` / `read_timeline`。
-4. 工具结果回到模型。
-5. 模型输出最终 JSON。
-6. adapter 解析 `speech`,并把 `memory_metadata` 回写本轮 raw。
+3. 模型按需调用 `retrieve_for_turn` / `browse_memory` / `open_memory` /
+   `read_timeline`；action/result 以同一开放 turn 的关联 entry 保存。
+4. 工具结果回到模型；需要时可以继续多轮工具调用。
+5. 没有待处理 action 后，模型只输出一次最终 JSON。
+6. adapter 解析 `speech/memory_metadata`，宿主调用 `complete_turn(...)` 原子提交
+   final 和本轮 annotation。模型或交付失败则在 `finally` 路径调用
+   `abort_turn(...)`。
 
 不要让工具调用中间步骤输出 memcore JSON,也不要把 `memory_metadata` 当作给用户看的内容。
+`record_user_turn()` / `record_assistant_turn()` 是 standalone 兼容便捷 API，
+不会打开 turn，也不能替代这条模型回复链路。

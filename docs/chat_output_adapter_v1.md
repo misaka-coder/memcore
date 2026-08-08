@@ -90,8 +90,36 @@ else:
 
 支持的模式：
 
-- `memcore_json`：严格要求完整 JSON 和 `speech`。
-- `legacy_text`：把普通文本作为 speech；只用于宿主明确选择的迁移路径。
+- `memcore_json`：严格要求完整 JSON 和 `speech`；普通文本不会降级成成功。
+- `plain`：明确把普通文本作为 speech；只用于宿主选择的兼容路径。
+- `auto`：JSON 形状按 JSON 解析，非 JSON 文本按 `plain` 处理。
+- `custom_json`：接受包含 `speech` 的自定义 JSON，并把非核心字段保留在
+  `presentation/extra`；非 JSON 文本不会按 plain 成功。
+
+公开的 `ChatOutputConfig` 是一个便于宿主持有这些设置的值对象：
+
+```python
+from memcore import ChatOutputConfig
+
+output_config = ChatOutputConfig(
+    mode="memcore_json",
+    enable_sentence_segments=True,
+    min_segment_chars=2,
+    max_segment_chars=180,
+    max_segments=None,
+)
+```
+
+当前 `parse_chat_output()` / `StreamingSpeechParser()` 接收这些字段本身，
+不会直接接收 `ChatOutputConfig` 对象。宿主应从同一配置对象显式传参，避免非流式
+和流式使用两套分段阈值。
+
+`ChatOutputParseResult.status` 可能为 `parsed / plain_text /
+output_unparsed / invalid_contract`；`ok` 只对前两者为真。结果还包含
+`speech`、校验后的 `memory_metadata`、`metadata_status`、
+`metadata_present`、`presentation`、`extra`、`segments` 和 `reason`。
+`metadata_status` 为 `accepted / missing / invalid / plain`，不要把
+`missing/invalid` 伪装成模型给出了有效标注。
 
 解析失败必须返回结构化 `status/reason`。不得把损坏 JSON 原样发给用户，也不得伪造一份“成功解析”的空 metadata。
 
@@ -105,20 +133,34 @@ else:
 ## 流式 speech
 
 ```python
-from memcore import ChatOutputStreamParser
+from memcore import StreamingSpeechParser
 
-parser = ChatOutputStreamParser(mode="memcore_json", enable_flavor=False)
+parser = StreamingSpeechParser(mode="memcore_json", enable_flavor=False)
 for chunk in provider_chunks:
     for event in parser.feed(chunk):
-        if event.type == "speech_delta":
-            render_or_play(event.text)
+        if event["type"] == "speech_chunk":
+            render_incremental_text(event["text"])
+        elif event["type"] == "speech_segment":
+            play_or_send_complete_segment(event["text"])
 
 for event in parser.finish():
-    if event.type == "metadata":
-        final_metadata = event.memory_metadata
+    if event["type"] == "metadata_ready":
+        final_metadata = event["memory_metadata"]
+    elif event["type"] == "final":
+        final_parse_result = event["payload"]
 ```
 
 流式解析器只在确定内容属于 JSON `speech` 字符串后发出增量；转义、半个 Unicode 序列和不完整 JSON 都必须等后续 chunk。最终 metadata 只在完整对象校验通过后交给宿主。
+
+事件均为普通 `dict`：
+
+- `speech_chunk`：可立即追加到文字气泡的增量；
+- `speech_segment`：按句末/长度形成的完整片段，可供 TTS 或分段发送；
+- `metadata_ready`：完整 JSON 校验成功后的 metadata；
+- `final`：权威的最终 `ChatOutputParseResult.to_dict()` 结果，成功或失败都会产生。
+
+流式展示只是低延迟交付提示，不能单独写入记忆。只有 `final.payload.ok=true`
+并且宿主确认交付成功后，才进入 `complete_turn()`。
 
 句末分段会保留 `？！` 等标点簇，并识别常见结构边界：行首编号 `1. xxx` 的句点不单独切开，`《》/「」/『』/“”/（）/【】/括号` 内部的标点不冒充外层句末。静态解析与跨 chunk 流式解析使用同一权威分段器，宿主不应再复制一套不同的正则规则。
 
@@ -140,7 +182,7 @@ MemCore 可以记录原生工具、JSON、XML、标签和 Skill 请求/结果，
 
 接入至少覆盖：
 
-- 合法 JSON、缺失 speech、损坏 JSON、legacy_text；
+- 合法 JSON、缺失 speech、损坏 JSON、`plain/auto/custom_json`；
 - flavor 开/关及非法 metadata 枚举；
 - 多 chunk 转义、中文、句末和流结束；
 - 工具轮不会提前触发最终 JSON parser；

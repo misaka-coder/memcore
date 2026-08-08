@@ -10,14 +10,18 @@ Read these files in order before coding:
 
 1. `examples/minimal_chat_integration.py` — runnable minimal chat-loop wiring.
 2. `README.md` — current public API, lifecycle, boundaries.
-3. `docs/usage_flow_v1.md` — concise host and AI-agent integration flow.
-4. `docs/memory_read_api_v1.md` — authoritative read/navigation API signatures and result contracts.
-5. `docs/model_prompt_playbook_v1.md` — how to prompt the chat model so memory works well.
-6. `docs/design_highlights_v1.md` — why the system is designed this way.
-7. `docs/chat_output_adapter_v1.md` — optional final-output JSON contract and streaming speech parsing.
-8. `docs/memory_metadata_raw_retrieval_design_v1.md` — current metadata and prefilter semantics.
-9. `docs/raw_token_compaction_policy_v1.md` — the single token/ratio raw compaction policy.
-10. `docs/operation_projection_settlement_v1.md` — optional final-after-tool
+3. `docs/configuration_api_v1.md` — authoritative construction, config,
+   embedding, and runtime ownership contract.
+4. `docs/write_lifecycle_and_maintenance_api_v1.md` — authoritative write,
+   turn-status, maintenance, and destructive-delete contract.
+5. `docs/usage_flow_v1.md` — concise host and AI-agent integration flow.
+6. `docs/memory_read_api_v1.md` — authoritative read/navigation API signatures and result contracts.
+7. `docs/model_prompt_playbook_v1.md` — how to prompt the chat model so memory works well.
+8. `docs/design_highlights_v1.md` — why the system is designed this way.
+9. `docs/chat_output_adapter_v1.md` — optional final-output JSON contract and streaming speech parsing.
+10. `docs/memory_metadata_raw_retrieval_design_v1.md` — current metadata and prefilter semantics.
+11. `docs/raw_token_compaction_policy_v1.md` — the single token/ratio raw compaction policy.
+12. `docs/operation_projection_settlement_v1.md` — optional final-after-tool
     settlement, reload API, prompt rule, metrics, and migration behavior.
 
 If you are changing memcore itself, inspect nearby tests first and run the validation commands at the end of this file.
