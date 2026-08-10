@@ -32,6 +32,7 @@ from memcore import (
     is_strict_message_prefix,
     stable_projection_hash,
 )
+from memcore.projection import sanitize_projection_payload
 
 
 class _NoopLLM(LLMClient):
@@ -1117,6 +1118,65 @@ class SafetyAndIsolationTests(ProjectionBase):
         self.assertNotIn(local_path, persisted)
         self.assertIn("omitted from persistent history", persisted)
         self.assertTrue(result.audit.media_omitted)
+
+    def test_tool_arguments_keep_json_shape_when_private_paths_are_sanitized(self) -> None:
+        handle = self.mem.begin_turn(
+            stimuli=[_stimulus("run", source_id="path-tool-user")],
+            turn_id="path-tool-turn",
+        )
+        arguments = {
+            "command": "cd /tmp && python /opt/akane/private.py --out /tmp/result.txt",
+            "output_globs": ["result.txt"],
+        }
+        raw_payload = {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call-path",
+                    "type": "function",
+                    "function": {
+                        "name": "exec_run",
+                        "arguments": json.dumps(arguments, ensure_ascii=False),
+                    },
+                }
+            ],
+        }
+        result = self.mem.record_request_projection(
+            turn_id=handle.turn_id,
+            provider_profile=OPENAI_PROFILE,
+            turn_messages=[
+                ProjectionMessageInput(
+                    provider_profile=OPENAI_PROFILE,
+                    payload=raw_payload,
+                    source_ids=("path-tool-user",),
+                )
+            ],
+            history_messages=[raw_payload],
+            attempt=1,
+        )
+
+        stored_arguments = result.projections[0].payload["tool_calls"][0]["function"]["arguments"]
+        parsed = json.loads(stored_arguments)
+        self.assertEqual(parsed["output_globs"], ["result.txt"])
+        self.assertIn("cd $TMPDIR", parsed["command"])
+        self.assertIn("--out $TMPDIR/result.txt", parsed["command"])
+        self.assertIn("[local path omitted from persistent history]", parsed["command"])
+        self.assertNotIn("/opt/akane/private.py", stored_arguments)
+        self.assertNotEqual(stored_arguments, "[local path omitted from persistent history]")
+
+    def test_unquoted_private_path_with_spaces_does_not_leak_tail(self) -> None:
+        payload, status = sanitize_projection_payload(
+            {
+                "role": "assistant",
+                "content": "cat /opt/akane/Private Folder/secret.txt && echo done",
+            }
+        )
+
+        self.assertEqual(status, ProjectionStatus.SKIPPED_UNSAFE)
+        self.assertNotIn("Private Folder", payload["content"])
+        self.assertNotIn("secret.txt", payload["content"])
+        self.assertIn("&& echo done", payload["content"])
 
     def test_system_messages_cannot_be_persisted_as_timeline_projection(self) -> None:
         with self.assertRaisesRegex(SchemaError, "projection_system_message_not_persistable"):
