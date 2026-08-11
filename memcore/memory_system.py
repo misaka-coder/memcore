@@ -42,6 +42,7 @@ from .projection import (
     default_renderer_registry,
     merge_projection_status,
     normalize_provider_profile,
+    provider_safe_projection_messages,
     sanitize_projection_payload,
     stable_projection_hash,
 )
@@ -655,6 +656,12 @@ class MemorySystem:
             )
         except NotImplementedError as exc:
             raise SchemaError("store_timeline_v2_unsupported") from exc
+        messages = list(
+            provider_safe_projection_messages(
+                messages,
+                provider_profile=profile,
+            )
+        )
         return ContextProjection(
             provider_profile=profile,
             messages=tuple(messages),

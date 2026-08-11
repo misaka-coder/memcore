@@ -1165,6 +1165,83 @@ class SafetyAndIsolationTests(ProjectionBase):
         self.assertNotIn("/opt/akane/private.py", stored_arguments)
         self.assertNotEqual(stored_arguments, "[local path omitted from persistent history]")
 
+    def test_legacy_malformed_native_tool_call_downgrades_at_provider_read_boundary(self) -> None:
+        handle = self.mem.begin_turn(
+            stimuli=[_stimulus("run", source_id="legacy-path-user")],
+            turn_id="legacy-path-tool-turn",
+        )
+        self.mem.append_entry(
+            _action("legacy-path-call", source_id="legacy-path-action"),
+            turn_id=handle.turn_id,
+        )
+        self.mem.append_entry(
+            _observation(
+                "legacy-path-call",
+                source_id="legacy-path-result",
+                text="command completed before the old projection was persisted",
+            ),
+            turn_id=handle.turn_id,
+        )
+        self.store.save_turn_projections(
+            namespace=self.namespace,
+            turn_id=handle.turn_id,
+            projections=[
+                ProjectionMessageInput(
+                    provider_profile=OPENAI_PROFILE,
+                    payload={"role": "user", "content": "run"},
+                    source_ids=("legacy-path-user",),
+                    projection_index=0,
+                ),
+                ProjectionMessageInput(
+                    provider_profile=OPENAI_PROFILE,
+                    payload={
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "legacy-path-call",
+                                "type": "function",
+                                "function": {
+                                    "name": "exec_run",
+                                    "arguments": "[local path omitted from persistent history]",
+                                },
+                            }
+                        ],
+                    },
+                    source_ids=("legacy-path-action",),
+                    projection_index=1,
+                ),
+                ProjectionMessageInput(
+                    provider_profile=OPENAI_PROFILE,
+                    payload={
+                        "role": "tool",
+                        "tool_call_id": "legacy-path-call",
+                        "content": "command completed before the old projection was persisted",
+                    },
+                    source_ids=("legacy-path-result",),
+                    projection_index=2,
+                ),
+            ],
+        )
+
+        projection = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)
+        payloads = projection.payloads
+
+        self.assertEqual([payload["role"] for payload in payloads], ["user", "assistant", "user"])
+        self.assertNotIn("tool_calls", payloads[1])
+        self.assertNotIn("tool_call_id", payloads[2])
+        self.assertIn("exec_run", payloads[1]["content"])
+        self.assertIn("legacy-path-call", payloads[1]["content"])
+        self.assertIn("legacy-path-action", payloads[1]["content"])
+        self.assertIn("command completed", payloads[2]["content"])
+        self.assertNotIn("[local path omitted from persistent history]", repr(payloads))
+        self.assertEqual(projection.messages[1].source_ids, ("legacy-path-action",))
+        self.assertEqual(projection.messages[2].source_ids, ("legacy-path-result",))
+
+        repeated = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)
+        self.assertEqual(projection.payloads, repeated.payloads)
+        self.assertEqual(projection.stable_prefix_hash, repeated.stable_prefix_hash)
+
     def test_unquoted_private_path_with_spaces_does_not_leak_tail(self) -> None:
         payload, status = sanitize_projection_payload(
             {

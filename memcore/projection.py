@@ -55,9 +55,7 @@ _POSIX_LOCAL_PATH_FRAGMENT = re.compile(
     r"(?<![A-Za-z0-9_])/(?:home|Users|root|opt|var|tmp|etc)/.*?"
     r"(?=\s+--?[A-Za-z0-9]|['\"`,;|&<>()[\]{}]|$)"
 )
-_TMP_PATH_FRAGMENT = re.compile(
-    r"(?<![A-Za-z0-9_])/(?:(?:var/)?tmp)(?P<suffix>/[^\s'\"`,;|&<>()[\]{}]*)?"
-)
+_TMP_PATH_FRAGMENT = re.compile(r"(?<![A-Za-z0-9_])/(?:(?:var/)?tmp)(?P<suffix>/[^\s'\"`,;|&<>()[\]{}]*)?")
 _LOCAL_PATH_FIELD = re.compile(
     r"(?:^|[_-])(?:absolute[_-]?path|cached[_-]?path|storage[_-]?relpath|local[_-]?path|file[_-]?path|path)(?:$|[_-])",
     re.IGNORECASE,
@@ -377,6 +375,143 @@ class ProjectionMessage:
             projection_version=int(record.get("projection_version") or 1),
             created_at=int(record.get("created_at") or 0),
         )
+
+
+def _openai_tool_arguments_are_provider_safe(value: Any) -> bool:
+    """Return whether a frozen OpenAI tool call still has an object-shaped input.
+
+    Older MemCore builds could replace the whole ``function.arguments`` string
+    with a privacy marker.  That retained the fact that a tool was called, but
+    the resulting value was neither JSON nor accepted by stricter compatible
+    gateways.  New writes preserve the JSON shape; this guard only protects
+    reads of already-frozen legacy rows.
+    """
+
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+    return isinstance(parsed, Mapping)
+
+
+def _legacy_tool_call_card(message: ProjectionMessage, calls: Sequence[Mapping[str, Any]]) -> str:
+    lines = [
+        "[historical tool call retained as canonical trace]",
+        "arguments_status: unavailable_after_safety_projection",
+    ]
+    content = message.payload.get("content")
+    if isinstance(content, str) and content.strip():
+        lines.append(f"assistant_preface: {content.strip()}")
+    for call in calls:
+        function = call.get("function") if isinstance(call.get("function"), Mapping) else {}
+        name = str(function.get("name") or "tool").strip() or "tool"
+        call_id = str(call.get("id") or "unknown").strip() or "unknown"
+        lines.append(f"tool: {name}; call_id: {call_id}")
+    if message.source_ids:
+        lines.append("source_ids: " + ", ".join(message.source_ids))
+    lines.append("The original result remains available in the following canonical trace.")
+    return "\n".join(lines)
+
+
+def _legacy_tool_result_card(message: ProjectionMessage) -> str:
+    call_id = str(message.payload.get("tool_call_id") or "unknown").strip() or "unknown"
+    content = message.payload.get("content")
+    if isinstance(content, str):
+        rendered = content
+    else:
+        rendered = json.dumps(content, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    lines = [
+        "[historical tool result retained as canonical trace]",
+        f"call_id: {call_id}",
+    ]
+    if message.source_ids:
+        lines.append("source_ids: " + ", ".join(message.source_ids))
+    lines.extend(("result:", rendered))
+    return "\n".join(lines)
+
+
+def provider_safe_projection_messages(
+    messages: Sequence[ProjectionMessage],
+    *,
+    provider_profile: str,
+) -> tuple[ProjectionMessage, ...]:
+    """Downgrade malformed frozen native calls without mutating source truth.
+
+    The projection ledger remains the immutable record.  This read boundary
+    changes only the provider-visible representation of legacy native calls
+    whose argument JSON can no longer be reconstructed.  Their call/result
+    lineage and full result text stay visible, while gateways no longer parse
+    an invalid native ``tool_calls`` envelope.
+
+    Valid projections are returned byte-for-byte unchanged.
+    """
+
+    profile = _validated_profile(provider_profile)
+    if profile != OPENAI_PROFILE:
+        return tuple(messages)
+
+    degraded_call_ids: set[str] = set()
+    degraded_action_indexes: set[int] = set()
+    action_calls: dict[int, tuple[Mapping[str, Any], ...]] = {}
+    for index, message in enumerate(messages):
+        payload = message.payload
+        if str(payload.get("role") or "").strip().lower() != "assistant":
+            continue
+        raw_calls = payload.get("tool_calls")
+        if not isinstance(raw_calls, list) or not raw_calls:
+            continue
+        calls = tuple(item for item in raw_calls if isinstance(item, Mapping))
+        malformed = len(calls) != len(raw_calls) or any(
+            not _openai_tool_arguments_are_provider_safe(
+                (call.get("function") if isinstance(call.get("function"), Mapping) else {}).get("arguments")
+            )
+            for call in calls
+        )
+        if not malformed:
+            continue
+        degraded_action_indexes.add(index)
+        action_calls[index] = calls
+        degraded_call_ids.update(str(call.get("id") or "").strip() for call in calls)
+
+    if not degraded_action_indexes:
+        return tuple(messages)
+
+    repaired: list[ProjectionMessage] = []
+    for index, message in enumerate(messages):
+        payload = message.payload
+        replacement_payload: dict[str, Any] | None = None
+        if index in degraded_action_indexes:
+            replacement_payload = {
+                "role": "assistant",
+                "content": _legacy_tool_call_card(message, action_calls.get(index, ())),
+            }
+        elif (
+            str(payload.get("role") or "").strip().lower() == "tool"
+            and str(payload.get("tool_call_id") or "").strip() in degraded_call_ids
+        ):
+            replacement_payload = {
+                "role": "user",
+                "content": _legacy_tool_result_card(message),
+            }
+        if replacement_payload is None:
+            repaired.append(message)
+            continue
+        safe_payload, safety_status = sanitize_projection_payload(replacement_payload)
+        repaired.append(
+            replace(
+                message,
+                payload=safe_payload,
+                payload_hash=stable_projection_hash(safe_payload),
+                projection_status=merge_projection_status(
+                    message.projection_status,
+                    ProjectionStatus.CANONICAL_FALLBACK,
+                    safety_status,
+                ),
+            )
+        )
+    return tuple(repaired)
 
 
 @dataclass(frozen=True)
