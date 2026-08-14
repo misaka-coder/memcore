@@ -679,6 +679,74 @@ class LegacyPathProjectionMigrationTests(PathEvidenceBase):
         self.assertEqual(settlement_meta["settlement_status"], "settled")
         self.assertNotEqual(settlement_meta["full_projection_hash"], "stale-hash")
 
+    def test_settled_marker_is_rebuilt_even_when_full_hash_is_current(self) -> None:
+        self._build_turn_with_long_observation("marker-only-turn")
+        full_rows = self.store._conn.execute(
+            """
+            SELECT payload_json FROM prompt_projections
+            WHERE turn_id = ? AND provider_profile = ?
+            ORDER BY projection_index
+            """,
+            ("marker-only-turn", OPENAI_PROFILE),
+        ).fetchall()
+        current_full_hash = stable_projection_hash(
+            [json.loads(str(row["payload_json"] or "{}")) for row in full_rows]
+        )
+        settlement_id = f"marker-only-turn:{OPENAI_PROFILE}"
+        marker_payload = {
+            "role": "tool",
+            "tool_call_id": "legacy-call",
+            "content": "[local path omitted from persistent history]",
+        }
+        with self.store._conn:
+            self.store._conn.execute(
+                """
+                INSERT INTO settled_prompt_projection(
+                    settlement_id, projection_index, provider_profile,
+                    source_ids_json, payload_json, payload_hash, projection_status
+                ) VALUES (?, ?, ?, ?, ?, ?, 'settled')
+                """,
+                (
+                    settlement_id,
+                    2,
+                    OPENAI_PROFILE,
+                    json.dumps(["marker-only-turn-result"]),
+                    json.dumps(marker_payload, ensure_ascii=False),
+                    stable_projection_hash(marker_payload),
+                ),
+            )
+            self.store._conn.execute(
+                """
+                INSERT OR REPLACE INTO turn_projection_settlement(
+                    tenant_id, user_id, domain_id, conversation_id, turn_id, provider_profile,
+                    policy, settlement_status, terminal_source_id, full_projection_hash,
+                    settled_projection_hash, settled_at
+                ) VALUES ('tenant', 'user', 'domain', 'conversation', 'marker-only-turn', ?, ?, 'settled', ?, ?, ?, 1)
+                """,
+                (
+                    OPENAI_PROFILE,
+                    "full_until_raw_compaction",
+                    "marker-only-turn-result",
+                    current_full_hash,
+                    stable_projection_hash(marker_payload),
+                ),
+            )
+
+        report = self.mem.migrate_legacy_path_projections()
+        self.assertEqual(report["migrated"], 0)
+        self.assertEqual(report["settled_rebuilt"], 1)
+        settled_rows = self.store._conn.execute(
+            "SELECT payload_json FROM settled_prompt_projection WHERE settlement_id = ?",
+            (settlement_id,),
+        ).fetchall()
+        self.assertGreaterEqual(len(settled_rows), 3)
+        joined_rows = "\n".join(str(row["payload_json"] or "") for row in settled_rows)
+        self.assertIn("compact_reloadable", joined_rows)
+        self.assertNotIn("local path omitted", joined_rows)
+
+        second = self.mem.migrate_legacy_path_projections()
+        self.assertEqual(second["settled_rebuilt"], 0)
+
     def test_host_redacted_raw_is_preserved_and_counted_irrecoverable(self) -> None:
         handle = self.mem.begin_turn(
             stimuli=[_stimulus("列出目录", source_id="damage-user")],

@@ -2740,9 +2740,16 @@ class SQLiteMemoryStore(MemoryStore):
                 FROM settled_prompt_projection s
                 JOIN turn_projection_settlement t
                   ON t.turn_id || ':' || t.provider_profile = s.settlement_id
-                WHERE s.payload_json LIKE ?
+                WHERE t.tenant_id = ? AND t.user_id = ? AND t.domain_id = ? AND t.conversation_id = ?
+                  AND s.payload_json LIKE ?
                 """,
-                (f"%{marker}%",),
+                (
+                    namespace.tenant_id or "",
+                    namespace.user_id,
+                    namespace.domain_id or "",
+                    namespace.conversation_id or "",
+                    f"%{marker}%",
+                ),
             ).fetchall()
             for row in rows:
                 turn_id = str(row["turn_id"] or "").strip()
@@ -2784,7 +2791,16 @@ class SQLiteMemoryStore(MemoryStore):
                 continue
             current_full_hash = stable_projection_hash([message.payload for message in full_messages])
             stale_by_hash = str(existing["full_projection_hash"] or "") != current_full_hash
-            if not stale_by_hash:
+            settlement_id = f"{turn_id}:{profile}"
+            stale_by_marker = any(
+                marker in str(row["payload_json"] or "")
+                for row in self._conn.execute(
+                    "SELECT payload_json FROM settled_prompt_projection WHERE settlement_id = ?",
+                    (settlement_id,),
+                ).fetchall()
+                for marker in markers
+            )
+            if not stale_by_hash and not stale_by_marker:
                 continue
             if settlement_builder is None:
                 self._drop_settlement_locked(namespace, turn_id, profile, dry_run=dry_run)
@@ -2930,7 +2946,11 @@ class SQLiteMemoryStore(MemoryStore):
                 str(existing["terminal_source_id"] or "").strip(),
                 str(getattr(plan, "full_projection_hash", "") or "").strip(),
                 str(getattr(plan, "settled_projection_hash", "") or "").strip(),
-                int(getattr(plan, "first_changed_projection_index", -1) or -1),
+                int(
+                    getattr(plan, "first_changed_projection_index", -1)
+                    if getattr(plan, "first_changed_projection_index", None) is not None
+                    else -1
+                ),
                 int(getattr(plan, "full_projected_tokens", 0) or 0),
                 int(getattr(plan, "settled_projected_tokens", 0) or 0),
                 str(getattr(plan, "token_count_quality", "") or "").strip(),
