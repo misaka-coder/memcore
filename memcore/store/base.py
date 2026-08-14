@@ -328,9 +328,15 @@ class MemoryStore(ABC):
         namespace: Namespace,
         target_version: int,
         projection_builder: Callable,
+        settlement_builder: Callable | None = None,
+        markers: tuple = (),
         dry_run: bool = False,
     ) -> dict:
-        """Re-project legacy path-omission projection rows from raw sources."""
+        """Re-project legacy path-damage rows and rebuild stale settlements."""
+        raise NotImplementedError
+
+    def list_projection_namespaces(self) -> list:
+        """Distinct (tenant, user, domain, conversation) scopes with frozen projections."""
         raise NotImplementedError
 
     def list_projection_audits(

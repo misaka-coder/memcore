@@ -797,7 +797,7 @@ V2 的路径投影把“所有本地绝对路径都不进入 provider projection
 - 仍然隐藏:API key/token/password/cookie；MemCore 数据库路径、宿主缓存与 run log 物理路径；`cached_path`/`storage_relpath`/`database_path` 等明确宿主内部字段；二进制媒体与 base64。
 - 不再对所有字符串做绝对路径正则替换，也不再向 `/tmp` 注入 `$TMPDIR` 别名。宿主内部错误必须在进入 semantic tool result 前结构化，不依赖 MemCore 正则清洗全文。
 
-迁移:`MemorySystem.migrate_legacy_path_projections(dry_run=False)` 显式重投影含旧 marker 且 raw source 仍存在的冻结行（更新 payload/hash/status，`projection_version` 提升到 3），并删除含 marker 的 settled compact 副本，让受影响会话发生一次受控缓存重建（`projection_generation + 1`）。无 raw source 的行保持原样并计数报告；未受影响行字节不变；重复执行幂等。返回结构只含数量与版本，不含正文或路径。读取旧 frozen projection 时不做静默替换。
+迁移:`MemorySystem.migrate_legacy_path_projections(dry_run=False)` 在受控维护点(接流量前)显式执行,不在用户请求路径上运行。它扫描并分别报告三类旧数据:MemCore omission marker、宿主 `[local_path]` 脱敏、`$TMPDIR` 别名;只对 raw source 仍含原值的记录重投影(更新 payload/hash/status,`projection_version` 提升到 3),raw 已被宿主脱敏的记录保持原样并计入 `preserved_irrecoverable_host_redaction`,不猜测恢复。含旧 marker 或 full hash 已变化的 settlement 通过同一 settlement planner 原子重建,只有真正重新提交的卡片才计入 `settled_rebuilt`(noop/fallback 分别计数,重建失败则丢弃陈旧 settlement 回退到迁移后的 full ledger)。无 raw source 的行保持原样并计数报告;未受影响行字节不变;重复执行幂等。返回结构只含数量与版本,不含正文或路径。读取旧 frozen projection 时不做静默替换。主机通过 `list_projection_namespaces()` 枚举全部 namespace 做全库维护。
 
 ### 16.7 `projection_audits` 表
 

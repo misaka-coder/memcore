@@ -397,8 +397,39 @@ class LegacyPathProjectionMigrationTests(PathEvidenceBase):
             _observation("legacy-call", source_id=f"{turn_id}-result", text="listed"),
             turn_id=handle.turn_id,
         )
+        self.mem.complete_turn(
+            turn_id=handle.turn_id,
+            semantic_text="ok",
+            provider_output_raw="ok",
+        )
         # Freeze the full v3 projection first, then corrupt one frozen row with
         # a legacy marker payload to simulate a v2-era database.
+        self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)
+
+    def _build_turn_with_long_observation(self, turn_id: str) -> None:
+        handle = self.mem.begin_turn(
+            stimuli=[_stimulus("列出目录", source_id=f"{turn_id}-user")],
+            turn_id=turn_id,
+        )
+        self.mem.append_entry(
+            _action(
+                "legacy-call",
+                source_id=f"{turn_id}-action",
+                name="exec_run",
+                arguments={"command": WINDOWS_PATH_COMMAND},
+            ),
+            turn_id=handle.turn_id,
+        )
+        long_text = "目录内容：" + ("文件条目、路径与时间戳。" * 60)
+        self.mem.append_entry(
+            _observation("legacy-call", source_id=f"{turn_id}-result", text=long_text),
+            turn_id=handle.turn_id,
+        )
+        self.mem.complete_turn(
+            turn_id=handle.turn_id,
+            semantic_text="ok",
+            provider_output_raw="ok",
+        )
         self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)
 
     def test_migration_restores_marker_rows_and_is_idempotent(self) -> None:
@@ -476,9 +507,8 @@ class LegacyPathProjectionMigrationTests(PathEvidenceBase):
         self.assertEqual(int(row["projection_version"]), 2)
         self.assertIn("local path omitted", row["payload_json"])
 
-    def test_settled_marker_rows_are_dropped_and_full_ledger_serves_next_read(self) -> None:
-        self._build_turn_with_raw_sources("settle-turn")
-        self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)
+    def test_settled_marker_rows_are_rebuilt_with_new_cards(self) -> None:
+        self._build_turn_with_long_observation("settle-turn")
         self._fabricate_legacy_action_row(
             store=self.store,
             turn_id="settle-turn",
@@ -498,7 +528,7 @@ class LegacyPathProjectionMigrationTests(PathEvidenceBase):
                 """,
                 (
                     settlement_id,
-                    1,
+                    2,
                     OPENAI_PROFILE,
                     json.dumps(["settle-turn-result"]),
                     json.dumps(marker_payload, ensure_ascii=False),
@@ -518,21 +548,249 @@ class LegacyPathProjectionMigrationTests(PathEvidenceBase):
         report = self.mem.migrate_legacy_path_projections()
         self.assertEqual(report["migrated"], 1)
         self.assertEqual(report["settled_rebuilt"], 1)
+        self.assertEqual(report["settled_rebuild_failed_dropped"], 0)
 
         settled_rows = self.store._conn.execute(
             "SELECT * FROM settled_prompt_projection WHERE settlement_id = ?", (settlement_id,)
         ).fetchall()
-        self.assertEqual(len(settled_rows), 0)
-        settlement_meta = self.store._conn.execute(
-            "SELECT * FROM turn_projection_settlement WHERE turn_id = ?", ("settle-turn",)
-        ).fetchall()
-        self.assertEqual(len(settlement_meta), 0)
+        self.assertGreaterEqual(len(settled_rows), 3)
+        joined_rows = "\n".join(str(row["payload_json"]) for row in settled_rows)
+        self.assertIn("compact_reloadable", joined_rows)
+        self.assertNotIn("local path omitted", joined_rows)
+        settlement_meta = dict(
+            self.store._conn.execute(
+                "SELECT * FROM turn_projection_settlement WHERE turn_id = ?", ("settle-turn",)
+            ).fetchone()
+        )
+        self.assertEqual(settlement_meta["settlement_status"], "settled")
+        self.assertNotEqual(settlement_meta["full_projection_hash"], "")
 
         projection = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)
-        commands = _projected_tool_commands(projection)
-        self.assertIn(WINDOWS_PATH_COMMAND, commands)
+        self.assertTrue(projection.has_compact_history)
         repeated = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)
         self.assertEqual(projection.stable_prefix_hash, repeated.stable_prefix_hash)
+
+        second = self.mem.migrate_legacy_path_projections()
+        self.assertEqual(second["migrated"], 0)
+        self.assertEqual(second["settled_rebuilt"], 0)
+
+    def test_settled_rebuild_with_short_observation_reports_noop(self) -> None:
+        self._build_turn_with_raw_sources("noop-turn")
+        self._fabricate_legacy_action_row(
+            store=self.store,
+            turn_id="noop-turn",
+            projection_id="noop-legacy-proj",
+            source_id="noop-turn-action",
+            index=1,
+        )
+        settlement_id = f"noop-turn:{OPENAI_PROFILE}"
+        marker_payload = {"role": "tool", "tool_call_id": "legacy-call", "content": "[local path omitted from persistent history]"}
+        with self.store._conn:
+            self.store._conn.execute(
+                """
+                INSERT INTO settled_prompt_projection(
+                    settlement_id, projection_index, provider_profile,
+                    source_ids_json, payload_json, payload_hash, projection_status
+                ) VALUES (?, ?, ?, ?, ?, ?, 'settled')
+                """,
+                (
+                    settlement_id,
+                    2,
+                    OPENAI_PROFILE,
+                    json.dumps(["noop-turn-result"]),
+                    json.dumps(marker_payload, ensure_ascii=False),
+                    stable_projection_hash(marker_payload),
+                ),
+            )
+            self.store._conn.execute(
+                """
+                INSERT OR REPLACE INTO turn_projection_settlement(
+                    tenant_id, user_id, domain_id, conversation_id, turn_id, provider_profile,
+                    policy, settlement_status, terminal_source_id, settled_at
+                ) VALUES ('tenant', 'user', 'domain', 'conversation', 'noop-turn', ?, ?, 'settled', ?, 1)
+                """,
+                (OPENAI_PROFILE, "full_until_raw_compaction", "noop-turn-result"),
+            )
+
+        report = self.mem.migrate_legacy_path_projections()
+        self.assertEqual(report["migrated"], 1)
+        self.assertEqual(report["settled_rebuilt_noop"], 1)
+        self.assertEqual(report["settled_rebuilt"], 0)
+        settled_rows = self.store._conn.execute(
+            "SELECT * FROM settled_prompt_projection WHERE settlement_id = ?", (settlement_id,)
+        ).fetchall()
+        self.assertEqual(len(settled_rows), 0)
+        settlement_meta = dict(
+            self.store._conn.execute(
+                "SELECT * FROM turn_projection_settlement WHERE turn_id = ?", ("noop-turn",)
+            ).fetchone()
+        )
+        self.assertEqual(settlement_meta["settlement_status"], "settled_noop")
+
+    def test_stale_full_hash_settlement_is_rebuilt_even_without_markers(self) -> None:
+        self._build_turn_with_long_observation("hash-turn")
+        # A settlement whose settled cards are clean but whose recorded full
+        # hash matches the pre-migration (marker-containing) ledger.
+        settlement_id = f"hash-turn:{OPENAI_PROFILE}"
+        clean_card = {"role": "tool", "tool_call_id": "legacy-call", "content": "clean old card"}
+        with self.store._conn:
+            self.store._conn.execute(
+                """
+                INSERT INTO settled_prompt_projection(
+                    settlement_id, projection_index, provider_profile,
+                    source_ids_json, payload_json, payload_hash, projection_status
+                ) VALUES (?, ?, ?, ?, ?, ?, 'settled')
+                """,
+                (
+                    settlement_id,
+                    2,
+                    OPENAI_PROFILE,
+                    json.dumps(["hash-turn-result"]),
+                    json.dumps(clean_card),
+                    stable_projection_hash(clean_card),
+                ),
+            )
+            self.store._conn.execute(
+                """
+                INSERT OR REPLACE INTO turn_projection_settlement(
+                    tenant_id, user_id, domain_id, conversation_id, turn_id, provider_profile,
+                    policy, settlement_status, terminal_source_id, full_projection_hash,
+                    settled_projection_hash, settled_at
+                ) VALUES ('tenant', 'user', 'domain', 'conversation', 'hash-turn', ?, ?, 'settled', ?, 'stale-hash', 'stale-settled-hash', 1)
+                """,
+                (OPENAI_PROFILE, "full_until_raw_compaction", "hash-turn-result"),
+            )
+        self._fabricate_legacy_action_row(
+            store=self.store,
+            turn_id="hash-turn",
+            projection_id="hash-legacy-proj",
+            source_id="hash-turn-action",
+            index=1,
+        )
+
+        report = self.mem.migrate_legacy_path_projections()
+        self.assertEqual(report["migrated"], 1)
+        self.assertEqual(report["settled_rebuilt"], 1)
+        settlement_meta = dict(
+            self.store._conn.execute(
+                "SELECT * FROM turn_projection_settlement WHERE turn_id = ?", ("hash-turn",)
+            ).fetchone()
+        )
+        self.assertEqual(settlement_meta["settlement_status"], "settled")
+        self.assertNotEqual(settlement_meta["full_projection_hash"], "stale-hash")
+
+    def test_host_redacted_raw_is_preserved_and_counted_irrecoverable(self) -> None:
+        handle = self.mem.begin_turn(
+            stimuli=[_stimulus("列出目录", source_id="damage-user")],
+            turn_id="damage-turn",
+        )
+        self.mem.append_entry(
+            _action(
+                "legacy-call",
+                source_id="damage-action",
+                name="exec_run",
+                arguments={"command": "Get-ChildItem '[local_path]'"},
+            ),
+            turn_id=handle.turn_id,
+        )
+        self.mem.append_entry(
+            _observation("legacy-call", source_id="damage-result", text="listed"),
+            turn_id=handle.turn_id,
+        )
+        self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)
+        self._fabricate_legacy_action_row(
+            store=self.store,
+            turn_id="damage-turn",
+            projection_id="damage-proj",
+            source_id="damage-action",
+            index=1,
+        )
+        with self.store._conn:
+            self.store._conn.execute(
+                """
+                UPDATE prompt_projections
+                SET payload_json = ?, payload_hash = ?, projection_version = 2
+                WHERE projection_id = ?
+                """,
+                (
+                    json.dumps(
+                        {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "legacy-call",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "exec_run",
+                                        "arguments": json.dumps({"command": "Get-ChildItem '[local_path]'"}),
+                                    },
+                                }
+                            ],
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    stable_projection_hash(
+                        {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "legacy-call",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "exec_run",
+                                        "arguments": json.dumps({"command": "Get-ChildItem '[local_path]'"}),
+                                    },
+                                }
+                            ],
+                        }
+                    ),
+                    "damage-proj",
+                ),
+            )
+
+        report = self.mem.migrate_legacy_path_projections()
+        self.assertEqual(report["migrated"], 0)
+        self.assertGreaterEqual(report["scanned_host_local_path_rows"], 1)
+        self.assertEqual(report["preserved_irrecoverable_host_redaction"], 1)
+        row = dict(
+            self.store._conn.execute(
+                "SELECT * FROM prompt_projections WHERE projection_id = ?", ("damage-proj",)
+            ).fetchone()
+        )
+        self.assertEqual(int(row["projection_version"]), 2)
+        self.assertIn("[local_path]", row["payload_json"])
+
+    def test_tmpdir_alias_rows_are_scanned_and_preserved(self) -> None:
+        handle = self.mem.begin_turn(
+            stimuli=[_stimulus("run", source_id="tmp-user")],
+            turn_id="tmp-turn",
+        )
+        self.mem.append_entry(
+            _action(
+                "legacy-call",
+                source_id="tmp-action",
+                name="exec_run",
+                arguments={"command": "cp $TMPDIR/report.txt out.txt"},
+            ),
+            turn_id=handle.turn_id,
+        )
+        self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)
+        with self.store._conn:
+            self.store._conn.execute(
+                """
+                UPDATE prompt_projections SET projection_version = 2
+                WHERE turn_id = ? AND projection_index = 1
+                """,
+                ("tmp-turn",),
+            )
+
+        report = self.mem.migrate_legacy_path_projections()
+        self.assertGreaterEqual(report["scanned_host_tmpdir_rows"], 1)
+        self.assertEqual(report["migrated"], 0)
 
     def test_dry_run_changes_nothing(self) -> None:
         self._build_turn_with_raw_sources("dry-turn")

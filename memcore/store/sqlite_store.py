@@ -38,7 +38,6 @@ from ..compaction_v2 import (
 )
 from ..namespace import Namespace
 from ..projection import (
-    LEGACY_PATH_OMISSION_MARKER,
     ProjectionAudit,
     ProjectionAuditInput,
     ProjectionMessage,
@@ -2517,48 +2516,105 @@ class SQLiteMemoryStore(MemoryStore):
             ).fetchall()
         return [ProjectionAudit.from_record(dict(row)) for row in rows]
 
+    def list_projection_namespaces(self) -> list[tuple[str, str, str, str]]:
+        """Distinct (tenant, user, domain, conversation) scopes with frozen projections.
+
+        Hosts use this for explicit pre-traffic maintenance passes such as the
+        legacy path-projection migration.
+        """
+
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT DISTINCT tenant_id, user_id, domain_id, conversation_id
+                FROM prompt_projections
+                ORDER BY tenant_id, user_id, domain_id, conversation_id
+                """
+            ).fetchall()
+        return [
+            (str(row["tenant_id"] or ""), str(row["user_id"] or ""), str(row["domain_id"] or ""), str(row["conversation_id"] or ""))
+            for row in rows
+        ]
+
     def migrate_legacy_path_projections(
         self,
         *,
         namespace: Namespace,
         target_version: int,
         projection_builder: Callable[[str, list[TimelineEntry]], list[ProjectionMessageInput]],
+        settlement_builder: Callable[..., Any] | None = None,
+        markers: tuple[str, ...] = (),
         dry_run: bool = False,
     ) -> dict[str, Any]:
-        """Re-project legacy path-omission rows from raw sources (V2 → V3 semantics).
+        """Re-project legacy path-damage rows from raw sources and rebuild stale settlements.
 
-        Only rows containing the legacy omission marker and whose raw timeline
-        sources still exist are rewritten.  Unaffected rows keep their exact
-        bytes.  Settled compact copies containing the marker are dropped so the
-        next context build deterministically falls back to the migrated frozen
-        ledger (one controlled cache rebuild per affected conversation).
+        Three legacy damage patterns are scanned and reported separately; only
+        records whose raw timeline sources still hold the original values are
+        rewritten.  Irrecoverable host-redacted rows are preserved untouched and
+        counted.  Stale settlements (marker-containing or full-hash mismatched)
+        are rebuilt atomically via the settlement planner; cards are only
+        counted as rebuilt when truly re-committed.
         """
 
         target = int(target_version)
         if target < 1:
             raise ValueError("target_version must be positive")
+        resolved_markers = tuple(str(item or "") for item in markers)
+        marker_names = (
+            "scanned_memcore_marker_rows",
+            "scanned_host_local_path_rows",
+            "scanned_host_tmpdir_rows",
+        )
         report: dict[str, Any] = {
             "status": "dry_run" if dry_run else "ok",
             "target_projection_version": target,
+            **{key: 0 for key in marker_names},
             "migrated": 0,
             "version_advanced_only": 0,
+            "preserved_irrecoverable_host_redaction": 0,
             "preserved_without_raw_source": 0,
             "preserved_shape_mismatch": 0,
             "preserved_reprojection_failed": 0,
             "settled_rebuilt": 0,
+            "settled_rebuilt_noop": 0,
+            "settled_rebuilt_fallback": 0,
+            "settled_rebuild_failed_dropped": 0,
             "dry_run": bool(dry_run),
         }
-        marker_pattern = f"%{LEGACY_PATH_OMISSION_MARKER}%"
+        if len(resolved_markers) > len(marker_names):
+            raise ValueError("markers must contain at most three legacy patterns")
         with self._lock:
             with self._immediate_transaction():
                 scope_clause, scope_params = self._scope_clause(namespace, with_conversation=True)
-                candidate_rows = self._conn.execute(
-                    f"""
-                    SELECT * FROM prompt_projections
-                    WHERE {scope_clause} AND projection_version < ? AND payload_json LIKE ?
-                    """,
-                    [*scope_params, target, marker_pattern],
-                ).fetchall()
+
+                # Read-only scan counts per legacy damage pattern.
+                for marker, key in zip(resolved_markers, marker_names):
+                    matched = self._conn.execute(
+                        f"""
+                        SELECT COUNT(*) FROM prompt_projections
+                        WHERE {scope_clause} AND projection_version < ? AND payload_json LIKE ?
+                        """,
+                        [*scope_params, target, f"%{marker}%"],
+                    ).fetchone()
+                    report[key] = int(matched[0] or 0)
+
+                candidate_rows: list[sqlite3.Row] = []
+                seen_projection_ids: set[str] = set()
+                for marker in resolved_markers:
+                    for row in self._conn.execute(
+                        f"""
+                        SELECT * FROM prompt_projections
+                        WHERE {scope_clause} AND projection_version < ? AND payload_json LIKE ?
+                        """,
+                        [*scope_params, target, f"%{marker}%"],
+                    ).fetchall():
+                        projection_id = str(row["projection_id"] or "")
+                        if projection_id in seen_projection_ids:
+                            continue
+                        seen_projection_ids.add(projection_id)
+                        candidate_rows.append(row)
+
+                changed_turn_profiles: set[tuple[str, str]] = set()
                 by_turn: dict[str, list[sqlite3.Row]] = {}
                 for row in candidate_rows:
                     by_turn.setdefault(str(row["turn_id"] or "").strip(), []).append(row)
@@ -2566,6 +2622,17 @@ class SQLiteMemoryStore(MemoryStore):
                     entries = self.get_turn_entries(namespace=namespace, turn_id=turn_id)
                     entry_by_source = {str(entry.source_id): entry for entry in entries}
                     projectable = [entry for entry in entries if entry.prompt_visible]
+
+                    def raw_contains_host_damage(source_ids: tuple[str, ...]) -> bool:
+                        for source_id in source_ids:
+                            entry = entry_by_source.get(str(source_id))
+                            if entry is None:
+                                continue
+                            raw_text = f"{entry.semantic_text}\n{json.dumps(dict(entry.payload), ensure_ascii=False, sort_keys=True)}"
+                            if any(damage in raw_text for damage in ("[local_path]", "$TMPDIR")):
+                                return True
+                        return False
+
                     profiles = sorted(
                         {str(row["provider_profile"] or "").strip() for row in turn_rows if str(row["provider_profile"] or "").strip()}
                     )
@@ -2590,6 +2657,12 @@ class SQLiteMemoryStore(MemoryStore):
                             if input_item is None or tuple(input_item.source_ids) != row_source_ids:
                                 report["preserved_shape_mismatch"] += 1
                                 continue
+                            # Raw sources already contain host-redacted text: the
+                            # original values no longer exist anywhere. Preserve
+                            # untouched and report; never guess.
+                            if raw_contains_host_damage(row_source_ids):
+                                report["preserved_irrecoverable_host_redaction"] += 1
+                                continue
                             old_payload = json.loads(str(row["payload_json"] or "{}"))
                             new_payload = dict(input_item.payload)
                             new_status = input_item.projection_status
@@ -2605,58 +2678,283 @@ class SQLiteMemoryStore(MemoryStore):
                                         (target, projection_id),
                                     )
                                 report["version_advanced_only"] += 1
-                                continue
-                            if not dry_run:
-                                self._conn.execute(
-                                    """
-                                    UPDATE prompt_projections
-                                    SET payload_json = ?, payload_hash = ?, projection_status = ?,
-                                        projection_version = ?
-                                    WHERE projection_id = ?
-                                    """,
-                                    (
-                                        _json_dumps(new_payload),
-                                        stable_projection_hash(new_payload),
-                                        str(new_status),
-                                        target,
-                                        projection_id,
-                                    ),
-                                )
-                            report["migrated"] += 1
+                            else:
+                                if not dry_run:
+                                    self._conn.execute(
+                                        """
+                                        UPDATE prompt_projections
+                                        SET payload_json = ?, payload_hash = ?, projection_status = ?,
+                                            projection_version = ?
+                                        WHERE projection_id = ?
+                                        """,
+                                        (
+                                            _json_dumps(new_payload),
+                                            stable_projection_hash(new_payload),
+                                            str(new_status),
+                                            target,
+                                            projection_id,
+                                        ),
+                                    )
+                                report["migrated"] += 1
+                            changed_turn_profiles.add((turn_id, profile))
 
-                affected_settlements = self._conn.execute(
-                    f"""
-                    SELECT DISTINCT s.settlement_id
-                    FROM settled_prompt_projection s
-                    JOIN turn_projection_settlement t
-                      ON t.turn_id || ':' || t.provider_profile = s.settlement_id
-                    WHERE s.payload_json LIKE ? AND {scope_clause}
-                    """,
-                    [marker_pattern, *scope_params],
-                ).fetchall()
-                settlement_ids = [str(row["settlement_id"] or "").strip() for row in affected_settlements]
-                settlement_ids = [item for item in settlement_ids if item]
-                if settlement_ids and not dry_run:
-                    placeholders = ",".join("?" for _ in settlement_ids)
-                    self._conn.execute(
-                        f"DELETE FROM settled_prompt_projection WHERE settlement_id IN ({placeholders})",
-                        settlement_ids,
+                if settlement_builder is not None or changed_turn_profiles:
+                    self._migrate_stale_settlements_locked(
+                        namespace=namespace,
+                        settlement_builder=settlement_builder,
+                        changed_turn_profiles=changed_turn_profiles,
+                        markers=resolved_markers,
+                        dry_run=dry_run,
+                        report=report,
                     )
-                    self._conn.execute(
-                        f"""
-                        DELETE FROM turn_projection_settlement
-                        WHERE {scope_clause} AND (turn_id || ':' || provider_profile) IN ({placeholders})
-                        """,
-                        [*scope_params, *settlement_ids],
-                    )
-                    report["settled_rebuilt"] = len(settlement_ids)
-                elif settlement_ids:
-                    report["settled_rebuilt"] = len(settlement_ids)
+
                 if not dry_run and (
-                    report["migrated"] or report["version_advanced_only"] or report["settled_rebuilt"]
+                    report["migrated"]
+                    or report["version_advanced_only"]
+                    or report["settled_rebuilt"]
+                    or report["settled_rebuilt_noop"]
+                    or report["settled_rebuilt_fallback"]
+                    or report["settled_rebuild_failed_dropped"]
                 ):
                     self._increment_projection_generation_locked(namespace)
         return report
+
+    def _migrate_stale_settlements_locked(
+        self,
+        *,
+        namespace: Namespace,
+        settlement_builder: Callable[..., Any] | None,
+        changed_turn_profiles: set[tuple[str, str]],
+        markers: tuple[str, ...],
+        dry_run: bool,
+        report: dict[str, Any],
+    ) -> None:
+        """Rebuild settlements that are marker-containing or whose full hash changed."""
+
+        scope_clause, scope_params = self._scope_clause(namespace, with_conversation=True)
+        candidate_pairs: set[tuple[str, str]] = set(changed_turn_profiles)
+        for marker in markers:
+            rows = self._conn.execute(
+                """
+                SELECT DISTINCT t.turn_id, t.provider_profile
+                FROM settled_prompt_projection s
+                JOIN turn_projection_settlement t
+                  ON t.turn_id || ':' || t.provider_profile = s.settlement_id
+                WHERE s.payload_json LIKE ?
+                """,
+                (f"%{marker}%",),
+            ).fetchall()
+            for row in rows:
+                turn_id = str(row["turn_id"] or "").strip()
+                profile = str(row["provider_profile"] or "").strip()
+                if turn_id and profile:
+                    candidate_pairs.add((turn_id, profile))
+        if not candidate_pairs:
+            return
+
+        for turn_id, profile in sorted(candidate_pairs):
+            existing = self._conn.execute(
+                f"""
+                SELECT * FROM turn_projection_settlement
+                WHERE {scope_clause} AND turn_id = ? AND provider_profile = ?
+                """,
+                [*scope_params, turn_id, profile],
+            ).fetchone()
+            if existing is None:
+                continue
+            full_messages = [
+                ProjectionMessage.from_record(record)
+                for record in (
+                    self._row_to_record(row, "prompt_projections")
+                    for row in self._conn.execute(
+                        f"""
+                        SELECT * FROM prompt_projections
+                        WHERE {scope_clause} AND turn_id = ? AND provider_profile = ?
+                        ORDER BY projection_index
+                        """,
+                        [*scope_params, turn_id, profile],
+                    ).fetchall()
+                )
+            ]
+            if not full_messages:
+                # No frozen ledger left for this turn; the stale settlement
+                # cannot be rebuilt and must not keep serving old content.
+                self._drop_settlement_locked(namespace, turn_id, profile, dry_run=dry_run)
+                report["settled_rebuild_failed_dropped"] += 1
+                continue
+            current_full_hash = stable_projection_hash([message.payload for message in full_messages])
+            stale_by_hash = str(existing["full_projection_hash"] or "") != current_full_hash
+            if not stale_by_hash:
+                continue
+            if settlement_builder is None:
+                self._drop_settlement_locked(namespace, turn_id, profile, dry_run=dry_run)
+                report["settled_rebuild_failed_dropped"] += 1
+                continue
+            entries = self.get_turn_entries(namespace=namespace, turn_id=turn_id)
+            plan = None
+            try:
+                plan = settlement_builder(namespace, turn_id, profile, entries, full_messages)
+            except Exception:
+                plan = None
+            if plan is None:
+                self._drop_settlement_locked(namespace, turn_id, profile, dry_run=dry_run)
+                report["settled_rebuild_failed_dropped"] += 1
+                continue
+            status = str(getattr(plan, "settlement_status", "") or "").strip()
+            messages = list(getattr(plan, "messages", ()) or ()) if status == "settled" else []
+            if status == "settled" and not messages:
+                status = "settled_noop"
+            if status not in {"settled", "settled_noop", "full_fallback"}:
+                self._drop_settlement_locked(namespace, turn_id, profile, dry_run=dry_run)
+                report["settled_rebuild_failed_dropped"] += 1
+                continue
+            if not self._validate_settlement_plan_locked(namespace, existing, plan, messages):
+                self._drop_settlement_locked(namespace, turn_id, profile, dry_run=dry_run)
+                report["settled_rebuild_failed_dropped"] += 1
+                continue
+            if dry_run:
+                self._count_planned_settlement(status, report)
+                continue
+            self._replace_settlement_locked(namespace, existing, plan, messages, status)
+            self._count_planned_settlement(status, report)
+
+    @staticmethod
+    def _count_planned_settlement(status: str, report: dict[str, Any]) -> None:
+        if status == "settled":
+            report["settled_rebuilt"] += 1
+        elif status == "settled_noop":
+            report["settled_rebuilt_noop"] += 1
+        else:
+            report["settled_rebuilt_fallback"] += 1
+
+    def _drop_settlement_locked(self, namespace: Namespace, turn_id: str, profile: str, *, dry_run: bool) -> None:
+        if dry_run:
+            return
+        scope_clause, scope_params = self._scope_clause(namespace, with_conversation=True)
+        settlement_id = f"{turn_id}:{profile}"
+        self._conn.execute(
+            "DELETE FROM settled_prompt_projection WHERE settlement_id = ?",
+            (settlement_id,),
+        )
+        self._conn.execute(
+            f"""
+            DELETE FROM turn_projection_settlement
+            WHERE {scope_clause} AND turn_id = ? AND provider_profile = ?
+            """,
+            [*scope_params, turn_id, profile],
+        )
+
+    def _validate_settlement_plan_locked(
+        self,
+        namespace: Namespace,
+        existing: sqlite3.Row,
+        plan: Any,
+        messages: list[ProjectionMessageInput],
+    ) -> bool:
+        turn_id = str(existing["turn_id"] or "")
+        profile = str(existing["provider_profile"] or "")
+        policy = str(existing["policy"] or "").strip()
+        turn = self._conn.execute("SELECT * FROM turns WHERE turn_id = ?", (turn_id,)).fetchone()
+        if turn is None:
+            return False
+        self._assert_scope_owner(turn, namespace, id_label=f"turn_id={turn_id!r}")
+        if str(turn["status"] or "") != TurnStatus.CLOSED.value:
+            return False
+        if str(turn["operation_projection_policy"] or "full_until_raw_compaction") != policy:
+            return False
+        if str(getattr(plan, "provider_profile", "") or "").strip() != profile:
+            return False
+        if not messages:
+            return True
+        if [int(item.projection_index) for item in messages] != list(range(len(messages))):
+            return False
+        if any(str(item.provider_profile or "").strip() != profile for item in messages):
+            return False
+        if stable_projection_hash([item.payload for item in messages]) != str(
+            getattr(plan, "settled_projection_hash", "") or ""
+        ):
+            return False
+        expected_source_ids = tuple(
+            str(row["source_id"])
+            for row in self._conn.execute(
+                "SELECT source_id FROM messages WHERE turn_id = ? AND prompt_visible = 1 ORDER BY seq_no",
+                (turn_id,),
+            ).fetchall()
+        )
+        covered_source_ids = tuple(source_id for item in messages for source_id in item.source_ids)
+        return covered_source_ids == expected_source_ids
+
+    def _replace_settlement_locked(
+        self,
+        namespace: Namespace,
+        existing: sqlite3.Row,
+        plan: Any,
+        messages: list[ProjectionMessageInput],
+        status: str,
+    ) -> None:
+        scope_clause, scope_params = self._scope_clause(namespace, with_conversation=True)
+        turn_id = str(existing["turn_id"] or "")
+        profile = str(existing["provider_profile"] or "")
+        settlement_id = f"{turn_id}:{profile}"
+        self._conn.execute(
+            "DELETE FROM settled_prompt_projection WHERE settlement_id = ?",
+            (settlement_id,),
+        )
+        self._conn.execute(
+            f"""
+            DELETE FROM turn_projection_settlement
+            WHERE {scope_clause} AND turn_id = ? AND provider_profile = ?
+            """,
+            [*scope_params, turn_id, profile],
+        )
+        self._conn.execute(
+            """
+            INSERT INTO turn_projection_settlement(
+                tenant_id, user_id, domain_id, conversation_id, turn_id, provider_profile,
+                policy, settlement_status, settlement_schema_version, terminal_source_id,
+                full_projection_hash, settled_projection_hash, first_changed_projection_index,
+                full_projected_tokens, settled_projected_tokens, token_count_quality,
+                reason, settled_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                namespace.tenant_id or "",
+                namespace.user_id,
+                namespace.domain_id or "",
+                namespace.conversation_id or "",
+                turn_id,
+                profile,
+                str(existing["policy"] or "").strip(),
+                status,
+                int(existing["settlement_schema_version"] or 1),
+                str(existing["terminal_source_id"] or "").strip(),
+                str(getattr(plan, "full_projection_hash", "") or "").strip(),
+                str(getattr(plan, "settled_projection_hash", "") or "").strip(),
+                int(getattr(plan, "first_changed_projection_index", -1) or -1),
+                int(getattr(plan, "full_projected_tokens", 0) or 0),
+                int(getattr(plan, "settled_projected_tokens", 0) or 0),
+                str(getattr(plan, "token_count_quality", "") or "").strip(),
+                str(getattr(plan, "reason", "") or "").strip(),
+                int(existing["settled_at"] or 0),
+            ),
+        )
+        for item in messages:
+            self._conn.execute(
+                """
+                INSERT INTO settled_prompt_projection(
+                    settlement_id, projection_index, provider_profile,
+                    source_ids_json, payload_json, payload_hash, projection_status
+                ) VALUES (?, ?, ?, ?, ?, ?, 'settled')
+                """,
+                (
+                    settlement_id,
+                    int(item.projection_index),
+                    profile,
+                    _json_dumps(list(item.source_ids)),
+                    _json_dumps(dict(item.payload)),
+                    stable_projection_hash(item.payload),
+                ),
+            )
 
     def get_conversation_generations(self, *, namespace: Namespace) -> tuple[int, int]:
         scope_clause, params = self._scope_clause(namespace, with_conversation=True)

@@ -711,20 +711,23 @@ class MemorySystem:
         return metrics
 
     def migrate_legacy_path_projections(self, *, dry_run: bool = False) -> dict[str, Any]:
-        """Explicitly re-project legacy path-omission rows for this namespace.
+        """Explicitly re-project legacy path-damage rows for this namespace.
 
-        Runs once per controlled maintenance window (idempotent).  Returns a
-        structured report; payload text is never included.  Unaffected frozen
-        projections keep their exact bytes.
+        Runs at a controlled pre-traffic maintenance point (idempotent).
+        Returns a structured report; payload text is never included.
+        Unaffected frozen projections keep their exact bytes.  Stale
+        settlements are rebuilt through the regular settlement planner.
         """
 
         from .projection_migration import migrate_legacy_path_projections
 
+        count_text = getattr(self.token_counter, "count_text", None) if self.token_counter is not None else None
         return migrate_legacy_path_projections(
             store=self.store,
             adapter=self._projection_ledger.adapter,
             namespace=self.namespace,
             dry_run=bool(dry_run),
+            count_text=count_text if callable(count_text) else None,
         )
 
     def _freeze_turn_projection(
