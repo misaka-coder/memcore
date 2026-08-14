@@ -22,7 +22,7 @@ from .text_utils import normalize_text
 from .time_anchor import TIME_PERIOD_LABELS, timestamp_to_datetime_weekday_label
 from .timeline import TimelineEntry, TimelineEntryInput, TurnRole
 
-PROJECTION_VERSION = 2
+PROJECTION_VERSION = 3
 CANONICAL_PROFILE = "canonical_user_assistant"
 OPENAI_PROFILE = "openai_chat"
 ANTHROPIC_PROFILE = "anthropic_messages"
@@ -41,23 +41,13 @@ _SECRET_VALUE = re.compile(
     r"(?:\bBearer\s+[A-Za-z0-9._~+/=-]{12,}|\bsk-[A-Za-z0-9_-]{12,}|\b(?:api[_-]?key|token|secret)\s*[:=]\s*\S{8,})",
     re.IGNORECASE,
 )
-_WINDOWS_ABSOLUTE_PATH = re.compile(r"(?:^|[\s'\"])[A-Za-z]:[\\/][^\r\n]+")
-_UNC_PATH = re.compile(r"(?:^|[\s'\"])[\\/]{2}[^\s\\/]+[\\/][^\r\n]+")
-_POSIX_PRIVATE_PATH = re.compile(r"(?:^|[\s'\"])/(?:home|Users|root|opt|var|tmp|etc)/[^\r\n]+")
-_QUOTED_LOCAL_PATH_FRAGMENT = re.compile(
-    r"(?P<quote>['\"])(?P<path>(?:[A-Za-z]:[\\/]|[\\/]{2}[^\s\\/]+[\\/]|/(?:home|Users|root|opt|var|tmp|etc)/)[^'\"\r\n]*)(?P=quote)"
-)
-_WINDOWS_LOCAL_PATH_FRAGMENT = re.compile(
-    r"(?<![A-Za-z0-9_])(?:[A-Za-z]:[\\/]|[\\/]{2}[^\s\\/]+[\\/]).*?"
-    r"(?=\s+--?[A-Za-z0-9]|['\"`,;|&<>()[\]{}]|$)"
-)
-_POSIX_LOCAL_PATH_FRAGMENT = re.compile(
-    r"(?<![A-Za-z0-9_])/(?:home|Users|root|opt|var|tmp|etc)/.*?"
-    r"(?=\s+--?[A-Za-z0-9]|['\"`,;|&<>()[\]{}]|$)"
-)
-_TMP_PATH_FRAGMENT = re.compile(r"(?<![A-Za-z0-9_])/(?:(?:var/)?tmp)(?P<suffix>/[^\s'\"`,;|&<>()[\]{}]*)?")
+# Field-level hiding is reserved for explicit host-internal structure fields.
+# Executable paths (tool arguments, command output, operation evidence) are
+# model-visible evidence and must never be rewritten by the projection layer.
 _LOCAL_PATH_FIELD = re.compile(
-    r"(?:^|[_-])(?:absolute[_-]?path|cached[_-]?path|storage[_-]?relpath|local[_-]?path|file[_-]?path|path)(?:$|[_-])",
+    r"(?:^|[_-])(?:absolute[_-]?path|backing[_-]?path|cache[_-]?path|cached[_-]?path|"
+    r"database[_-]?path|db[_-]?path|local[_-]?path|log[_-]?path|run[_-]?log[_-]?path|"
+    r"storage[_-]?path|storage[_-]?relpath)(?:$|[_-])",
     re.IGNORECASE,
 )
 _MEDIA_TYPES = frozenset(
@@ -76,6 +66,10 @@ _MEDIA_TYPES = frozenset(
 _MEDIA_MARKER = "[media omitted from persistent history]"
 _SECRET_MARKER = "[secret omitted from persistent history]"
 _PATH_MARKER = "[local path omitted from persistent history]"
+# Marker emitted by projection versions < 3 when executable path evidence was
+# replaced.  Used by the explicit legacy-projection migration to find affected
+# frozen rows; never used to rewrite live evidence.
+LEGACY_PATH_OMISSION_MARKER = "[local path omitted from persistent history]"
 
 
 class _TextEnum(str, Enum):
@@ -176,66 +170,6 @@ def stable_projection_hash(value: Any) -> str:
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
 
-def _looks_like_local_path(value: str) -> bool:
-    text = str(value or "")
-    return bool(
-        text.lower().startswith("file://")
-        or _WINDOWS_ABSOLUTE_PATH.search(text)
-        or _UNC_PATH.search(text)
-        or _POSIX_PRIVATE_PATH.search(text)
-    )
-
-
-def _safe_path_alias(path: str) -> str:
-    """Project one private path without destroying the surrounding command.
-
-    ``/tmp`` is a process-local convention rather than useful host identity, so
-    retain its executable meaning through the stable ``$TMPDIR`` alias.  Other
-    absolute paths stay opaque.  The host remains responsible for making the
-    alias real when it exposes a command execution tool.
-    """
-
-    normalized = str(path or "")
-    match = re.fullmatch(r"/(?:var/)?tmp(?P<suffix>/.*)?", normalized)
-    if match:
-        return "$TMPDIR" + str(match.group("suffix") or "")
-    return _PATH_MARKER
-
-
-def _sanitize_local_path_fragments(value: str) -> tuple[str, bool]:
-    """Redact path fragments while preserving JSON/shell argument structure."""
-
-    text = str(value or "")
-    changed = False
-
-    def replace_quoted(match: re.Match[str]) -> str:
-        nonlocal changed
-        changed = True
-        quote = str(match.group("quote") or "")
-        return f"{quote}{_safe_path_alias(str(match.group('path') or ''))}{quote}"
-
-    text = _QUOTED_LOCAL_PATH_FRAGMENT.sub(replace_quoted, text)
-
-    def replace_tmp(match: re.Match[str]) -> str:
-        nonlocal changed
-        changed = True
-        return "$TMPDIR" + str(match.group("suffix") or "")
-
-    text = _TMP_PATH_FRAGMENT.sub(replace_tmp, text)
-
-    def replace_opaque(match: re.Match[str]) -> str:
-        nonlocal changed
-        changed = True
-        return _PATH_MARKER
-
-    text = _WINDOWS_LOCAL_PATH_FRAGMENT.sub(replace_opaque, text)
-    text = _POSIX_LOCAL_PATH_FRAGMENT.sub(replace_opaque, text)
-    if text.lower().startswith("file://"):
-        text = _PATH_MARKER
-        changed = True
-    return text, changed
-
-
 def _media_marker_block() -> dict[str, str]:
     return {"type": "text", "text": _MEDIA_MARKER}
 
@@ -273,11 +207,6 @@ def _sanitize_value(value: Any, *, key: str = "") -> tuple[Any, ProjectionStatus
             return _MEDIA_MARKER, ProjectionStatus.MEDIA_OMITTED
         if _SECRET_VALUE.search(value):
             return _SECRET_MARKER, ProjectionStatus.SKIPPED_UNSAFE
-        if _looks_like_local_path(value):
-            clean_text, changed = _sanitize_local_path_fragments(value)
-            if changed:
-                return _CONTROL_CHARS.sub(" ", clean_text), ProjectionStatus.SKIPPED_UNSAFE
-            return _PATH_MARKER, ProjectionStatus.SKIPPED_UNSAFE
         return _CONTROL_CHARS.sub(" ", value), ProjectionStatus.COMPLETE
     if value is None or isinstance(value, (bool, int, float)):
         try:

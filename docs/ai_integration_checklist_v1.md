@@ -305,7 +305,9 @@ Before claiming integration complete, verify with real host request construction
 - [ ] If settlement is enabled, the open turn stays full, the next turn sees a
       reloadable card, and `open_memory(content)` restores the original result.
 - [ ] Cross-user/hard-namespace reads and writes are rejected.
-- [ ] No secret, binary media, or local path enters persisted projection data.
+- [ ] No secret, binary media, or host-internal path field (`cached_path`,
+      `storage_relpath`, `database_path`, …) enters persisted projection data;
+      executable path evidence stays byte-for-byte intact.
 
 ## Read next
 

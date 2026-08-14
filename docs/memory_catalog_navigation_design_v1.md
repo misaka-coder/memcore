@@ -777,7 +777,7 @@ coverage, paging, cursors, and receipts.
 - dynamic card/content/source results append only after the stable prefix;
 - tool observations retain the one model-visible body; receipts contain only IDs/coverage/hash and do not duplicate it;
 - frozen historical provider projections are not silently rewritten when card fields are backfilled;
-- result hashing is stable and excludes secrets/local paths.
+- result hashing is stable and excludes secrets/binary media; executable path evidence is preserved byte-for-byte;
 
 ## 15. Acceptance criteria
 

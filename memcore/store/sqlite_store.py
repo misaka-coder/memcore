@@ -38,12 +38,15 @@ from ..compaction_v2 import (
 )
 from ..namespace import Namespace
 from ..projection import (
+    LEGACY_PATH_OMISSION_MARKER,
     ProjectionAudit,
     ProjectionAuditInput,
     ProjectionMessage,
     ProjectionMessageInput,
     ProjectionStatus,
     RequestProjectionResult,
+    canonical_json_bytes,
+    merge_projection_status,
     stable_projection_hash,
 )
 from ..timeline import (
@@ -2513,6 +2516,147 @@ class SQLiteMemoryStore(MemoryStore):
                 query_params,
             ).fetchall()
         return [ProjectionAudit.from_record(dict(row)) for row in rows]
+
+    def migrate_legacy_path_projections(
+        self,
+        *,
+        namespace: Namespace,
+        target_version: int,
+        projection_builder: Callable[[str, list[TimelineEntry]], list[ProjectionMessageInput]],
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Re-project legacy path-omission rows from raw sources (V2 → V3 semantics).
+
+        Only rows containing the legacy omission marker and whose raw timeline
+        sources still exist are rewritten.  Unaffected rows keep their exact
+        bytes.  Settled compact copies containing the marker are dropped so the
+        next context build deterministically falls back to the migrated frozen
+        ledger (one controlled cache rebuild per affected conversation).
+        """
+
+        target = int(target_version)
+        if target < 1:
+            raise ValueError("target_version must be positive")
+        report: dict[str, Any] = {
+            "status": "dry_run" if dry_run else "ok",
+            "target_projection_version": target,
+            "migrated": 0,
+            "version_advanced_only": 0,
+            "preserved_without_raw_source": 0,
+            "preserved_shape_mismatch": 0,
+            "preserved_reprojection_failed": 0,
+            "settled_rebuilt": 0,
+            "dry_run": bool(dry_run),
+        }
+        marker_pattern = f"%{LEGACY_PATH_OMISSION_MARKER}%"
+        with self._lock:
+            with self._immediate_transaction():
+                scope_clause, scope_params = self._scope_clause(namespace, with_conversation=True)
+                candidate_rows = self._conn.execute(
+                    f"""
+                    SELECT * FROM prompt_projections
+                    WHERE {scope_clause} AND projection_version < ? AND payload_json LIKE ?
+                    """,
+                    [*scope_params, target, marker_pattern],
+                ).fetchall()
+                by_turn: dict[str, list[sqlite3.Row]] = {}
+                for row in candidate_rows:
+                    by_turn.setdefault(str(row["turn_id"] or "").strip(), []).append(row)
+                for turn_id, turn_rows in by_turn.items():
+                    entries = self.get_turn_entries(namespace=namespace, turn_id=turn_id)
+                    entry_by_source = {str(entry.source_id): entry for entry in entries}
+                    projectable = [entry for entry in entries if entry.prompt_visible]
+                    profiles = sorted(
+                        {str(row["provider_profile"] or "").strip() for row in turn_rows if str(row["provider_profile"] or "").strip()}
+                    )
+                    for profile in profiles:
+                        profile_rows = [
+                            row for row in turn_rows if str(row["provider_profile"] or "").strip() == profile
+                        ]
+                        try:
+                            inputs = list(projection_builder(profile, projectable))
+                        except Exception:
+                            report["preserved_reprojection_failed"] += len(profile_rows)
+                            continue
+                        input_by_index = {int(item.projection_index): item for item in inputs}
+                        for row in profile_rows:
+                            projection_id = str(row["projection_id"] or "")
+                            index = int(row["projection_index"] or 0)
+                            row_source_ids = tuple(self._json_list(row["source_ids_json"]))
+                            if any(source_id not in entry_by_source for source_id in row_source_ids):
+                                report["preserved_without_raw_source"] += 1
+                                continue
+                            input_item = input_by_index.get(index)
+                            if input_item is None or tuple(input_item.source_ids) != row_source_ids:
+                                report["preserved_shape_mismatch"] += 1
+                                continue
+                            old_payload = json.loads(str(row["payload_json"] or "{}"))
+                            new_payload = dict(input_item.payload)
+                            new_status = input_item.projection_status
+                            if str(row["projection_status"] or "") == ProjectionStatus.REQUEST_FROZEN.value:
+                                new_status = merge_projection_status(
+                                    new_status,
+                                    ProjectionStatus.REQUEST_FROZEN,
+                                )
+                            if canonical_json_bytes(new_payload) == canonical_json_bytes(old_payload):
+                                if not dry_run:
+                                    self._conn.execute(
+                                        "UPDATE prompt_projections SET projection_version = ? WHERE projection_id = ?",
+                                        (target, projection_id),
+                                    )
+                                report["version_advanced_only"] += 1
+                                continue
+                            if not dry_run:
+                                self._conn.execute(
+                                    """
+                                    UPDATE prompt_projections
+                                    SET payload_json = ?, payload_hash = ?, projection_status = ?,
+                                        projection_version = ?
+                                    WHERE projection_id = ?
+                                    """,
+                                    (
+                                        _json_dumps(new_payload),
+                                        stable_projection_hash(new_payload),
+                                        str(new_status),
+                                        target,
+                                        projection_id,
+                                    ),
+                                )
+                            report["migrated"] += 1
+
+                affected_settlements = self._conn.execute(
+                    f"""
+                    SELECT DISTINCT s.settlement_id
+                    FROM settled_prompt_projection s
+                    JOIN turn_projection_settlement t
+                      ON t.turn_id || ':' || t.provider_profile = s.settlement_id
+                    WHERE s.payload_json LIKE ? AND {scope_clause}
+                    """,
+                    [marker_pattern, *scope_params],
+                ).fetchall()
+                settlement_ids = [str(row["settlement_id"] or "").strip() for row in affected_settlements]
+                settlement_ids = [item for item in settlement_ids if item]
+                if settlement_ids and not dry_run:
+                    placeholders = ",".join("?" for _ in settlement_ids)
+                    self._conn.execute(
+                        f"DELETE FROM settled_prompt_projection WHERE settlement_id IN ({placeholders})",
+                        settlement_ids,
+                    )
+                    self._conn.execute(
+                        f"""
+                        DELETE FROM turn_projection_settlement
+                        WHERE {scope_clause} AND (turn_id || ':' || provider_profile) IN ({placeholders})
+                        """,
+                        [*scope_params, *settlement_ids],
+                    )
+                    report["settled_rebuilt"] = len(settlement_ids)
+                elif settlement_ids:
+                    report["settled_rebuilt"] = len(settlement_ids)
+                if not dry_run and (
+                    report["migrated"] or report["version_advanced_only"] or report["settled_rebuilt"]
+                ):
+                    self._increment_projection_generation_locked(namespace)
+        return report
 
     def get_conversation_generations(self, *, namespace: Namespace) -> tuple[int, int]:
         scope_clause, params = self._scope_clause(namespace, with_conversation=True)

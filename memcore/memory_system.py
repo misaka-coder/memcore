@@ -710,6 +710,23 @@ class MemorySystem:
             )
         return metrics
 
+    def migrate_legacy_path_projections(self, *, dry_run: bool = False) -> dict[str, Any]:
+        """Explicitly re-project legacy path-omission rows for this namespace.
+
+        Runs once per controlled maintenance window (idempotent).  Returns a
+        structured report; payload text is never included.  Unaffected frozen
+        projections keep their exact bytes.
+        """
+
+        from .projection_migration import migrate_legacy_path_projections
+
+        return migrate_legacy_path_projections(
+            store=self.store,
+            adapter=self._projection_ledger.adapter,
+            namespace=self.namespace,
+            dry_run=bool(dry_run),
+        )
+
     def _freeze_turn_projection(
         self,
         *,

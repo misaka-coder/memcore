@@ -787,7 +787,17 @@ created_at
 UNIQUE(namespace..., turn_id, provider_profile, projection_index)
 ```
 
-`payload_json` 保存安全、可持久化的单条 provider message 结构，例如 role/content/tool_calls/tool_call_id；不保存 API key、本地绝对路径、二进制图片或 base64。相同 turn/profile 的多条 provider message 依 `projection_index` 排序。`record_request_projection()` 不重复保存每次请求的完整历史副本，而是验证/补齐这些 source-attributed messages，并把整次实际请求的 hashes 写入 audit。带不可持久化媒体的请求标记 `media_omitted`，该轮允许成为一次明确的缓存断点，但文字时间线和 derived material anchor 仍正常保存。
+`payload_json` 保存安全、可持久化的单条 provider message 结构，例如 role/content/tool_calls/tool_call_id；不保存 API key、二进制图片、base64 或宿主内部路径字段（cached_path/storage_relpath/database_path 等）。投影语义 V3 起，模型完成任务所需的可执行路径证据（工具参数中的命令与路径、工具结果正文、assistant final 提到的路径）原样保留，不再用 omission marker 改写命令。相同 turn/profile 的多条 provider message 依 `projection_index` 排序。`record_request_projection()` 不重复保存每次请求的完整历史副本，而是验证/补齐这些 source-attributed messages，并把整次实际请求的 hashes 写入 audit。带不可持久化媒体的请求标记 `media_omitted`，该轮允许成为一次明确的缓存断点，但文字时间线和 derived material anchor 仍正常保存。
+
+### 16.8 投影语义 V3:路径证据保真与旧投影迁移
+
+V2 的路径投影把“所有本地绝对路径都不进入 provider projection”当作全局规则，导致模型发现并生成的命令（PowerShell counter、Windows/POSIX 路径、注册表命名空间）在投影里被换成 `[local path omitted from persistent history]`，下一轮无法原样复用。V3 改为:
+
+- 可以进入模型历史:用户提供的路径、assistant 生成的命令与脚本参数、`exec_run/exec_status` 等工具结果正文里的操作路径、命令发现的路径。
+- 仍然隐藏:API key/token/password/cookie；MemCore 数据库路径、宿主缓存与 run log 物理路径；`cached_path`/`storage_relpath`/`database_path` 等明确宿主内部字段；二进制媒体与 base64。
+- 不再对所有字符串做绝对路径正则替换，也不再向 `/tmp` 注入 `$TMPDIR` 别名。宿主内部错误必须在进入 semantic tool result 前结构化，不依赖 MemCore 正则清洗全文。
+
+迁移:`MemorySystem.migrate_legacy_path_projections(dry_run=False)` 显式重投影含旧 marker 且 raw source 仍存在的冻结行（更新 payload/hash/status，`projection_version` 提升到 3），并删除含 marker 的 settled compact 副本，让受影响会话发生一次受控缓存重建（`projection_generation + 1`）。无 raw source 的行保持原样并计数报告；未受影响行字节不变；重复执行幂等。返回结构只含数量与版本，不含正文或路径。读取旧 frozen projection 时不做静默替换。
 
 ### 16.7 `projection_audits` 表
 
@@ -1092,7 +1102,7 @@ mem.complete_turn(
 生成重试也属于真实请求边界：同一 MemCore turn 的重试必须复用相同的 current user payload、历史和动态上下文，
 不得在 user 尾部临时拼接 retry note。重试原因可以进入宿主日志/指标，但不能偷偷改变可持久化 conversation。
 
-`system_prefix`、`tool_schema` 与 `model_route` 只参与 hash audit，不复制进数据库。source-attributed `system/developer` message 禁止持久化；base64/原生媒体、本地绝对路径与密钥形态会被稳定 omission marker 替代并产生 `media_omitted/skipped_unsafe` 状态。不同 provider profile 是不同 cache family，OpenAI tool calls 和 Anthropic tool use/result 不互相冒充。
+`system_prefix`、`tool_schema` 与 `model_route` 只参与 hash audit，不复制进数据库。source-attributed `system/developer` message 禁止持久化；base64/原生媒体、密钥形态与宿主内部路径字段（cached_path/storage_relpath/database_path 等）会被稳定 omission marker 替代并产生 `media_omitted/skipped_unsafe` 状态；可执行路径证据（V3 起）原样保留。不同 provider profile 是不同 cache family，OpenAI tool calls 和 Anthropic tool use/result 不互相冒充。
 
 Slice 3 最初只冻结未摘要 V2 raw timeline 与安全 legacy-unlinked 单条记录；Slice 4 已补齐 episode/semantic summary 投影、provider payload token 预算与 compaction generation。Akane 当前主链已读取 MemCore provider projection；产品级 system/persona/tool schema 仍由宿主在稳定历史之前组装。
 
@@ -1233,7 +1243,7 @@ index_status
 reason
 ```
 
-日志只记录 namespace 的不可逆短 hash、数量、版本和状态，不记录正文、绝对路径或 provider payload。
+日志只记录 namespace 的不可逆短 hash、数量、版本和状态，不记录正文、宿主内部路径或 provider payload。投影语义 V3 起，模型完成任务所需的操作路径可以进入工具结果与会话历史，但不进入日志与诊断快照。
 
 ### 19.7 当前实现检查点（2026-07-20）
 
@@ -1516,7 +1526,7 @@ dispatcher 边界捕获参数错误、权限拒绝、Store/Index 不可用和未
 - unavailable 后不编造记忆；
 - 多工具同轮时能与其他宿主工具并行，并保留各自 call id。
 
-验收记录模型输入、tool call、结构化 tool result 和最终回复，但清除密钥、绝对路径和敏感正文。
+验收记录模型输入、tool call、结构化 tool result 和最终回复，但清除密钥、宿主内部路径字段和敏感正文；模型完成任务所需的操作路径证据保留原样。
 
 ## 22. Akane 文件级回填结果与旧权威删除
 
@@ -1774,6 +1784,6 @@ Akane 最终验收必须分别走个人 bot 普通私聊、个人群聊、金融
 - 不按 Bot、金融/个人或每种 event kind 分叉实现；
 - 不用 provider role 代替 origin/turn role；
 - 不让 include_explicit/category 放宽关闭全部前置过滤；
-- 不为了缓存保存密钥、本地路径、base64 或伪造 provider 历史；
+- 不为了缓存保存密钥、宿主内部路径、base64 或伪造 provider 历史；
 - 不长期并行维护 Akane prompt envelope 与 MemCore projection 两个权威；
 - 不在本设计文档完成前直接开始大范围功能改造。

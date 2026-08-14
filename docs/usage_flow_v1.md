@@ -292,9 +292,9 @@ freeze the actual messages with `record_request_projection(...)`; see
 
 An operation may opt in to a small structured `retention_anchor` when later
 turns need a resource ID, version, schema hash, or result reference after raw
-compaction. Do not copy complete results, credentials, local paths, or files into
-that anchor. Entries without an anchor keep the existing lossy operation-digest
-behavior.
+compaction. Do not copy complete results, credentials, host-internal paths, or
+files into that anchor. Entries without an anchor keep the existing lossy
+operation-digest behavior.
 
 If the host app handles images or files, record only material references with
 `record_material_reference(...)` and cleanup events with
@@ -393,8 +393,10 @@ When an AI agent integrates `memcore`, follow this order:
 9. Run background compaction after the visible reply path.
 10. If `compact_after_terminal` is enabled, keep its readback instruction stable,
     expose `open_memory(content)`, and monitor `settlement_metrics()`.
-11. Keep API keys, local paths, logs, databases, and cached model files out of
-    prompts, docs, snapshots, and commits.
+11. Keep API keys, host-internal paths (database/cache/run-log locations), logs,
+    and cached model files out of prompts, docs, snapshots, and commits.
+    Executable paths the model needs for its task may appear in tool results
+    and session history; never mask them with placeholder markers.
 
 Normal integration should not require reading private memcore modules.
 

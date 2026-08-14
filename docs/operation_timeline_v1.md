@@ -142,9 +142,11 @@ retrieval/semantic memory. A host that wants the model to inspect old operation
 anchors can authorize an explicit retrieval for `memory.operation_digest`; a host
 that can cheaply reload the catalog may simply execute the loader again.
 
-Do not put full files, large tool outputs, credentials, or local paths in an
-anchor. Keep those in host storage and retain a stable resource ID, version, hash,
-or other small lookup key.
+Do not put full files, large tool outputs, credentials, or host-internal paths
+(cache/database/run-log locations) in an anchor. Keep those in host storage and
+retain a stable resource ID, version, hash, or other small lookup key. Paths the
+model must reuse for its task belong in the projected operation body, not in the
+anchor.
 
 ## Cache behavior
 

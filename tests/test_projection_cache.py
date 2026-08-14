@@ -1115,9 +1115,17 @@ class SafetyAndIsolationTests(ProjectionBase):
         persisted = str(result.projections[0].payload)
         self.assertNotIn("AAAASECRET", persisted)
         self.assertNotIn(secret_value, persisted)
-        self.assertNotIn(local_path, persisted)
         self.assertIn("omitted from persistent history", persisted)
         self.assertTrue(result.audit.media_omitted)
+
+    def test_plain_user_supplied_path_stays_in_projection(self) -> None:
+        path = "C:" + "\\Users\\Public\\Documents\\notes.txt"
+        payload, status = sanitize_projection_payload(
+            {"role": "user", "content": f"请整理 {path} 和 /opt/akane/notes.txt"}
+        )
+        self.assertEqual(status, ProjectionStatus.COMPLETE)
+        self.assertIn(path, payload["content"])
+        self.assertIn("/opt/akane/notes.txt", payload["content"])
 
     def test_tool_arguments_keep_json_shape_when_private_paths_are_sanitized(self) -> None:
         handle = self.mem.begin_turn(
@@ -1159,11 +1167,14 @@ class SafetyAndIsolationTests(ProjectionBase):
         stored_arguments = result.projections[0].payload["tool_calls"][0]["function"]["arguments"]
         parsed = json.loads(stored_arguments)
         self.assertEqual(parsed["output_globs"], ["result.txt"])
-        self.assertIn("cd $TMPDIR", parsed["command"])
-        self.assertIn("--out $TMPDIR/result.txt", parsed["command"])
-        self.assertIn("[local path omitted from persistent history]", parsed["command"])
-        self.assertNotIn("/opt/akane/private.py", stored_arguments)
-        self.assertNotEqual(stored_arguments, "[local path omitted from persistent history]")
+        # Executable command evidence is preserved verbatim; no marker or
+        # alias text may be injected into the command.
+        self.assertEqual(
+            parsed["command"],
+            "cd /tmp && python /opt/akane/private.py --out /tmp/result.txt",
+        )
+        self.assertNotIn("[local path omitted", stored_arguments)
+        self.assertNotIn("$TMPDIR", stored_arguments)
 
     def test_legacy_malformed_native_tool_call_downgrades_at_provider_read_boundary(self) -> None:
         handle = self.mem.begin_turn(
@@ -1250,10 +1261,8 @@ class SafetyAndIsolationTests(ProjectionBase):
             }
         )
 
-        self.assertEqual(status, ProjectionStatus.SKIPPED_UNSAFE)
-        self.assertNotIn("Private Folder", payload["content"])
-        self.assertNotIn("secret.txt", payload["content"])
-        self.assertIn("&& echo done", payload["content"])
+        self.assertEqual(status, ProjectionStatus.COMPLETE)
+        self.assertEqual(payload["content"], "cat /opt/akane/Private Folder/secret.txt && echo done")
 
     def test_system_messages_cannot_be_persisted_as_timeline_projection(self) -> None:
         with self.assertRaisesRegex(SchemaError, "projection_system_message_not_persistable"):

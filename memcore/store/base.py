@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from ..timeline import TurnProjectionSettlement
@@ -320,6 +320,17 @@ class MemoryStore(ABC):
         turn_id: str,
         provider_profile: str,
     ) -> list[ProjectionMessage]:
+        raise NotImplementedError
+
+    def migrate_legacy_path_projections(
+        self,
+        *,
+        namespace: Namespace,
+        target_version: int,
+        projection_builder: Callable,
+        dry_run: bool = False,
+    ) -> dict:
+        """Re-project legacy path-omission projection rows from raw sources."""
         raise NotImplementedError
 
     def list_projection_audits(
