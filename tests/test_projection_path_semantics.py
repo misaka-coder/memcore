@@ -292,7 +292,7 @@ class PathEvidenceProtectionTests(PathEvidenceBase):
         payload = {
             "cached_path": r"C:\Users\Lenovo\AppData\Local\akane\cache\x.png",
             "storage_relpath": "users/u1/media/123.png",
-            "database_path": r"F:\Akane\data\memcore_v01.db",
+            "database_path": r"C:\Users\Akane\data\memcore_v01.db",
             "absolute_path": "/srv/akane/media/1.png",
             "local_path": r"C:\Temp\out.log",
         }
