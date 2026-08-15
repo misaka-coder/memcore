@@ -81,17 +81,46 @@ def _adapter_projection_builder(adapter: Any) -> ProjectionBuilder:
 
 
 def _settlement_plan_builder(adapter: Any, *, count_text: Callable[[str], int] | None = None) -> SettlementBuilder:
-    from .settlement import build_settlement_plan
+    from functools import partial
 
-    def build(namespace: Any, turn_id: str, provider_profile: str, entries: Sequence[Any], full_messages: Sequence[Any]) -> Any:
-        """Return a SettledProjectionPlan, or None when planning fails structurally."""
+    from .settlement import build_settlement_plan, classify_observation, settlement_config_hash
+
+    def build(
+        namespace: Any,
+        turn_id: str,
+        provider_profile: str,
+        entries: Sequence[Any],
+        full_messages: Sequence[Any],
+        *,
+        policy: str = "compact_after_terminal",
+        min_inline_bytes: int = 256,
+        required_savings_ratio: float = 0.5,
+    ) -> Any:
+        """Return a SettledProjectionPlan, or None when planning fails structurally.
+
+        重建使用 turn 冻结的阈值, 不读运行中配置; 生成的 plan 携带同一
+        配置指纹, 与已持久化 settlement 行不一致时由 store 结构化拒绝。
+        """
         try:
+            decider = partial(
+                classify_observation,
+                min_inline_bytes=int(min_inline_bytes),
+                required_savings_ratio=float(required_savings_ratio),
+            )
             return build_settlement_plan(
                 adapter,
                 entries,
                 provider_profile=provider_profile,
                 authoritative_messages=full_messages,
                 count_text=count_text,
+                observation_decider=decider,
+                settlement_min_utf8_bytes=int(min_inline_bytes),
+                settlement_min_saved_ratio=float(required_savings_ratio),
+                settlement_config_hash=settlement_config_hash(
+                    policy=policy,
+                    min_utf8_bytes=int(min_inline_bytes),
+                    saved_ratio=float(required_savings_ratio),
+                ),
             )
         except Exception:
             return None

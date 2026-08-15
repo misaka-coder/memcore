@@ -21,7 +21,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, Iterator
+from typing import TYPE_CHECKING, Any, Callable, Iterator
 
 if TYPE_CHECKING:
     from ..timeline import TurnProjectionSettlement
@@ -232,6 +232,8 @@ class SQLiteMemoryStore(MemoryStore):
         turn_id: str = "",
         opened_at: int = 0,
         operation_projection_policy: str = "full_until_raw_compaction",
+        operation_settlement_min_utf8_bytes: int = 256,
+        operation_settlement_min_saved_ratio: float = 0.5,
     ) -> TurnHandle:
         if not stimulus_entries:
             raise SchemaError("turn_stimulus_required")
@@ -284,8 +286,10 @@ class SQLiteMemoryStore(MemoryStore):
                 INSERT INTO turns(
                     turn_id, tenant_id, user_id, domain_id, conversation_id, status,
                     stimulus_source_ids_json, annotation_target_ids_json,
-                    opened_at, operation_projection_policy, row_version
-                ) VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, 1)
+                    opened_at, operation_projection_policy,
+                    operation_settlement_min_utf8_bytes, operation_settlement_min_saved_ratio,
+                    row_version
+                ) VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, 1)
                 """,
                 (
                     normalized_turn_id,
@@ -297,6 +301,12 @@ class SQLiteMemoryStore(MemoryStore):
                     _json_dumps(list(targets)),
                     opened,
                     str(operation_projection_policy or "full_until_raw_compaction").strip(),
+                    int(operation_settlement_min_utf8_bytes or 256),
+                    float(
+                        operation_settlement_min_saved_ratio
+                        if operation_settlement_min_saved_ratio is not None
+                        else 0.5
+                    ),
                 ),
             )
             self._ensure_conversation_state_locked(namespace=namespace, updated_at=opened)
@@ -312,6 +322,10 @@ class SQLiteMemoryStore(MemoryStore):
                 annotation_target_ids=targets,
                 opened_at=opened,
                 operation_projection_policy=str(operation_projection_policy or "full_until_raw_compaction").strip(),
+                operation_settlement_min_utf8_bytes=int(operation_settlement_min_utf8_bytes or 256),
+                operation_settlement_min_saved_ratio=float(
+                    operation_settlement_min_saved_ratio if operation_settlement_min_saved_ratio is not None else 0.5
+                ),
             )
 
     def append_entry(self, *, namespace: Namespace, entry: TimelineEntryInput) -> TimelineEntry:
@@ -1499,6 +1513,12 @@ class SQLiteMemoryStore(MemoryStore):
             annotation_target_ids=tuple(self._json_list(row["annotation_target_ids_json"])),
             opened_at=int(row["opened_at"] or 0),
             operation_projection_policy=str(row["operation_projection_policy"] or "full_until_raw_compaction").strip(),
+            operation_settlement_min_utf8_bytes=int(row["operation_settlement_min_utf8_bytes"] or 256),
+            operation_settlement_min_saved_ratio=float(
+                row["operation_settlement_min_saved_ratio"]
+                if row["operation_settlement_min_saved_ratio"] is not None
+                else 0.5
+            ),
         )
 
     def _ensure_conversation_state_locked(self, *, namespace: Namespace, updated_at: int) -> None:
@@ -2250,6 +2270,12 @@ class SQLiteMemoryStore(MemoryStore):
                 raise SchemaError("settlement_turn_must_be_closed")
             if str(turn["operation_projection_policy"] or "full_until_raw_compaction") != policy:
                 raise SchemaError("settlement_policy_mismatch")
+            frozen_min = int(turn["operation_settlement_min_utf8_bytes"] or 256)
+            frozen_ratio = float(turn["operation_settlement_min_saved_ratio"] or 0.5)
+            if int(settlement.settlement_min_utf8_bytes or 256) != frozen_min:
+                raise SchemaError("settlement_min_utf8_bytes_mismatch")
+            if abs(float(settlement.settlement_min_saved_ratio or 0.5) - frozen_ratio) > 1e-9:
+                raise SchemaError("settlement_min_saved_ratio_mismatch")
             existing = self._conn.execute(
                 """
                 SELECT 1 FROM turn_projection_settlement
@@ -2291,8 +2317,9 @@ class SQLiteMemoryStore(MemoryStore):
                     policy, settlement_status, settlement_schema_version, terminal_source_id,
                     full_projection_hash, settled_projection_hash, first_changed_projection_index,
                     full_projected_tokens, settled_projected_tokens, token_count_quality,
-                    reason, settled_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    reason, settled_at, settlement_min_utf8_bytes, settlement_min_saved_ratio,
+                    settlement_config_hash
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     namespace.tenant_id or "",
@@ -2317,6 +2344,9 @@ class SQLiteMemoryStore(MemoryStore):
                     str(settlement.token_count_quality or "").strip(),
                     str(settlement.reason or "").strip(),
                     int(settlement.settled_at or 0),
+                    int(settlement.settlement_min_utf8_bytes or 256),
+                    float(settlement.settlement_min_saved_ratio or 0.5),
+                    str(settlement.settlement_config_hash or "").strip(),
                 ),
             )
             settlement_id = f"{turn_id}:{profile}"
@@ -2532,7 +2562,12 @@ class SQLiteMemoryStore(MemoryStore):
                 """
             ).fetchall()
         return [
-            (str(row["tenant_id"] or ""), str(row["user_id"] or ""), str(row["domain_id"] or ""), str(row["conversation_id"] or ""))
+            (
+                str(row["tenant_id"] or ""),
+                str(row["user_id"] or ""),
+                str(row["domain_id"] or ""),
+                str(row["conversation_id"] or ""),
+            )
             for row in rows
         ]
 
@@ -2634,7 +2669,11 @@ class SQLiteMemoryStore(MemoryStore):
                         return False
 
                     profiles = sorted(
-                        {str(row["provider_profile"] or "").strip() for row in turn_rows if str(row["provider_profile"] or "").strip()}
+                        {
+                            str(row["provider_profile"] or "").strip()
+                            for row in turn_rows
+                            if str(row["provider_profile"] or "").strip()
+                        }
                     )
                     for profile in profiles:
                         profile_rows = [
@@ -2807,9 +2846,28 @@ class SQLiteMemoryStore(MemoryStore):
                 report["settled_rebuild_failed_dropped"] += 1
                 continue
             entries = self.get_turn_entries(namespace=namespace, turn_id=turn_id)
+            turn_row = self._conn.execute("SELECT * FROM turns WHERE turn_id = ?", (turn_id,)).fetchone()
+            frozen_min = int(turn_row["operation_settlement_min_utf8_bytes"] or 256) if turn_row is not None else 256
+            frozen_ratio = (
+                float(turn_row["operation_settlement_min_saved_ratio"] or 0.5) if turn_row is not None else 0.5
+            )
+            frozen_policy = (
+                str(turn_row["operation_projection_policy"] or "compact_after_terminal").strip()
+                if turn_row is not None
+                else "compact_after_terminal"
+            )
             plan = None
             try:
-                plan = settlement_builder(namespace, turn_id, profile, entries, full_messages)
+                plan = settlement_builder(
+                    namespace,
+                    turn_id,
+                    profile,
+                    entries,
+                    full_messages,
+                    policy=frozen_policy,
+                    min_inline_bytes=frozen_min,
+                    required_savings_ratio=frozen_ratio,
+                )
             except Exception:
                 plan = None
             if plan is None:
@@ -2878,6 +2936,20 @@ class SQLiteMemoryStore(MemoryStore):
             return False
         if str(turn["operation_projection_policy"] or "full_until_raw_compaction") != policy:
             return False
+        frozen_min = int(turn["operation_settlement_min_utf8_bytes"] or 256)
+        frozen_ratio = float(turn["operation_settlement_min_saved_ratio"] or 0.5)
+        plan_min = int(getattr(plan, "settlement_min_utf8_bytes", 256) or 256)
+        plan_ratio = float(getattr(plan, "settlement_min_saved_ratio", 0.5) or 0.5)
+        if plan_min != frozen_min or abs(plan_ratio - frozen_ratio) > 1e-9:
+            return False
+        # V6 之前的旧行没有 config hash; 只对已有非空 hash 的行做一致性校验,
+        # 旧行由重建路径用冻结配置补齐后写回 plan 的 hash。
+        existing_config_hash = str(existing["settlement_config_hash"] or "").strip()
+        if (
+            existing_config_hash
+            and existing_config_hash != str(getattr(plan, "settlement_config_hash", "") or "").strip()
+        ):
+            return False
         if str(getattr(plan, "provider_profile", "") or "").strip() != profile:
             return False
         if not messages:
@@ -2930,8 +3002,9 @@ class SQLiteMemoryStore(MemoryStore):
                 policy, settlement_status, settlement_schema_version, terminal_source_id,
                 full_projection_hash, settled_projection_hash, first_changed_projection_index,
                 full_projected_tokens, settled_projected_tokens, token_count_quality,
-                reason, settled_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                reason, settled_at, settlement_min_utf8_bytes, settlement_min_saved_ratio,
+                settlement_config_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 namespace.tenant_id or "",
@@ -2956,6 +3029,9 @@ class SQLiteMemoryStore(MemoryStore):
                 str(getattr(plan, "token_count_quality", "") or "").strip(),
                 str(getattr(plan, "reason", "") or "").strip(),
                 int(existing["settled_at"] or 0),
+                int(getattr(plan, "settlement_min_utf8_bytes", 256) or 256),
+                float(getattr(plan, "settlement_min_saved_ratio", 0.5) or 0.5),
+                str(getattr(plan, "settlement_config_hash", "") or "").strip(),
             ),
         )
         for item in messages:

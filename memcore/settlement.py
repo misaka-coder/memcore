@@ -130,6 +130,9 @@ class SettledProjectionPlan:
     token_count_quality: str = TOKEN_COUNT_QUALITY
     reason: str = ""
     observation_kinds: dict[str, str] = field(default_factory=dict)
+    settlement_min_utf8_bytes: int = COMPACT_RELOAD_MIN_INLINE_BYTES
+    settlement_min_saved_ratio: float = COMPACT_RELOAD_REQUIRED_SAVINGS_RATIO
+    settlement_config_hash: str = ""
 
     @property
     def replaced(self) -> bool:
@@ -262,6 +265,9 @@ def build_settlement_plan(
     authoritative_messages: Sequence[Any] | None = None,
     count_text: Callable[[str], int] | None = None,
     token_count_quality: str = TOKEN_COUNT_QUALITY,
+    settlement_min_utf8_bytes: int = COMPACT_RELOAD_MIN_INLINE_BYTES,
+    settlement_min_saved_ratio: float = COMPACT_RELOAD_REQUIRED_SAVINGS_RATIO,
+    settlement_config_hash: str = "",
 ) -> SettledProjectionPlan:
     """确定性生成 settled projection。
 
@@ -320,6 +326,9 @@ def build_settlement_plan(
         settled_projection_hash=stable_projection_hash([m.payload for m in settled_messages]),
         token_count_quality=str(token_count_quality or TOKEN_COUNT_QUALITY),
         observation_kinds=dict(kinds),
+        settlement_min_utf8_bytes=int(settlement_min_utf8_bytes),
+        settlement_min_saved_ratio=float(settlement_min_saved_ratio),
+        settlement_config_hash=str(settlement_config_hash or ""),
     )
 
 
@@ -349,6 +358,16 @@ def full_fallback_plan(turn_id: str, provider_profile: str, reason: str) -> Sett
 
 def stable_settlement_id(*, turn_id: str, provider_profile: str) -> str:
     return f"{turn_id}:{provider_profile}"
+
+
+def settlement_config_hash(*, policy: str, min_utf8_bytes: int, saved_ratio: float) -> str:
+    """确定性配置指纹: 冻结阈值与策略共同进入 settlement 身份, 重启后稳定。
+
+    只用于一致性校验与审计, 不参与 provider payload hash。
+    """
+
+    canonical = f"{str(policy or 'full_until_raw_compaction').strip()}|{int(min_utf8_bytes)}|{float(saved_ratio):.6f}"
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def load_settled_projection(
@@ -452,6 +471,7 @@ __all__ = [
     "build_settlement_plan",
     "full_fallback_plan",
     "stable_settlement_id",
+    "settlement_config_hash",
     "load_settled_projection",
     "settled_rows_to_messages",
     "SettledProjectionPlan",

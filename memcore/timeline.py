@@ -512,6 +512,8 @@ class TurnHandle:
     annotation_target_ids: tuple[str, ...]
     opened_at: int
     operation_projection_policy: str = "full_until_raw_compaction"
+    operation_settlement_min_utf8_bytes: int = 256
+    operation_settlement_min_saved_ratio: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -536,6 +538,9 @@ class TurnProjectionSettlement:
     token_count_quality: str = ""
     reason: str = ""
     settled_at: int = 0
+    settlement_min_utf8_bytes: int = 256
+    settlement_min_saved_ratio: float = 0.5
+    settlement_config_hash: str = ""
 
 
 @dataclass(frozen=True)

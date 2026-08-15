@@ -14,7 +14,7 @@ from typing import Any, Iterable
 
 from ..errors import SchemaError
 
-CURRENT_SCHEMA_VERSION = 5
+CURRENT_SCHEMA_VERSION = 6
 
 _CORE_TABLES = frozenset({"messages", "summaries", "semantic_summaries"})
 _TRACE_CATEGORIES = frozenset({"event_trace", "material_trace", "tool_trace"})
@@ -201,6 +201,8 @@ LATEST_SCHEMA_STATEMENTS = (
         closed_at INTEGER NOT NULL DEFAULT 0,
         close_reason TEXT NOT NULL DEFAULT '',
         operation_projection_policy TEXT NOT NULL DEFAULT 'full_until_raw_compaction',
+        operation_settlement_min_utf8_bytes INTEGER NOT NULL DEFAULT 256,
+        operation_settlement_min_saved_ratio REAL NOT NULL DEFAULT 0.5,
         row_version INTEGER NOT NULL DEFAULT 1
     )
     """,
@@ -294,6 +296,9 @@ LATEST_SCHEMA_STATEMENTS = (
         token_count_quality TEXT NOT NULL DEFAULT '',
         reason TEXT NOT NULL DEFAULT '',
         settled_at INTEGER NOT NULL DEFAULT 0,
+        settlement_min_utf8_bytes INTEGER NOT NULL DEFAULT 256,
+        settlement_min_saved_ratio REAL NOT NULL DEFAULT 0.5,
+        settlement_config_hash TEXT NOT NULL DEFAULT '',
         PRIMARY KEY(
             tenant_id, user_id, domain_id, conversation_id,
             turn_id, provider_profile
@@ -576,7 +581,7 @@ def migrate_database(connection: sqlite3.Connection) -> int:
         else:
             if has_core != _CORE_TABLES:
                 raise SchemaError("sqlite_schema_partial_core_tables")
-            if version not in {0, 1, 2, 3, 4, CURRENT_SCHEMA_VERSION}:
+            if version not in {0, 1, 2, 3, 4, 5, CURRENT_SCHEMA_VERSION}:
                 raise SchemaError("sqlite_schema_unsupported_version")
             if version < 2:
                 _migrate_v1_to_v2(connection)
@@ -588,6 +593,8 @@ def migrate_database(connection: sqlite3.Connection) -> int:
                 _migrate_v3_to_v4(connection)
             if version < 5:
                 _migrate_v4_to_v5(connection)
+            if version < 6:
+                _migrate_v5_to_v6(connection)
 
         _execute_statements(connection, _CATALOG_INDEX_STATEMENTS)
         _validate_latest_schema(connection)
@@ -694,6 +701,29 @@ def _migrate_v4_to_v5(connection: sqlite3.Connection) -> None:
     """Add the settled-compact projection schema without rewriting memory truth."""
 
     _add_missing_columns(connection, "turns", _V5_TURN_COLUMNS)
+    _execute_statements(connection, LATEST_SCHEMA_STATEMENTS)
+
+
+_V6_TURN_COLUMNS = {
+    "operation_settlement_min_utf8_bytes": "INTEGER NOT NULL DEFAULT 256",
+    "operation_settlement_min_saved_ratio": "REAL NOT NULL DEFAULT 0.5",
+}
+_V6_SETTLEMENT_COLUMNS = {
+    "settlement_min_utf8_bytes": "INTEGER NOT NULL DEFAULT 256",
+    "settlement_min_saved_ratio": "REAL NOT NULL DEFAULT 0.5",
+    "settlement_config_hash": "TEXT NOT NULL DEFAULT ''",
+}
+
+
+def _migrate_v5_to_v6(connection: sqlite3.Connection) -> None:
+    """Freeze settlement byte/ratio thresholds per turn without rewriting truth.
+
+    Defaults (256 / 0.5) reproduce the historical classify_observation behavior
+    byte-for-byte, so upgraded databases keep their old semantics.
+    """
+
+    _add_missing_columns(connection, "turns", _V6_TURN_COLUMNS)
+    _add_missing_columns(connection, "turn_projection_settlement", _V6_SETTLEMENT_COLUMNS)
     _execute_statements(connection, LATEST_SCHEMA_STATEMENTS)
 
 

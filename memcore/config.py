@@ -87,6 +87,12 @@ class MemoryConfig:
     # operation_digest 接替, 不新增 settlement 元数据。compact_after_terminal 由后续
     # 切片接入, 本字段仅用于 begin_turn 冻结与 schema 落库。
     operation_projection_policy: str = "full_until_raw_compaction"
+    # 卡片替换的字节/收益门槛(通用扩展, 默认与历史行为逐字节一致):
+    # 正文 UTF-8 字节数低于 min 直接 inline_full; 卡片不能至少比正文小 ratio 时
+    # 也保持 inline_full(no-expansion 硬约束)。两者在 begin_turn 冻结并进入
+    # settlement 配置 hash, 重启后按冻结值稳定重放, 不受运行中配置变化影响。
+    operation_settlement_min_utf8_bytes: int = 256
+    operation_settlement_min_saved_ratio: float = 0.5
 
     def __post_init__(self) -> None:
         self.validate()
@@ -159,3 +165,20 @@ class MemoryConfig:
                 f"{OperationProjectionPolicy.stable_values()}, got {self.operation_projection_policy!r}"
             )
         self.operation_projection_policy = policy_value
+
+        if not isinstance(self.operation_settlement_min_utf8_bytes, int) or self.operation_settlement_min_utf8_bytes <= 0:
+            raise ConfigError(
+                "operation_settlement_min_utf8_bytes must be a positive int, "
+                f"got {self.operation_settlement_min_utf8_bytes!r}"
+            )
+        ratio = self.operation_settlement_min_saved_ratio
+        if (
+            not isinstance(ratio, (int, float))
+            or not math.isfinite(float(ratio))
+            or not (0.0 < float(ratio) < 1.0)
+        ):
+            raise ConfigError(
+                "operation_settlement_min_saved_ratio must be > 0 and < 1, "
+                f"got {ratio!r}"
+            )
+        self.operation_settlement_min_saved_ratio = float(ratio)

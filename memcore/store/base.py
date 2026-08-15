@@ -84,6 +84,8 @@ class MemoryStore(ABC):
         turn_id: str = "",
         opened_at: int = 0,
         operation_projection_policy: str = "full_until_raw_compaction",
+        operation_settlement_min_utf8_bytes: int = 256,
+        operation_settlement_min_saved_ratio: float = 0.5,
     ) -> TurnHandle:
         raise NotImplementedError
 

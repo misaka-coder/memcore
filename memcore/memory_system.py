@@ -231,6 +231,8 @@ class MemorySystem:
                 turn_id=turn_id,
                 opened_at=now,
                 operation_projection_policy=self.config.operation_projection_policy,
+                operation_settlement_min_utf8_bytes=self.config.operation_settlement_min_utf8_bytes,
+                operation_settlement_min_saved_ratio=self.config.operation_settlement_min_saved_ratio,
             )
         except NotImplementedError as exc:
             raise SchemaError("store_timeline_v2_unsupported") from exc
@@ -498,13 +500,24 @@ class MemorySystem:
         frozen_policy = str(frozen_turn.operation_projection_policy or "full_until_raw_compaction")
         if frozen_policy != OperationProjectionPolicy.COMPACT_AFTER_TERMINAL.value:
             return None
+        from functools import partial
+
         from .settlement import (
             SETTLED_PROJECTION_SCHEMA_VERSION,
             build_settlement_plan,
+            classify_observation,
             full_fallback_plan,
+            settlement_config_hash,
         )
 
         profile = normalize_provider_profile(provider_profile or self.config.projection_profile)
+        frozen_min = int(frozen_turn.operation_settlement_min_utf8_bytes or 256)
+        frozen_ratio = float(frozen_turn.operation_settlement_min_saved_ratio or 0.5)
+        config_hash = settlement_config_hash(
+            policy=frozen_policy,
+            min_utf8_bytes=frozen_min,
+            saved_ratio=frozen_ratio,
+        )
         try:
             entries = self.store.get_turn_entries(namespace=self.namespace, turn_id=turn_id)
             authoritative = self._projection_ledger.freeze_turn_entries(
@@ -513,6 +526,11 @@ class MemorySystem:
                 entries=entries,
                 provider_profile=profile,
             )
+            decider = partial(
+                classify_observation,
+                min_inline_bytes=frozen_min,
+                required_savings_ratio=frozen_ratio,
+            )
             plan = build_settlement_plan(
                 self._projection,
                 entries,
@@ -520,6 +538,10 @@ class MemorySystem:
                 authoritative_messages=authoritative,
                 count_text=self.token_counter.count_text if self.token_counter is not None else None,
                 token_count_quality=self.token_counter.quality if self.token_counter is not None else "estimated",
+                observation_decider=decider,
+                settlement_min_utf8_bytes=frozen_min,
+                settlement_min_saved_ratio=frozen_ratio,
+                settlement_config_hash=config_hash,
             )
         except Exception as exc:  # noqa: BLE001
             detail = str(exc) if isinstance(exc, SchemaError) else ""
@@ -541,6 +563,9 @@ class MemorySystem:
             token_count_quality=plan.token_count_quality,
             reason=plan.reason,
             settled_at=int(settled_at),
+            settlement_min_utf8_bytes=frozen_min,
+            settlement_min_saved_ratio=frozen_ratio,
+            settlement_config_hash=config_hash,
         )
         try:
             self.store.commit_turn_projection_settlement(
@@ -558,6 +583,9 @@ class MemorySystem:
                 terminal_source_id=terminal_source_id,
                 reason=f"settlement_persist_failed:{type(exc).__name__}",
                 settled_at=int(settled_at),
+                settlement_min_utf8_bytes=frozen_min,
+                settlement_min_saved_ratio=frozen_ratio,
+                settlement_config_hash=config_hash,
             )
             try:
                 self.store.commit_turn_projection_settlement(
@@ -706,6 +734,9 @@ class MemorySystem:
                     "settled_projection_hash": str(settlement.get("settled_projection_hash") or ""),
                     "token_count_quality": str(settlement.get("token_count_quality") or ""),
                     "fallback_reason": str(settlement.get("reason") or ""),
+                    "settlement_min_utf8_bytes": int(settlement.get("settlement_min_utf8_bytes") or 256),
+                    "settlement_min_saved_ratio": float(settlement.get("settlement_min_saved_ratio") or 0.5),
+                    "settlement_config_hash": str(settlement.get("settlement_config_hash") or ""),
                 }
             )
         return metrics
