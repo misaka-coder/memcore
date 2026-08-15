@@ -106,6 +106,7 @@ def _settlement_plan_builder(adapter: Any, *, count_text: Callable[[str], int] |
                 classify_observation,
                 min_inline_bytes=int(min_inline_bytes),
                 required_savings_ratio=float(required_savings_ratio),
+                timezone=str(getattr(adapter, "timezone", "") or "").strip(),
             )
             return build_settlement_plan(
                 adapter,

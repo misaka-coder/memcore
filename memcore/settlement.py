@@ -14,6 +14,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+from functools import partial
+
 from .errors import SchemaError
 from .projection import (
     ANTHROPIC_PROFILE,
@@ -23,6 +25,7 @@ from .projection import (
     canonical_json_bytes,
     stable_projection_hash,
 )
+from .time_anchor import timestamp_to_datetime_label
 from .token_counter import estimate_text_tokens
 
 COMPACT_RELOAD_MIN_INLINE_BYTES = 256  # 正文低于该字节数直接 inline_full(短反馈)
@@ -60,16 +63,22 @@ def _observation_status(entry: Any) -> str:
     return str((entry.trace_metadata or {}).get("status") or (entry.payload or {}).get("status") or "").strip()
 
 
-def render_compact_reload(entry: Any, *, full_content: str) -> str:
-    """通用可回读引用(文档 §7.2 推荐形态的确定性文本化)。"""
+def render_compact_reload(entry: Any, *, full_content: str, timezone: str = "") -> str:
+    """通用可回读引用(文档 §7.2 推荐形态的确定性文本化)。
+
+    ``timezone`` 为空时输出与历史逐字节一致; 传入时在卡片首行后补一条
+    通用可读时间(从 entry 既有 timestamp 派生, 不要求生产者新增字段)。
+    """
     payload_chars = len(str(full_content or ""))
     payload_bytes = utf8_bytes(full_content)
     status = _observation_status(entry)
-    lines = [
-        "[compact_reloadable]",
-        f"tool: {_tool_label(entry)}",
-        f"call_id: {str(getattr(entry, 'correlation_id', '') or '')}",
-    ]
+    lines = ["[compact_reloadable]"]
+    if str(timezone or "").strip():
+        timestamp = int(getattr(entry, "timestamp", 0) or 0)
+        if timestamp > 0:
+            lines.append(f"time: {timestamp_to_datetime_label(timestamp, str(timezone).strip())}")
+    lines.append(f"tool: {_tool_label(entry)}")
+    lines.append(f"call_id: {str(getattr(entry, 'correlation_id', '') or '')}")
     if status:
         lines.append(f"status: {status}")
     lines.extend(
@@ -92,6 +101,7 @@ def classify_observation(
     *,
     min_inline_bytes: int = COMPACT_RELOAD_MIN_INLINE_BYTES,
     required_savings_ratio: float = COMPACT_RELOAD_REQUIRED_SAVINGS_RATIO,
+    timezone: str = "",
 ) -> tuple[str, str]:
     """确定性分类, 返回 (kind, projection_content)。
 
@@ -99,13 +109,14 @@ def classify_observation(
     - 正文低于门槛 → inline_full;
     - compact 引用未明显更小(no-expansion 硬约束) → inline_full;
     - 否则 → compact_reloadable。
+    ``timezone`` 非空时紧凑卡片附带通用可读时间(仅新增字段, 不复制工具入参)。
     """
     if not str(full_content or "").strip():
         return (EXPLICIT_EMPTY, str(full_content or ""))
     full_bytes = utf8_bytes(full_content)
     if full_bytes < min_inline_bytes:
         return (INLINE_FULL, str(full_content))
-    compact = render_compact_reload(entry, full_content=full_content)
+    compact = render_compact_reload(entry, full_content=full_content, timezone=timezone)
     compact_bytes = utf8_bytes(compact)
     savings_ratio = min(0.99, max(0.0, float(required_savings_ratio)))
     if compact_bytes >= full_bytes * (1.0 - savings_ratio):
@@ -268,12 +279,16 @@ def build_settlement_plan(
     settlement_min_utf8_bytes: int = COMPACT_RELOAD_MIN_INLINE_BYTES,
     settlement_min_saved_ratio: float = COMPACT_RELOAD_REQUIRED_SAVINGS_RATIO,
     settlement_config_hash: str = "",
+    timezone: str = "",
 ) -> SettledProjectionPlan:
     """确定性生成 settled projection。
 
     start_index 是 turn 内相对基准(0); 与 build_context_projection 的全局绝对 index
     对齐留到 Slice 3(request builder 消费 settled 账本时)。
+    ``timezone`` 非空且使用默认 decider 时, 紧凑卡片附带通用可读时间。
     """
+    if observation_decider is classify_observation and str(timezone or "").strip():
+        observation_decider = partial(classify_observation, timezone=str(timezone).strip())
     if authoritative_messages is not None:
         full_messages = tuple(_as_projection_input(message) for message in authoritative_messages)
         settled_messages, kinds = _settle_authoritative_messages(

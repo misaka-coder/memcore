@@ -530,6 +530,7 @@ class MemorySystem:
                 classify_observation,
                 min_inline_bytes=frozen_min,
                 required_savings_ratio=frozen_ratio,
+                timezone=self.timezone,
             )
             plan = build_settlement_plan(
                 self._projection,

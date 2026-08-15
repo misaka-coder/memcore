@@ -95,6 +95,7 @@ settlement 只考虑 prompt-visible observation 的文本正文：
 
 ```text
 [compact_reloadable]
+time: 2026-08-17 00:12
 tool: web_search
 call_id: call_001
 status: success
@@ -104,6 +105,10 @@ stored_utf8_bytes: 64102
 result_hash: sha256:<hash>
 reload: open_memory(memory_id="<raw-tool-result-source-id>", view="content", detail="full")
 ```
+
+`time` 行是通用可读时间（从 observation 既有 timestamp 与宿主时区派生，仅
+新增字段；不复制工具入参，不要求生产者新增 summary/anchor）。未配置时区时
+渲染结果与历史逐字节一致（旧卡仍可正常打开，新完成回合使用新格式）。
 
 以下内容不会被该策略压缩：
 
