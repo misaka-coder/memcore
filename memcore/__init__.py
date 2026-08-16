@@ -6,6 +6,14 @@
 from __future__ import annotations
 
 from .config import MemoryConfig, OperationProjectionPolicy
+from .conformance import (
+    ConformanceCheck,
+    ConformanceReport,
+    validate_context_adapter,
+    validate_provider_wire_capture,
+)
+from .context_contract import CONTEXT_SURFACE_VERSION, ContextDiagnostic, ContextSurface
+from .context_session import ContextSessionStatus, MemCoreContextSession
 from .compaction_v2 import (
     CompactionResult,
     CompactionSnapshot,
@@ -37,7 +45,9 @@ from .prompts import PromptOverrides
 from .projection import (
     ANTHROPIC_PROFILE,
     CANONICAL_PROFILE,
+    DEEPSEEK_PROFILE,
     OPENAI_PROFILE,
+    OPENAI_RESPONSES_PROFILE,
     PROJECTION_VERSION,
     ContextProjection,
     EntryProjectionHash,
@@ -55,6 +65,16 @@ from .projection import (
     default_renderer_registry,
     is_strict_message_prefix,
     stable_projection_hash,
+)
+from .provider_adapters import (
+    AnthropicMessagesContextAdapter,
+    ContextProviderAdapter,
+    DeepSeekChatContextAdapter,
+    NormalizedContextEvent,
+    OpenAIChatContextAdapter,
+    OpenAIResponsesContextAdapter,
+    normalize_context_event,
+    official_context_adapters,
 )
 from .rendering import (
     render_external_event_text,
@@ -141,6 +161,15 @@ __all__ = [
     # 配置 / 命名空间
     "MemoryConfig",
     "OperationProjectionPolicy",
+    "ConformanceCheck",
+    "ConformanceReport",
+    "validate_context_adapter",
+    "validate_provider_wire_capture",
+    "CONTEXT_SURFACE_VERSION",
+    "ContextDiagnostic",
+    "ContextSurface",
+    "ContextSessionStatus",
+    "MemCoreContextSession",
     "ChatOutputConfig",
     "ChatOutputMode",
     "ChatOutputParseResult",
@@ -228,7 +257,9 @@ __all__ = [
     # Projection Ledger
     "ANTHROPIC_PROFILE",
     "CANONICAL_PROFILE",
+    "DEEPSEEK_PROFILE",
     "OPENAI_PROFILE",
+    "OPENAI_RESPONSES_PROFILE",
     "PROJECTION_VERSION",
     "ContextProjection",
     "EntryProjectionHash",
@@ -246,6 +277,15 @@ __all__ = [
     "default_renderer_registry",
     "is_strict_message_prefix",
     "stable_projection_hash",
+    # Provider adapters
+    "AnthropicMessagesContextAdapter",
+    "ContextProviderAdapter",
+    "DeepSeekChatContextAdapter",
+    "NormalizedContextEvent",
+    "normalize_context_event",
+    "OpenAIChatContextAdapter",
+    "OpenAIResponsesContextAdapter",
+    "official_context_adapters",
     # 异常
     "MemcoreError",
     "ConfigError",

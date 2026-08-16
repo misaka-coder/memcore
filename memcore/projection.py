@@ -26,7 +26,11 @@ PROJECTION_VERSION = 3
 CANONICAL_PROFILE = "canonical_user_assistant"
 OPENAI_PROFILE = "openai_chat"
 ANTHROPIC_PROFILE = "anthropic_messages"
-STANDARD_PROJECTION_PROFILES = frozenset({CANONICAL_PROFILE, OPENAI_PROFILE, ANTHROPIC_PROFILE})
+DEEPSEEK_PROFILE = "deepseek_chat"
+OPENAI_RESPONSES_PROFILE = "openai_responses"
+STANDARD_PROJECTION_PROFILES = frozenset(
+    {CANONICAL_PROFILE, OPENAI_PROFILE, ANTHROPIC_PROFILE, DEEPSEEK_PROFILE, OPENAI_RESPONSES_PROFILE}
+)
 
 _KIND_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)+$")
 _KIND_PREFIX_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)*$")
@@ -217,13 +221,22 @@ def _sanitize_value(value: Any, *, key: str = "") -> tuple[Any, ProjectionStatus
     return f"[unsupported {type(value).__name__} omitted]", ProjectionStatus.SKIPPED_UNSAFE
 
 
-def sanitize_projection_payload(payload: Mapping[str, Any]) -> tuple[dict[str, Any], ProjectionStatus]:
+def sanitize_projection_payload(
+    payload: Mapping[str, Any],
+    *,
+    provider_profile: str = "",
+) -> tuple[dict[str, Any], ProjectionStatus]:
     if not isinstance(payload, Mapping):
         raise SchemaError("projection_payload_must_be_object")
     role = str(payload.get("role") or "").strip().lower()
     if role in {"system", "developer"}:
         raise SchemaError("projection_system_message_not_persistable")
-    if not role:
+    item_type = str(payload.get("type") or "").strip().lower()
+    responses_item = provider_profile == OPENAI_RESPONSES_PROFILE and item_type in {
+        "function_call",
+        "function_call_output",
+    }
+    if not role and not responses_item:
         raise SchemaError("projection_message_role_required")
     sanitized, status = _sanitize_value(dict(payload))
     if not isinstance(sanitized, dict):
@@ -257,7 +270,10 @@ class ProjectionMessageInput:
         if version < 1:
             raise SchemaError("projection_invalid_version")
         object.__setattr__(self, "projection_version", version)
-        payload, safety_status = sanitize_projection_payload(self.payload)
+        payload, safety_status = sanitize_projection_payload(
+            self.payload,
+            provider_profile=self.provider_profile,
+        )
         object.__setattr__(self, "payload", payload)
         object.__setattr__(
             self,
@@ -378,7 +394,7 @@ def provider_safe_projection_messages(
     """
 
     profile = _validated_profile(provider_profile)
-    if profile != OPENAI_PROFILE:
+    if profile not in {OPENAI_PROFILE, DEEPSEEK_PROFILE}:
         return tuple(messages)
 
     degraded_call_ids: set[str] = set()
@@ -813,6 +829,38 @@ def _entry_header(entry: TimelineEntry, timezone: str) -> str:
     return f"[{anchor}] {entry.kind}" if anchor else entry.kind
 
 
+def _ordinary_message_text(entry: TimelineEntry, timezone: str, label: str) -> str:
+    """Render the two ordinary chat kinds without leaking timeline internals."""
+
+    if entry.timestamp > 0:
+        full_stamp = timestamp_to_datetime_weekday_label(entry.timestamp, timezone)
+        parts = full_stamp.split()
+        stamp = f"{parts[0]} {parts[-1]}" if len(parts) >= 2 else full_stamp
+    else:
+        stamp = ""
+    text = str(entry.semantic_text or entry.payload.get("text") or "")
+    prefix = f"[{stamp}] " if stamp else ""
+    return f"{prefix}{label}: {text}"
+
+
+def _has_plain_final_output(entry: TimelineEntry) -> bool:
+    raw = str(entry.payload.get("provider_output_raw") or "")
+    return not raw or raw == entry.semantic_text
+
+
+def _tool_arguments_json(value: Any) -> str:
+    """Keep host-supplied JSON argument bytes intact when already serialized."""
+
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            parsed = None
+        if isinstance(parsed, Mapping):
+            return value
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 def _actor_line(label: str, actor: Any) -> str:
     if actor is None:
         return ""
@@ -956,8 +1004,14 @@ class ProjectionAdapter:
         if profile not in STANDARD_PROJECTION_PROFILES:
             raise SchemaError("projection_profile_unsupported")
         visible = [entry for entry in entries if entry.prompt_visible]
-        if profile == OPENAI_PROFILE:
-            raw = self._project_openai(visible, observation_decider=observation_decider)
+        if profile in {OPENAI_PROFILE, DEEPSEEK_PROFILE}:
+            raw = self._project_openai(
+                visible,
+                provider_profile=profile,
+                observation_decider=observation_decider,
+            )
+        elif profile == OPENAI_RESPONSES_PROFILE:
+            raw = self._project_openai_responses(visible, observation_decider=observation_decider)
         elif profile == ANTHROPIC_PROFILE:
             raw = self._project_anthropic(visible, observation_decider=observation_decider)
         else:
@@ -1004,6 +1058,42 @@ class ProjectionAdapter:
 
     def _render(self, entry: TimelineEntry) -> RendererResult:
         return self.renderer_registry.render(entry, timezone=self.timezone)
+
+    def context_surface_payload(self, entry: TimelineEntry, *, provider_profile: str) -> dict[str, Any] | None:
+        """Render an unfrozen ordinary chat entry for the public context surface."""
+
+        if entry.target_actor is not None or bool(entry.payload.get("mentioned_actors")):
+            return None
+        if entry.kind == "message.user":
+            text = _ordinary_message_text(entry, self.timezone, "User")
+            role = "user"
+        elif entry.kind == "message.assistant" and entry.turn_role is TurnRole.FINAL and _has_plain_final_output(entry):
+            text = _ordinary_message_text(entry, self.timezone, "Assistant")
+            role = "assistant"
+        else:
+            return None
+        original = dict(entry.payload)
+        content = original.get("content")
+        if isinstance(content, list):
+            blocks = [dict(block) for block in content if isinstance(block, Mapping)]
+            text_types = {"text", "input_text"}
+            first_text = next((block for block in blocks if str(block.get("type") or "") in text_types), None)
+            if first_text is not None:
+                first_text["text"] = text
+            else:
+                block_type = "input_text" if provider_profile == OPENAI_RESPONSES_PROFILE else "text"
+                blocks.insert(0, {"type": block_type, "text": text})
+            original["content"] = blocks
+        else:
+            original["content"] = text
+        if provider_profile == OPENAI_RESPONSES_PROFILE:
+            original.setdefault("type", "message")
+            original["role"] = role
+            return original
+        original["role"] = role
+        if provider_profile == ANTHROPIC_PROFILE and not isinstance(original.get("content"), list):
+            original["content"] = [{"type": "text", "text": text}]
+        return original
 
     def _assistant_final_text(self, entry: TimelineEntry) -> str:
         raw = entry.payload.get("provider_output_raw") if isinstance(entry.payload, dict) else ""
@@ -1100,6 +1190,7 @@ class ProjectionAdapter:
         self,
         entries: Sequence[TimelineEntry],
         *,
+        provider_profile: str = OPENAI_PROFILE,
         observation_decider: Callable[[TimelineEntry, str], tuple[str, str]] | None = None,
     ) -> list[ProjectionMessageInput]:
         messages: list[ProjectionMessageInput] = []
@@ -1127,19 +1218,14 @@ class ProjectionAdapter:
                         "type": "function",
                         "function": {
                             "name": self._tool_name(item),
-                            "arguments": json.dumps(
-                                self._tool_input(item),
-                                ensure_ascii=False,
-                                sort_keys=True,
-                                separators=(",", ":"),
-                            ),
+                            "arguments": _tool_arguments_json(self._tool_input(item)),
                         },
                     }
                     for item in batch
                 ]
                 messages.append(
                     ProjectionMessageInput(
-                        provider_profile=OPENAI_PROFILE,
+                        provider_profile=provider_profile,
                         payload={
                             "role": "assistant",
                             "content": self._assistant_intermediate_text(intermediate)
@@ -1168,15 +1254,96 @@ class ProjectionAdapter:
             elif entry.origin.value == "assistant":
                 payload = {
                     "role": "assistant",
-                    "content": self._assistant_final_text(entry)
-                    if entry.turn_role is TurnRole.FINAL
-                    else rendered.text,
+                    "content": (
+                        _ordinary_message_text(entry, self.timezone, "Assistant")
+                        if (
+                            entry.kind == "message.assistant"
+                            and entry.turn_role is TurnRole.FINAL
+                            and _has_plain_final_output(entry)
+                        )
+                        else self._assistant_final_text(entry)
+                        if entry.turn_role is TurnRole.FINAL
+                        else rendered.text
+                    ),
                 }
             else:
-                payload = {"role": "user", "content": rendered.text}
+                payload = {
+                    "role": "user",
+                    "content": rendered.text,
+                }
             messages.append(
                 ProjectionMessageInput(
-                    provider_profile=OPENAI_PROFILE,
+                    provider_profile=provider_profile,
+                    payload=payload,
+                    source_ids=(entry.source_id,),
+                    projection_status=merge_projection_status(
+                        ProjectionStatus.CANONICAL_FALLBACK,
+                        rendered.projection_status,
+                    ),
+                )
+            )
+            index += 1
+        return messages
+
+    def _project_openai_responses(
+        self,
+        entries: Sequence[TimelineEntry],
+        *,
+        observation_decider: Callable[[TimelineEntry, str], tuple[str, str]] | None = None,
+    ) -> list[ProjectionMessageInput]:
+        """Project the lossless timeline into OpenAI Responses input items."""
+
+        messages: list[ProjectionMessageInput] = []
+        index = 0
+        while index < len(entries):
+            entry = entries[index]
+            if entry.turn_role is TurnRole.ACTION:
+                batch: list[TimelineEntry] = []
+                while index < len(entries) and entries[index].turn_role is TurnRole.ACTION:
+                    batch.append(entries[index])
+                    index += 1
+                for item in batch:
+                    messages.append(
+                        ProjectionMessageInput(
+                            provider_profile=OPENAI_RESPONSES_PROFILE,
+                            payload={
+                                "type": "function_call",
+                                "call_id": item.correlation_id,
+                                "name": self._tool_name(item),
+                                "arguments": _tool_arguments_json(self._tool_input(item)),
+                            },
+                            source_ids=(item.source_id,),
+                            projection_status=ProjectionStatus.CANONICAL_FALLBACK,
+                        )
+                    )
+                continue
+            rendered = self._render(entry)
+            if entry.turn_role is TurnRole.OBSERVATION:
+                content = self._tool_result_content(entry)
+                if observation_decider is not None:
+                    _, content = observation_decider(entry, content)
+                payload = {
+                    "type": "function_call_output",
+                    "call_id": entry.correlation_id,
+                    "output": content,
+                }
+            else:
+                role = "assistant" if entry.origin.value == "assistant" else "user"
+                content = (
+                    _ordinary_message_text(entry, self.timezone, "Assistant")
+                    if (
+                        entry.kind == "message.assistant"
+                        and entry.turn_role is TurnRole.FINAL
+                        and _has_plain_final_output(entry)
+                    )
+                    else self._assistant_final_text(entry)
+                    if entry.turn_role is TurnRole.FINAL
+                    else rendered.text
+                )
+                payload = {"type": "message", "role": role, "content": content}
+            messages.append(
+                ProjectionMessageInput(
+                    provider_profile=OPENAI_RESPONSES_PROFILE,
                     payload=payload,
                     source_ids=(entry.source_id,),
                     projection_status=merge_projection_status(
@@ -1434,8 +1601,10 @@ __all__ = [
     "ANTHROPIC_PROFILE",
     "CANONICAL_PROFILE",
     "ContextProjection",
+    "DEEPSEEK_PROFILE",
     "EntryProjectionHash",
     "OPENAI_PROFILE",
+    "OPENAI_RESPONSES_PROFILE",
     "PROJECTION_VERSION",
     "ProjectionAdapter",
     "ProjectionAudit",

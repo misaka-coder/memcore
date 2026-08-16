@@ -1,0 +1,59 @@
+{
+  "fixture_version": "context_surface_v1",
+  "clock": "2026-08-16T14:24:00+08:00",
+  "host": "akane",
+  "provider_profile": "openai_chat",
+  "system": [
+    {
+      "role": "system",
+      "content": "You are Akane."
+    }
+  ],
+  "history_messages": [
+    {
+      "role": "user",
+      "content": "[2026-08-16 14:20] User: 记住我喜欢无糖可乐。"
+    },
+    {
+      "role": "assistant",
+      "content": "[2026-08-16 14:20] Assistant: 好，我记住了。"
+    },
+    {
+      "role": "user",
+      "content": "[2026-08-16 周日 14:21 | 下午] event.finance\nsource: 东方财富\ntitle: A 股收盘\nsummary: 指数平稳。"
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call-old",
+      "content": "[compact_reloadable]\ntime: 2026-08-16 14:22\ntool: web_search\ncall_id: call-old\nstatus: success\nsource_id: obs-old\nstored_chars: 40960\nstored_utf8_bytes: 40960\nresult_hash: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nreload: open_memory(memory_id=\"obs-old\", view=\"content\", detail=\"full\")"
+    }
+  ],
+  "current_message": {
+    "role": "user",
+    "content": "[2026-08-16 14:24] User: 查一下今天的持仓风险。"
+  },
+  "active_turn_messages": [
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "call-current",
+          "type": "function",
+          "function": {
+            "name": "portfolio_lookup",
+            "arguments": "{\"account\":\"demo\",\"date\":\"2026-08-16\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call-current",
+      "content": "查询失败：上游超时。"
+    }
+  ],
+  "wire_includes_current_once": true,
+  "wire_preserves_tool_arguments": true,
+  "wire_preserves_tool_result": true
+}

@@ -1,0 +1,54 @@
+{
+  "fixture_version": "context_surface_v1",
+  "clock": "2026-08-16T14:24:00+08:00",
+  "host": "deepseek-harness",
+  "provider_profile": "deepseek_chat",
+  "system": [
+    {
+      "role": "system",
+      "content": "You are a coding assistant."
+    }
+  ],
+  "history_messages": [
+    {
+      "role": "user",
+      "content": "[2026-08-16 14:20] User: 请记住项目采用 Python。"
+    },
+    {
+      "role": "assistant",
+      "content": "[2026-08-16 14:20] Assistant: 已记录。"
+    },
+    {
+      "role": "user",
+      "content": "[2026-08-16 周日 14:21 | 下午] event.build\nsource: ci\ntitle: build completed\nsummary: tests passed"
+    }
+  ],
+  "current_message": {
+    "role": "user",
+    "content": "[2026-08-16 14:24] User: 检查最近一次构建。"
+  },
+  "active_turn_messages": [
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "call-current",
+          "type": "function",
+          "function": {
+            "name": "exec_run",
+            "arguments": "{\"command\":\"pytest -q\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call-current",
+      "content": "exit_code=0\nstdout: 40 passed"
+    }
+  ],
+  "wire_includes_current_once": true,
+  "wire_preserves_tool_arguments": true,
+  "wire_preserves_tool_result": true
+}

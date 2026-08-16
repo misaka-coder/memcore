@@ -1,0 +1,75 @@
+{
+  "fixture_version": "context_surface_v1",
+  "clock": "2026-08-16T14:24:00+08:00",
+  "host": "akane",
+  "provider_profile": "anthropic_messages",
+  "system": "You are Akane.",
+  "history_messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "[2026-08-16 14:20] User: 记住我喜欢无糖可乐。"
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "[2026-08-16 14:20] Assistant: 好，我记住了。"
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "[2026-08-16 周日 14:21 | 下午] event.finance\nsource: 东方财富\ntitle: A 股收盘\nsummary: 指数平稳。"
+        }
+      ]
+    }
+  ],
+  "current_message": {
+    "role": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "[2026-08-16 14:24] User: 查一下今天的持仓风险。"
+      }
+    ]
+  },
+  "active_turn_messages": [
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "call-current",
+          "name": "portfolio_lookup",
+          "input": {
+            "account": "demo",
+            "date": "2026-08-16"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call-current",
+          "content": "查询失败：上游超时。",
+          "is_error": true
+        }
+      ]
+    }
+  ],
+  "wire_includes_current_once": true,
+  "wire_preserves_tool_arguments": true,
+  "wire_preserves_tool_result": true
+}

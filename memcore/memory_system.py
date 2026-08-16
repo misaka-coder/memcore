@@ -13,11 +13,12 @@ import time
 import uuid
 from concurrent.futures import Future
 from dataclasses import replace
-from typing import Any
+from typing import Any, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 from .compaction import Compaction
 from .config import MemoryConfig, OperationProjectionPolicy
+from .context_contract import CONTEXT_SURFACE_VERSION, ContextDiagnostic, ContextSurface
 from .embedding.base import EmbeddingProvider
 from .errors import NamespaceError, SchemaError
 from .index.base import VectorIndex
@@ -702,6 +703,112 @@ class MemorySystem:
             has_compact_history=any(message.projection_status is ProjectionStatus.SETTLED for message in messages),
         )
 
+    def build_context_surface(
+        self,
+        *,
+        session_id: str | None = None,
+        provider_profile: str,
+        current_source_id: str | None = None,
+        active_turn_messages: Sequence[Mapping[str, Any]] = (),
+    ) -> ContextSurface:
+        """Build the public provider-ready surface for one host request.
+
+        ``session_id`` is accepted as a stable integration label for wrappers;
+        namespace/conversation isolation remains owned by this MemorySystem.
+        It is intentionally not included in model-visible messages.
+        """
+
+        del session_id
+        projection = self.build_context_projection(provider_profile=provider_profile)
+        current_id = str(current_source_id or "").strip()
+        try:
+            entries_by_source_id = {
+                entry.source_id: entry for entry in self.store.list_prompt_visible_entries(namespace=self.namespace)
+            }
+        except NotImplementedError as exc:
+            raise SchemaError("store_timeline_v2_unsupported") from exc
+
+        def _surface_payload(message: ProjectionMessage) -> dict[str, Any]:
+            if message.projection_status in {ProjectionStatus.REQUEST_FROZEN, ProjectionStatus.SETTLED}:
+                return dict(message.payload)
+            if len(message.source_ids) != 1:
+                return dict(message.payload)
+            entry = entries_by_source_id.get(message.source_ids[0])
+            if entry is None:
+                return dict(message.payload)
+            rendered = self._projection.context_surface_payload(entry, provider_profile=projection.provider_profile)
+            return rendered if rendered is not None else dict(message.payload)
+
+        history: list[Mapping[str, Any]] = []
+        history_source_ids: list[tuple[str, ...]] = []
+        current: Mapping[str, Any] | None = None
+        current_source_ids: tuple[str, ...] = ()
+        current_turn_id = ""
+        active: list[Mapping[str, Any]] = []
+        active_source_ids: list[tuple[str, ...]] = []
+        diagnostics: list[ContextDiagnostic] = []
+        current_index: int | None = None
+        if current_id:
+            for index, message in enumerate(projection.messages):
+                if current_id in message.source_ids:
+                    if current_index is None:
+                        current_index = index
+                    else:
+                        diagnostics.append(ContextDiagnostic("degraded", "current_message_multiple_projection_records"))
+        for index, message in enumerate(projection.messages):
+            payload = _surface_payload(message)
+            if current_index is None:
+                history.append(payload)
+                history_source_ids.append(tuple(message.source_ids))
+            elif index < current_index:
+                history.append(payload)
+                history_source_ids.append(tuple(message.source_ids))
+            elif index == current_index:
+                current = payload
+                current_source_ids = tuple(message.source_ids)
+                current_turn_id = str(message.turn_id or "")
+            else:
+                active.append(payload)
+                active_source_ids.append(tuple(message.source_ids))
+        if current_id and current is None:
+            diagnostics.append(ContextDiagnostic("degraded", "current_message_source_not_found"))
+
+        for item in active_turn_messages:
+            if not isinstance(item, Mapping):
+                diagnostics.append(ContextDiagnostic("rejected", "active_turn_message_not_object"))
+                continue
+            active.append(dict(item))
+            active_source_ids.append(())
+
+        surface_payload = {
+            "version": CONTEXT_SURFACE_VERSION,
+            "provider_profile": projection.provider_profile,
+            "history_messages": history,
+            "current_message": current,
+            "active_turn_messages": active,
+        }
+        return ContextSurface(
+            version=CONTEXT_SURFACE_VERSION,
+            provider_profile=projection.provider_profile,
+            history_messages=tuple(history),
+            current_message=current,
+            active_turn_messages=tuple(active),
+            projection_hash=stable_projection_hash(surface_payload),
+            projection_generation=projection.projection_generation,
+            message_source_ids=tuple(
+                (
+                    *history_source_ids,
+                    *((current_source_ids,) if current is not None else ()),
+                    *active_source_ids,
+                )
+            ),
+            has_compact_history=projection.has_compact_history,
+            current_turn_id=current_turn_id,
+            projection_version=projection.projection_version,
+            compaction_generation=projection.compaction_generation,
+            diagnostics=tuple(diagnostics),
+        )
+
     def settlement_metrics(self) -> list[dict[str, Any]]:
         """安全审计指标(文档 §13): 只含指标, 不含任何 prompt 正文/payload。
 
@@ -861,7 +968,7 @@ class MemorySystem:
             raise SchemaError("projection_actual_history_missing_turn_suffix")
         actual_tail = history_messages[-len(prepared) :] if prepared else []
         for actual, declared in zip(actual_tail, prepared):
-            safe_actual, _ = sanitize_projection_payload(actual)
+            safe_actual, _ = sanitize_projection_payload(actual, provider_profile=profile)
             if canonical_json_bytes(safe_actual) != canonical_json_bytes(declared.payload):
                 raise SchemaError("projection_actual_history_mismatch")
         media_omitted = any(
