@@ -118,16 +118,23 @@ def _stimulus(
     )
 
 
-def _complete_simple_turn(mem: MemorySystem, number: int, *, payload: dict[str, Any] | None = None) -> str:
+def _complete_simple_turn(
+    mem: MemorySystem,
+    number: int,
+    *,
+    payload: dict[str, Any] | None = None,
+    text: str | None = None,
+) -> str:
     turn_id = f"turn-{number}"
     source_id = f"user-{number}"
+    stimulus_text = f"问题{number}" if text is None else text
     mem.begin_turn(
         stimuli=[
             _stimulus(
-                f"问题{number}",
+                stimulus_text,
                 source_id=source_id,
                 timestamp=1000 + number * 10,
-                payload=payload,
+                payload=payload or {"text": stimulus_text},
             )
         ],
         turn_id=turn_id,
@@ -315,7 +322,7 @@ class ClosedTurnPlanningTests(CompactionV2Base):
     def test_single_oversized_terminal_turn_compacts_without_a_recent_tail(self) -> None:
         mem, store, _ = self.make_mem(config=_projected_config(raw_token_trigger=200))
         try:
-            _complete_simple_turn(mem, 0, payload={"blob": "x" * 1200})
+            _complete_simple_turn(mem, 0, text="问题0" + "x" * 1200)
 
             result = mem.compact_due_sync(provider_profile=OPENAI_PROFILE)
 
@@ -390,8 +397,8 @@ class ClosedTurnPlanningTests(CompactionV2Base):
     def test_projected_token_compaction_replaces_only_complete_old_turns(self) -> None:
         mem, store, _ = self.make_mem(config=_projected_config())
         try:
-            for number in range(3):
-                _complete_simple_turn(mem, number)
+            for number in range(5):
+                _complete_simple_turn(mem, number, text=f"问题{number}" + "x" * 200)
             before = mem.build_context_projection(provider_profile=OPENAI_PROFILE)
             result = mem.compact_due_sync()
             self.assertEqual(result["status"], "compacted")
@@ -401,7 +408,7 @@ class ClosedTurnPlanningTests(CompactionV2Base):
             self.assertEqual(result["source_entry_count"] % 2, 0)
 
             summarized = set(result["summary_source_ids"])
-            for number in range(3):
+            for number in range(5):
                 pair = {f"user-{number}", f"final-{number}"}
                 self.assertIn(len(pair & summarized), {0, 2})
             after = mem.build_context_projection(provider_profile=OPENAI_PROFILE)
@@ -445,10 +452,14 @@ class ClosedTurnPlanningTests(CompactionV2Base):
             mem.close()
             store.close()
 
-    def test_large_structured_payload_counts_even_when_semantic_text_is_short(self) -> None:
+    def test_large_semantic_text_counts_toward_projected_compaction(self) -> None:
+        """The projection renders the durable semantic text, so oversized
+        conversation content must count toward the raw-token trigger even when
+        the host payload stays minimal (ordinary chat rendering, not the
+        structured canonical render)."""
         mem, store, _ = self.make_mem(config=_projected_config(raw_token_trigger=300))
         try:
-            _complete_simple_turn(mem, 0, payload={"blob": "z" * 1200})
+            _complete_simple_turn(mem, 0, text="问题0" + "z" * 1200)
             _complete_simple_turn(mem, 1)
             result = mem.compact_due_sync()
             self.assertEqual(result["status"], "compacted")
@@ -465,7 +476,7 @@ class ClosedTurnPlanningTests(CompactionV2Base):
             with_token_counter=False,
         )
         try:
-            _complete_simple_turn(mem, 0, payload={"blob": "z" * 1200})
+            _complete_simple_turn(mem, 0, text="问题0" + "z" * 1200)
             _complete_simple_turn(mem, 1)
             result = mem.compact_due_sync()
             self.assertEqual(result["status"], "compacted")

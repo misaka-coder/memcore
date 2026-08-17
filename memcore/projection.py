@@ -1269,7 +1269,11 @@ class ProjectionAdapter:
             else:
                 payload = {
                     "role": "user",
-                    "content": rendered.text,
+                    "content": (
+                        _ordinary_message_text(entry, self.timezone, "User")
+                        if entry.kind == "message.user"
+                        else rendered.text
+                    ),
                 }
             messages.append(
                 ProjectionMessageInput(
@@ -1338,6 +1342,8 @@ class ProjectionAdapter:
                     )
                     else self._assistant_final_text(entry)
                     if entry.turn_role is TurnRole.FINAL
+                    else _ordinary_message_text(entry, self.timezone, "User")
+                    if entry.kind == "message.user"
                     else rendered.text
                 )
                 payload = {"type": "message", "role": role, "content": content}
@@ -1431,7 +1437,19 @@ class ProjectionAdapter:
                 )
                 continue
             rendered = self._render(entry)
-            text = self._assistant_final_text(entry) if entry.turn_role is TurnRole.FINAL else rendered.text
+            text = (
+                _ordinary_message_text(entry, self.timezone, "Assistant")
+                if (
+                    entry.kind == "message.assistant"
+                    and entry.turn_role is TurnRole.FINAL
+                    and _has_plain_final_output(entry)
+                )
+                else self._assistant_final_text(entry)
+                if entry.turn_role is TurnRole.FINAL
+                else _ordinary_message_text(entry, self.timezone, "User")
+                if entry.kind == "message.user"
+                else rendered.text
+            )
             role = "assistant" if entry.origin.value == "assistant" else "user"
             messages.append(
                 ProjectionMessageInput(

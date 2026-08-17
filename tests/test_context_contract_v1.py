@@ -339,6 +339,53 @@ class ContextSessionWrapperTests(unittest.TestCase):
 
         self.assertIn("[2023-11-15 06:13] User: dated", str(visible[0]))
 
+    def test_frozen_projection_renders_ordinary_chat_messages_with_time_anchors(self) -> None:
+        """The ledger-frozen openai family must use the same ordinary chat
+        rendering as the live surface: `[YYYY-MM-DD HH:MM] User:/Assistant: …`.
+        A frozen history whose user rows render in the structured canonical
+        format would break hosts that read history_records directly from
+        context.build (thin adapters never re-render payloads)."""
+        store = SQLiteMemoryStore(":memory:")
+        embedding = HashedEmbeddingProvider()
+        mem = MemorySystem(
+            llm=_NoopLLM(),
+            namespace=Namespace(user_id="frozen", conversation_id="frozen"),
+            timezone="Asia/Shanghai",
+            store=store,
+            index=InMemoryVectorIndex(embedding=embedding),
+            embedding=embedding,
+        )
+        try:
+            mem.begin_turn(
+                stimuli=[
+                    TimelineEntryInput(
+                        source_id="frozen-user",
+                        kind="message.user",
+                        origin=EntryOrigin.USER,
+                        turn_role=TurnRole.STIMULUS,
+                        semantic_text="hello world",
+                        payload={"text": "hello world"},
+                        timestamp=1_700_000_000,
+                        compatibility_role="user",
+                    )
+                ],
+                turn_id="frozen-turn",
+            )
+            # First build freezes the turn; the second must serve the frozen
+            # payload — still in the ordinary chat format.
+            mem.build_context_surface(
+                provider_profile=OPENAI_PROFILE,
+                current_source_id="frozen-user",
+            )
+            projection = mem.build_context_projection(provider_profile=OPENAI_PROFILE)
+            user_payload = projection.payloads[0]
+            self.assertEqual(user_payload["role"], "user")
+            self.assertIn("[2023-11-15 06:13] User: hello world", str(user_payload["content"]))
+            self.assertNotIn("message.user", str(user_payload["content"]))
+        finally:
+            mem.close()
+            store.close()
+
     def test_pop_rebuilds_memcore_and_removes_the_popped_item_from_context(self) -> None:
         wrapped = MemCoreContextSession.wrap(_Session(), memory=self.mem)
         asyncio.run(wrapped.add_items([{"type": "message", "role": "user", "content": "hello"}]))
