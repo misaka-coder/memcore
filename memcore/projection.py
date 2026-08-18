@@ -848,6 +848,12 @@ def _has_plain_final_output(entry: TimelineEntry) -> bool:
     return not raw or raw == entry.semantic_text
 
 
+def _is_ordinary_chat_entry(entry: TimelineEntry) -> bool:
+    """Use the compact chat form only when no attribution facts would be lost."""
+
+    return entry.target_actor is None and not bool(entry.payload.get("mentioned_actors"))
+
+
 def _tool_arguments_json(value: Any) -> str:
     """Keep host-supplied JSON argument bytes intact when already serialized."""
 
@@ -1062,7 +1068,7 @@ class ProjectionAdapter:
     def context_surface_payload(self, entry: TimelineEntry, *, provider_profile: str) -> dict[str, Any] | None:
         """Render an unfrozen ordinary chat entry for the public context surface."""
 
-        if entry.target_actor is not None or bool(entry.payload.get("mentioned_actors")):
+        if not _is_ordinary_chat_entry(entry):
             return None
         if entry.kind == "message.user":
             text = _ordinary_message_text(entry, self.timezone, "User")
@@ -1260,6 +1266,7 @@ class ProjectionAdapter:
                             entry.kind == "message.assistant"
                             and entry.turn_role is TurnRole.FINAL
                             and _has_plain_final_output(entry)
+                            and _is_ordinary_chat_entry(entry)
                         )
                         else self._assistant_final_text(entry)
                         if entry.turn_role is TurnRole.FINAL
@@ -1271,7 +1278,7 @@ class ProjectionAdapter:
                     "role": "user",
                     "content": (
                         _ordinary_message_text(entry, self.timezone, "User")
-                        if entry.kind == "message.user"
+                        if entry.kind == "message.user" and _is_ordinary_chat_entry(entry)
                         else rendered.text
                     ),
                 }
@@ -1339,11 +1346,12 @@ class ProjectionAdapter:
                         entry.kind == "message.assistant"
                         and entry.turn_role is TurnRole.FINAL
                         and _has_plain_final_output(entry)
+                        and _is_ordinary_chat_entry(entry)
                     )
                     else self._assistant_final_text(entry)
                     if entry.turn_role is TurnRole.FINAL
                     else _ordinary_message_text(entry, self.timezone, "User")
-                    if entry.kind == "message.user"
+                    if entry.kind == "message.user" and _is_ordinary_chat_entry(entry)
                     else rendered.text
                 )
                 payload = {"type": "message", "role": role, "content": content}
@@ -1443,11 +1451,12 @@ class ProjectionAdapter:
                     entry.kind == "message.assistant"
                     and entry.turn_role is TurnRole.FINAL
                     and _has_plain_final_output(entry)
+                    and _is_ordinary_chat_entry(entry)
                 )
                 else self._assistant_final_text(entry)
                 if entry.turn_role is TurnRole.FINAL
                 else _ordinary_message_text(entry, self.timezone, "User")
-                if entry.kind == "message.user"
+                if entry.kind == "message.user" and _is_ordinary_chat_entry(entry)
                 else rendered.text
             )
             role = "assistant" if entry.origin.value == "assistant" else "user"

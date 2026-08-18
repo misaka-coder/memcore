@@ -9,6 +9,7 @@ from memcore import (
     DEEPSEEK_PROFILE,
     OPENAI_PROFILE,
     OPENAI_RESPONSES_PROFILE,
+    Actor,
     EntryOrigin,
     HashedEmbeddingProvider,
     InMemoryVectorIndex,
@@ -385,6 +386,38 @@ class ContextSessionWrapperTests(unittest.TestCase):
         finally:
             mem.close()
             store.close()
+
+    def test_attributed_group_message_keeps_actor_target_and_mentions(self) -> None:
+        self.mem.begin_turn(
+            stimuli=[
+                TimelineEntryInput(
+                    source_id="group-user",
+                    kind="message.user",
+                    origin=EntryOrigin.USER,
+                    turn_role=TurnRole.STIMULUS,
+                    semantic_text="【李四】你怎么看？",
+                    payload={
+                        "text": "【李四】你怎么看？",
+                        "mentioned_actors": [{"actor_id": "qq:3", "display_name": "天为"}],
+                    },
+                    actor=Actor(stable_id="qq:2", display_name="李四"),
+                    target_actor=Actor(stable_id="assistant"),
+                    timestamp=1_700_000_000,
+                    compatibility_role="user",
+                )
+            ],
+            turn_id="group-turn",
+        )
+
+        for profile in (OPENAI_PROFILE, OPENAI_RESPONSES_PROFILE, ANTHROPIC_PROFILE):
+            with self.subTest(profile=profile):
+                projection = self.mem.build_context_projection(provider_profile=profile)
+                content = str(projection.payloads[0].get("content") or "")
+                self.assertIn("message.user", content)
+                self.assertIn("actor: 李四 (id=qq:2)", content)
+                self.assertIn("target_actor: assistant", content)
+                self.assertIn('"actor_id":"qq:3"', content)
+                self.assertNotIn("User: 【李四】你怎么看？", content)
 
     def test_pop_rebuilds_memcore_and_removes_the_popped_item_from_context(self) -> None:
         wrapped = MemCoreContextSession.wrap(_Session(), memory=self.mem)
