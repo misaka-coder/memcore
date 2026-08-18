@@ -741,11 +741,14 @@ class MemorySystem:
 
         history: list[Mapping[str, Any]] = []
         history_source_ids: list[tuple[str, ...]] = []
+        history_projection_metadata: list[Mapping[str, Any]] = []
         current: Mapping[str, Any] | None = None
         current_source_ids: tuple[str, ...] = ()
+        current_projection_metadata: Mapping[str, Any] | None = None
         current_turn_id = ""
         active: list[Mapping[str, Any]] = []
         active_source_ids: list[tuple[str, ...]] = []
+        active_projection_metadata: list[Mapping[str, Any]] = []
         diagnostics: list[ContextDiagnostic] = []
         current_index: int | None = None
         if current_id:
@@ -755,21 +758,35 @@ class MemorySystem:
                         current_index = index
                     else:
                         diagnostics.append(ContextDiagnostic("degraded", "current_message_multiple_projection_records"))
+
+        def _projection_metadata(message: ProjectionMessage) -> dict[str, Any]:
+            return {
+                "turn_id": str(message.turn_id or ""),
+                "source_ids": list(message.source_ids),
+                "projection_index": int(message.projection_index),
+                "projection_status": message.projection_status.value,
+                "projection_version": int(message.projection_version),
+            }
+
         for index, message in enumerate(projection.messages):
             payload = _surface_payload(message)
             if current_index is None:
                 history.append(payload)
                 history_source_ids.append(tuple(message.source_ids))
+                history_projection_metadata.append(_projection_metadata(message))
             elif index < current_index:
                 history.append(payload)
                 history_source_ids.append(tuple(message.source_ids))
+                history_projection_metadata.append(_projection_metadata(message))
             elif index == current_index:
                 current = payload
                 current_source_ids = tuple(message.source_ids)
+                current_projection_metadata = _projection_metadata(message)
                 current_turn_id = str(message.turn_id or "")
             else:
                 active.append(payload)
                 active_source_ids.append(tuple(message.source_ids))
+                active_projection_metadata.append(_projection_metadata(message))
         if current_id and current is None:
             diagnostics.append(ContextDiagnostic("degraded", "current_message_source_not_found"))
 
@@ -779,6 +796,15 @@ class MemorySystem:
                 continue
             active.append(dict(item))
             active_source_ids.append(())
+            active_projection_metadata.append(
+                {
+                    "turn_id": current_turn_id,
+                    "source_ids": [],
+                    "projection_index": -1,
+                    "projection_status": "complete",
+                    "projection_version": int(projection.projection_version),
+                }
+            )
 
         surface_payload = {
             "version": CONTEXT_SURFACE_VERSION,
@@ -800,6 +826,13 @@ class MemorySystem:
                     *history_source_ids,
                     *((current_source_ids,) if current is not None else ()),
                     *active_source_ids,
+                )
+            ),
+            message_projection_metadata=tuple(
+                (
+                    *history_projection_metadata,
+                    *((current_projection_metadata,) if current_projection_metadata is not None else ()),
+                    *active_projection_metadata,
                 )
             ),
             has_compact_history=projection.has_compact_history,

@@ -33,6 +33,7 @@ prefix, event renderer, or card decision.
   "projection_version": 1,
   "compaction_generation": 0,
   "message_source_ids": [],
+  "message_projection_metadata": [],
   "has_compact_history": false,
   "current_turn_id": "",
   "diagnostics": []
@@ -46,6 +47,15 @@ ordered provider sequence: history, current message, then active round.
 `message_source_ids` is aligned one-for-one with `surface.messages`; it lets a
 host retain attachment/provenance links without reading the private projection
 ledger.
+
+`message_projection_metadata` is also aligned one-for-one with
+`surface.messages`. Each item carries only the stable request-freeze identity:
+`turn_id`, `source_ids`, `projection_index`, `projection_status`, and
+`projection_version`. A host that records the actual provider request must pass
+these values back with the provider-visible payload. It must not invent a
+default projection version or derive an index from the whole conversation.
+Support is advertised by
+`CONTEXT_SURFACE_MESSAGE_METADATA_VERSION=context_surface_message_metadata_v1`.
 
 The host owns persona/system/developer content and may prepend its own stable
 system prompt. MemCore owns the message sequence inside this contract.

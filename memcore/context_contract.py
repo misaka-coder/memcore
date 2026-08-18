@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 CONTEXT_SURFACE_VERSION = "context_surface_v1"
+CONTEXT_SURFACE_MESSAGE_METADATA_VERSION = "context_surface_message_metadata_v1"
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,7 @@ class ContextSurface:
     projection_hash: str
     projection_generation: int
     message_source_ids: tuple[tuple[str, ...], ...] = ()
+    message_projection_metadata: tuple[Mapping[str, Any], ...] = ()
     has_compact_history: bool = False
     current_turn_id: str = ""
     projection_version: int = 1
@@ -58,6 +60,8 @@ class ContextSurface:
             raise ValueError("context_surface_generation_invalid")
         if self.message_source_ids and len(self.message_source_ids) != len(self.messages):
             raise ValueError("context_surface_source_ids_length_mismatch")
+        if self.message_projection_metadata and len(self.message_projection_metadata) != len(self.messages):
+            raise ValueError("context_surface_projection_metadata_length_mismatch")
 
     @property
     def messages(self) -> tuple[Mapping[str, Any], ...]:
@@ -81,6 +85,7 @@ class ContextSurface:
             "projection_hash": self.projection_hash,
             "projection_generation": self.projection_generation,
             "message_source_ids": [list(item) for item in self.message_source_ids],
+            "message_projection_metadata": [dict(item) for item in self.message_projection_metadata],
             "has_compact_history": self.has_compact_history,
             "current_turn_id": self.current_turn_id,
             "projection_version": self.projection_version,
@@ -89,4 +94,9 @@ class ContextSurface:
         }
 
 
-__all__ = ["CONTEXT_SURFACE_VERSION", "ContextDiagnostic", "ContextSurface"]
+__all__ = [
+    "CONTEXT_SURFACE_MESSAGE_METADATA_VERSION",
+    "CONTEXT_SURFACE_VERSION",
+    "ContextDiagnostic",
+    "ContextSurface",
+]

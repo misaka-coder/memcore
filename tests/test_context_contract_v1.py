@@ -81,6 +81,17 @@ class ContextContractTests(unittest.TestCase):
         self.assertIn("hello", str(surface.current_message["content"]))
         self.assertEqual(sum(1 for item in surface.messages if item == surface.current_message), 1)
         self.assertEqual(surface.active_turn_messages[0]["role"], "assistant")
+        self.assertEqual(len(surface.message_projection_metadata), len(surface.messages))
+        current_index = len(surface.history_messages)
+        current_metadata = surface.message_projection_metadata[current_index]
+        self.assertEqual(current_metadata["turn_id"], "turn-1")
+        self.assertEqual(current_metadata["source_ids"], ["current-user"])
+        self.assertEqual(current_metadata["projection_index"], 0)
+        self.assertGreaterEqual(current_metadata["projection_version"], 1)
+        self.assertEqual(
+            surface.as_dict()["message_projection_metadata"][current_index],
+            current_metadata,
+        )
         self.assertTrue(surface.projection_hash)
         self.assertEqual(
             surface.projection_hash,

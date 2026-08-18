@@ -12,7 +12,12 @@ from .conformance import (
     validate_context_adapter,
     validate_provider_wire_capture,
 )
-from .context_contract import CONTEXT_SURFACE_VERSION, ContextDiagnostic, ContextSurface
+from .context_contract import (
+    CONTEXT_SURFACE_MESSAGE_METADATA_VERSION,
+    CONTEXT_SURFACE_VERSION,
+    ContextDiagnostic,
+    ContextSurface,
+)
 from .context_session import ContextSessionStatus, MemCoreContextSession
 from .compaction_v2 import (
     CompactionResult,
@@ -166,6 +171,7 @@ __all__ = [
     "validate_context_adapter",
     "validate_provider_wire_capture",
     "CONTEXT_SURFACE_VERSION",
+    "CONTEXT_SURFACE_MESSAGE_METADATA_VERSION",
     "ContextDiagnostic",
     "ContextSurface",
     "ContextSessionStatus",
