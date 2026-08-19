@@ -17,6 +17,10 @@ from .context_contract import (
     CONTEXT_SURFACE_VERSION,
     ContextDiagnostic,
     ContextSurface,
+    RequestBindingGroup,
+    RequestBindingMessage,
+    RequestBindingResult,
+    bind_request_projection_messages,
 )
 from .context_session import ContextSessionStatus, MemCoreContextSession
 from .compaction_v2 import (
@@ -174,6 +178,10 @@ __all__ = [
     "CONTEXT_SURFACE_MESSAGE_METADATA_VERSION",
     "ContextDiagnostic",
     "ContextSurface",
+    "RequestBindingGroup",
+    "RequestBindingMessage",
+    "RequestBindingResult",
+    "bind_request_projection_messages",
     "ContextSessionStatus",
     "MemCoreContextSession",
     "ChatOutputConfig",

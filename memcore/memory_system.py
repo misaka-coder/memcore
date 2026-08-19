@@ -955,6 +955,7 @@ class MemorySystem:
         provider_profile: str,
         turn_messages: list[ProjectionMessageInput],
         history_messages: list[dict[str, Any]],
+        history_message_indexes: Sequence[int] | None = None,
         audit_history_messages: list[dict[str, Any]] | None = None,
         attempt: int = 0,
         model_route: Any = "",
@@ -997,10 +998,20 @@ class MemorySystem:
                 )
             )
 
-        if len(history_messages) < len(prepared):
-            raise SchemaError("projection_actual_history_missing_turn_suffix")
-        actual_tail = history_messages[-len(prepared) :] if prepared else []
-        for actual, declared in zip(actual_tail, prepared):
+        if history_message_indexes is None:
+            if len(history_messages) < len(prepared):
+                raise SchemaError("projection_actual_history_missing_turn_suffix")
+            actual_messages = history_messages[-len(prepared) :] if prepared else []
+        else:
+            indexes = tuple(int(index) for index in history_message_indexes)
+            if len(indexes) != len(prepared) or len(set(indexes)) != len(indexes):
+                raise SchemaError("projection_actual_history_indexes_invalid")
+            if any(index < 0 or index >= len(history_messages) for index in indexes):
+                raise SchemaError("projection_actual_history_indexes_invalid")
+            if tuple(sorted(indexes)) != indexes:
+                raise SchemaError("projection_actual_history_indexes_invalid")
+            actual_messages = [history_messages[index] for index in indexes]
+        for actual, declared in zip(actual_messages, prepared):
             safe_actual, _ = sanitize_projection_payload(actual, provider_profile=profile)
             if canonical_json_bytes(safe_actual) != canonical_json_bytes(declared.payload):
                 raise SchemaError("projection_actual_history_mismatch")

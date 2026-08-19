@@ -722,6 +722,87 @@ class PrefixAndLedgerTests(ProjectionBase):
             TurnStatus.OPEN,
         )
 
+    def test_request_projection_verifies_noncontiguous_active_message_indexes(self) -> None:
+        handle = self.mem.begin_turn(
+            stimuli=[_stimulus("active question", source_id="indexed-user")],
+            turn_id="indexed-active-turn",
+        )
+        self.mem.append_action(
+            turn_id=handle.turn_id,
+            kind="tool.read.call",
+            correlation_id="indexed-read",
+            semantic_text='{"path":"README.md"}',
+            payload={"name": "read", "arguments": '{"path":"README.md"}'},
+            source_id="indexed-action",
+        )
+        self.mem.append_observation(
+            turn_id=handle.turn_id,
+            kind="tool.read.result",
+            correlation_id="indexed-read",
+            semantic_text="active result",
+            payload={"output": "active result"},
+            status="success",
+            source_id="indexed-result",
+        )
+        actual = [
+            {"role": "user", "content": "active question"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "indexed-read",
+                        "type": "function",
+                        "function": {"name": "read", "arguments": '{"path":"README.md"}'},
+                    }
+                ],
+            },
+            {"role": "user", "content": "standalone material"},
+            {"role": "tool", "tool_call_id": "indexed-read", "content": "active result"},
+        ]
+        result = self.mem.record_request_projection(
+            turn_id=handle.turn_id,
+            provider_profile=OPENAI_PROFILE,
+            turn_messages=[
+                ProjectionMessageInput(
+                    provider_profile=OPENAI_PROFILE,
+                    payload=actual[0],
+                    source_ids=("indexed-user",),
+                    projection_index=0,
+                ),
+                ProjectionMessageInput(
+                    provider_profile=OPENAI_PROFILE,
+                    payload=actual[1],
+                    source_ids=("indexed-action",),
+                    projection_index=1,
+                ),
+                ProjectionMessageInput(
+                    provider_profile=OPENAI_PROFILE,
+                    payload=actual[3],
+                    source_ids=("indexed-result",),
+                    projection_index=2,
+                ),
+            ],
+            history_messages=actual,
+            history_message_indexes=[0, 1, 3],
+        )
+
+        self.assertEqual([item.payload for item in result.projections], [actual[0], actual[1], actual[3]])
+        with self.assertRaisesRegex(SchemaError, "projection_actual_history_mismatch"):
+            self.mem.record_request_projection(
+                turn_id=handle.turn_id,
+                provider_profile=OPENAI_PROFILE,
+                turn_messages=[
+                    ProjectionMessageInput(
+                        provider_profile=OPENAI_PROFILE,
+                        payload=actual[0],
+                        source_ids=("indexed-user",),
+                        projection_index=0,
+                    )
+                ],
+                history_messages=actual,
+                history_message_indexes=[2],
+            )
+
     def test_actual_final_projection_is_atomic_and_history_grows_by_strict_prefix(self) -> None:
         handle = self.mem.begin_turn(
             stimuli=[_stimulus("第一问", source_id="prefix-user-1")],

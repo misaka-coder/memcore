@@ -8,7 +8,7 @@ MemCore's timeline, settlement, or projection ledger internals.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 CONTEXT_SURFACE_VERSION = "context_surface_v1"
 CONTEXT_SURFACE_MESSAGE_METADATA_VERSION = "context_surface_message_metadata_v1"
@@ -94,9 +94,132 @@ class ContextSurface:
         }
 
 
+@dataclass(frozen=True)
+class RequestBindingMessage:
+    """One provider-visible message with its immutable source ownership."""
+
+    payload: Mapping[str, Any]
+    source_ids: tuple[str, ...]
+    source_turn_id: str
+    projection_index: int
+    projection_status: str
+    projection_version: int
+    request_index: int
+
+
+@dataclass(frozen=True)
+class RequestBindingGroup:
+    """Ordered messages owned by one real source turn."""
+
+    turn_id: str
+    relation: str
+    messages: tuple[RequestBindingMessage, ...]
+
+    @property
+    def request_indexes(self) -> tuple[int, ...]:
+        return tuple(message.request_index for message in self.messages)
+
+
+@dataclass(frozen=True)
+class RequestBindingResult:
+    """Turn-aware binding for the provider-visible open request suffix."""
+
+    status: str
+    reason: str
+    messages: tuple[RequestBindingMessage, ...]
+    groups: tuple[RequestBindingGroup, ...]
+    active_group: RequestBindingGroup | None
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "bound"
+
+
+def bind_request_projection_messages(
+    messages: Sequence[Mapping[str, Any]],
+    *,
+    active_turn_id: str,
+) -> RequestBindingResult:
+    """Bind ordered projection descriptors without changing source ownership.
+
+    Hosts use this helper at the provider boundary.  A message attributed to a
+    different source turn remains visible in its original request position but
+    is never frozen under the active turn.  Missing ownership is rejected
+    because guessing would corrupt the projection ledger.
+    """
+
+    active_id = str(active_turn_id or "").strip()
+    if not active_id:
+        return RequestBindingResult("rejected", "active_turn_id_required", (), (), None)
+
+    prepared: list[RequestBindingMessage] = []
+    grouped: dict[str, list[RequestBindingMessage]] = {}
+    group_order: list[str] = []
+    for request_index, raw in enumerate(messages):
+        if not isinstance(raw, Mapping):
+            return RequestBindingResult("rejected", "request_binding_message_not_object", (), (), None)
+        payload = raw.get("payload")
+        if not isinstance(payload, Mapping):
+            return RequestBindingResult("rejected", "request_binding_payload_required", (), (), None)
+        source_ids = tuple(
+            str(item or "").strip()
+            for item in list(raw.get("source_ids") or ())
+            if str(item or "").strip()
+        )
+        if not source_ids:
+            return RequestBindingResult("rejected", "request_binding_source_ids_required", (), (), None)
+        source_turn_id = str(raw.get("turn_id") or raw.get("source_turn_id") or "").strip()
+        if not source_turn_id:
+            return RequestBindingResult("rejected", "request_binding_source_turn_ambiguous", (), (), None)
+        try:
+            projection_index = int(raw.get("projection_index", -1))
+            projection_version = int(raw.get("projection_version") or 0)
+        except (TypeError, ValueError):
+            return RequestBindingResult("rejected", "request_binding_projection_metadata_invalid", (), (), None)
+        if projection_index < 0 or projection_version < 1:
+            return RequestBindingResult("rejected", "request_binding_projection_metadata_invalid", (), (), None)
+        message = RequestBindingMessage(
+            payload=dict(payload),
+            source_ids=source_ids,
+            source_turn_id=source_turn_id,
+            projection_index=projection_index,
+            projection_status=str(raw.get("projection_status") or "complete"),
+            projection_version=projection_version,
+            request_index=request_index,
+        )
+        prepared.append(message)
+        if source_turn_id not in grouped:
+            grouped[source_turn_id] = []
+            group_order.append(source_turn_id)
+        grouped[source_turn_id].append(message)
+
+    groups = tuple(
+        RequestBindingGroup(
+            turn_id=turn_id,
+            relation="active" if turn_id == active_id else "standalone",
+            messages=tuple(grouped[turn_id]),
+        )
+        for turn_id in group_order
+    )
+    active_group = next((group for group in groups if group.relation == "active"), None)
+    if active_group is None:
+        return RequestBindingResult(
+            "rejected",
+            "request_binding_active_turn_missing",
+            tuple(prepared),
+            groups,
+            None,
+        )
+    return RequestBindingResult("bound", "", tuple(prepared), groups, active_group)
+
+
 __all__ = [
     "CONTEXT_SURFACE_MESSAGE_METADATA_VERSION",
     "CONTEXT_SURFACE_VERSION",
     "ContextDiagnostic",
     "ContextSurface",
+    "RequestBindingGroup",
+    "RequestBindingMessage",
+    "RequestBindingResult",
+    "bind_request_projection_messages",
 ]
