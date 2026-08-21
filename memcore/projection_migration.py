@@ -7,11 +7,12 @@ never silently rewritten during reads: hosts run
 :func:`migrate_legacy_path_projections` at an explicit pre-traffic
 maintenance point and receive a structured report.
 
-Three legacy damage patterns are scanned and reported separately:
+Four legacy damage patterns are scanned and reported separately:
 
 - MemCore V2 omission marker (recoverable when raw sources are intact);
 - Akane host redaction ``[local_path]`` (raw already damaged, irrecoverable);
 - ``$TMPDIR`` alias (raw already damaged, irrecoverable).
+- MemCore V3 whole-value secret marker (recoverable when raw sources are intact).
 
 Only records whose raw timeline sources still contain the original values
 are re-projected.  Irrecoverable rows are preserved untouched and counted,
@@ -36,11 +37,13 @@ LEGACY_PATH_PROJECTION_TARGET_VERSION = PROJECTION_VERSION
 LEGACY_MEMCORE_OMISSION_MARKER = LEGACY_PATH_OMISSION_MARKER
 LEGACY_HOST_LOCAL_PATH_MARKER = "[local_path]"
 LEGACY_HOST_TMPDIR_ALIAS = "$TMPDIR"
+LEGACY_MEMCORE_SECRET_OMISSION_MARKER = "[secret omitted from persistent history]"
 
-LEGACY_PROJECTION_MARKERS: tuple[str, str, str] = (
+LEGACY_PROJECTION_MARKERS: tuple[str, str, str, str] = (
     LEGACY_MEMCORE_OMISSION_MARKER,
     LEGACY_HOST_LOCAL_PATH_MARKER,
     LEGACY_HOST_TMPDIR_ALIAS,
+    LEGACY_MEMCORE_SECRET_OMISSION_MARKER,
 )
 
 # Markers whose presence in a projection payload proves the host already
@@ -54,6 +57,7 @@ _REPORT_TOTAL_KEYS = (
     "scanned_memcore_marker_rows",
     "scanned_host_local_path_rows",
     "scanned_host_tmpdir_rows",
+    "scanned_memcore_secret_marker_rows",
     "migrated",
     "version_advanced_only",
     "preserved_irrecoverable_host_redaction",

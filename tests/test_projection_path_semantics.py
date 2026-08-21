@@ -563,6 +563,68 @@ class LegacyPathProjectionMigrationTests(PathEvidenceBase):
         rebuilt = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)
         self.assertIn(WINDOWS_PATH_COMMAND, _projected_tool_commands(rebuilt))
 
+    def test_migration_restores_v3_secret_marker_from_raw_source(self) -> None:
+        source_text = "token = response.json()\npt_key = payload.get('pt_key')\n"
+        handle = self.mem.begin_turn(
+            stimuli=[_stimulus("inspect source", source_id="secret-user")],
+            turn_id="secret-turn",
+        )
+        self.mem.append_entry(
+            _action(
+                "secret-call",
+                source_id="secret-action",
+                name="read_workspace",
+                arguments={"path": "login_joyclaw.py"},
+            ),
+            turn_id=handle.turn_id,
+        )
+        self.mem.append_entry(
+            _observation("secret-call", source_id="secret-result", text=source_text),
+            turn_id=handle.turn_id,
+        )
+        self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)
+        legacy_payload = {
+            "role": "tool",
+            "tool_call_id": "secret-call",
+            "content": "[secret omitted from persistent history]",
+        }
+        with self.store._conn:
+            self.store._conn.execute(
+                """
+                UPDATE prompt_projections
+                SET payload_json = ?, payload_hash = ?, projection_status = ?, projection_version = ?
+                WHERE turn_id = ? AND projection_index = ? AND provider_profile = ?
+                """,
+                (
+                    json.dumps(legacy_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                    stable_projection_hash(legacy_payload),
+                    "skipped_unsafe",
+                    3,
+                    "secret-turn",
+                    2,
+                    OPENAI_PROFILE,
+                ),
+            )
+
+        report = self.mem.migrate_legacy_path_projections()
+        self.assertEqual(report["scanned_memcore_secret_marker_rows"], 1)
+        self.assertEqual(report["migrated"], 1)
+        row = self.store._conn.execute(
+            """
+            SELECT payload_json, projection_version FROM prompt_projections
+            WHERE turn_id = ? AND projection_index = ? AND provider_profile = ?
+            """,
+            ("secret-turn", 2, OPENAI_PROFILE),
+        ).fetchone()
+        self.assertIsNotNone(row)
+        restored = json.loads(str(row["payload_json"]))
+        self.assertEqual(restored["content"], source_text)
+        self.assertEqual(int(row["projection_version"]), PROJECTION_VERSION)
+
+        second = self.mem.migrate_legacy_path_projections()
+        self.assertEqual(second["scanned_memcore_secret_marker_rows"], 0)
+        self.assertEqual(second["migrated"], 0)
+
     def test_unaffected_rows_stay_byte_identical(self) -> None:
         self._build_turn_with_raw_sources("byte-turn")
         projection = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)

@@ -2583,7 +2583,7 @@ class SQLiteMemoryStore(MemoryStore):
     ) -> dict[str, Any]:
         """Re-project legacy path-damage rows from raw sources and rebuild stale settlements.
 
-        Three legacy damage patterns are scanned and reported separately; only
+        Four legacy damage patterns are scanned and reported separately; only
         records whose raw timeline sources still hold the original values are
         rewritten.  Irrecoverable host-redacted rows are preserved untouched and
         counted.  Stale settlements (marker-containing or full-hash mismatched)
@@ -2599,6 +2599,7 @@ class SQLiteMemoryStore(MemoryStore):
             "scanned_memcore_marker_rows",
             "scanned_host_local_path_rows",
             "scanned_host_tmpdir_rows",
+            "scanned_memcore_secret_marker_rows",
         )
         report: dict[str, Any] = {
             "status": "dry_run" if dry_run else "ok",
@@ -2617,7 +2618,7 @@ class SQLiteMemoryStore(MemoryStore):
             "dry_run": bool(dry_run),
         }
         if len(resolved_markers) > len(marker_names):
-            raise ValueError("markers must contain at most three legacy patterns")
+            raise ValueError("markers must contain at most four legacy patterns")
         with self._lock:
             with self._immediate_transaction():
                 scope_clause, scope_params = self._scope_clause(namespace, with_conversation=True)
