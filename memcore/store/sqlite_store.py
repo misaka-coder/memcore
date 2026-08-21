@@ -2883,6 +2883,18 @@ class SQLiteMemoryStore(MemoryStore):
                 self._drop_settlement_locked(namespace, turn_id, profile, dry_run=dry_run)
                 report["settled_rebuild_failed_dropped"] += 1
                 continue
+            # A marker can be irrecoverable because it already exists in the
+            # raw timeline source (for example an old host-side ``[local_path]``
+            # rewrite).  Replanning then produces the exact same settlement.
+            # Do not rewrite/count that row on every maintenance run: only a
+            # changed full ledger, status, or settled hash is a real rebuild.
+            if (
+                not stale_by_hash
+                and str(existing["settlement_status"] or "").strip() == status
+                and str(existing["settled_projection_hash"] or "").strip()
+                == str(getattr(plan, "settled_projection_hash", "") or "").strip()
+            ):
+                continue
             if not self._validate_settlement_plan_locked(namespace, existing, plan, messages):
                 self._drop_settlement_locked(namespace, turn_id, profile, dry_run=dry_run)
                 report["settled_rebuild_failed_dropped"] += 1

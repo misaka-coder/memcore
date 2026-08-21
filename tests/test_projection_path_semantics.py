@@ -905,6 +905,65 @@ class LegacyPathProjectionMigrationTests(PathEvidenceBase):
         second = self.mem.migrate_legacy_path_projections()
         self.assertEqual(second["settled_rebuilt"], 0)
 
+    def test_irrecoverable_settled_marker_is_not_rebuilt_forever(self) -> None:
+        handle = self.mem.begin_turn(
+            stimuli=[_stimulus("run", source_id="irrecoverable-settled-user")],
+            turn_id="irrecoverable-settled-turn",
+        )
+        self.mem.append_entry(
+            _action(
+                "irrecoverable-call",
+                source_id="irrecoverable-settled-action",
+                name="exec_run",
+                arguments={"command": "Get-ChildItem '[local_path]'"},
+            ),
+            turn_id=handle.turn_id,
+        )
+        self.mem.append_entry(
+            _observation(
+                "irrecoverable-call",
+                source_id="irrecoverable-settled-result",
+                text="[local_path]\n" + ("long result evidence " * 80),
+            ),
+            turn_id=handle.turn_id,
+        )
+        with self.store._conn:
+            self.store._conn.execute(
+                "UPDATE turns SET operation_projection_policy = ? WHERE turn_id = ?",
+                ("compact_after_terminal", handle.turn_id),
+            )
+        self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)
+        self.mem.complete_turn(
+            turn_id=handle.turn_id,
+            semantic_text="done",
+            provider_output_raw="done",
+            provider_profile=OPENAI_PROFILE,
+            provider_projection={"role": "assistant", "content": "done"},
+        )
+        settlement_id = f"{handle.turn_id}:{OPENAI_PROFILE}"
+        before = [
+            tuple(row)
+            for row in self.store._conn.execute(
+                "SELECT * FROM settled_prompt_projection WHERE settlement_id = ? ORDER BY projection_index",
+                (settlement_id,),
+            ).fetchall()
+        ]
+        self.assertTrue(before)
+        self.assertTrue(any("[local_path]" in str(value) for row in before for value in row))
+
+        first = self.mem.migrate_legacy_path_projections()
+        second = self.mem.migrate_legacy_path_projections()
+        self.assertEqual(first["settled_rebuilt"], 0)
+        self.assertEqual(second["settled_rebuilt"], 0)
+        after = [
+            tuple(row)
+            for row in self.store._conn.execute(
+                "SELECT * FROM settled_prompt_projection WHERE settlement_id = ? ORDER BY projection_index",
+                (settlement_id,),
+            ).fetchall()
+        ]
+        self.assertEqual(after, before)
+
     def test_host_redacted_raw_is_preserved_and_counted_irrecoverable(self) -> None:
         handle = self.mem.begin_turn(
             stimuli=[_stimulus("列出目录", source_id="damage-user")],
