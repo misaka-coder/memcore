@@ -22,7 +22,7 @@ from .text_utils import normalize_text
 from .time_anchor import TIME_PERIOD_LABELS, timestamp_to_datetime_weekday_label
 from .timeline import TimelineEntry, TimelineEntryInput, TurnRole
 
-PROJECTION_VERSION = 3
+PROJECTION_VERSION = 4
 CANONICAL_PROFILE = "canonical_user_assistant"
 OPENAI_PROFILE = "openai_chat"
 ANTHROPIC_PROFILE = "anthropic_messages"
@@ -38,11 +38,24 @@ _PROFILE_PATTERN = re.compile(r"^[a-z][a-z0-9_.-]{0,79}$")
 _ID_PATTERN = re.compile(r"^[^\x00-\x1f\x7f]{1,256}$")
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _SECRET_FIELD = re.compile(
-    r"(?:^|[_-])(?:api[_-]?key|authorization|access[_-]?token|refresh[_-]?token|password|passwd|secret)(?:$|[_-])",
+    r"(?:^|[_-])(?:api[_-]?key|authorization|auth[_-]?key|pt[_-]?key|access[_-]?token|"
+    r"refresh[_-]?token|password|passwd|secret)(?:$|[_-])",
     re.IGNORECASE,
 )
-_SECRET_VALUE = re.compile(
-    r"(?:\bBearer\s+[A-Za-z0-9._~+/=-]{12,}|\bsk-[A-Za-z0-9_-]{12,}|\b(?:api[_-]?key|token|secret)\s*[:=]\s*\S{8,})",
+_SECRET_NAME = (
+    r"(?:api[_-]?key|authorization|auth[_-]?key|pt[_-]?key|access[_-]?token|"
+    r"refresh[_-]?token|password|passwd|secret|token)"
+)
+_BEARER_SECRET = re.compile(r"(?P<prefix>\bBearer\s+)(?P<value>[A-Za-z0-9._~+/=-]{12,})", re.IGNORECASE)
+_OPENAI_SECRET = re.compile(r"\bsk-[A-Za-z0-9_-]{12,}", re.IGNORECASE)
+_JWT_SECRET = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
+_TEXT_SECRET_PREFIX = rf"(?<![A-Za-z0-9_])(?:['\"])?{_SECRET_NAME}(?:['\"])?\s*[:=]\s*"
+_QUOTED_SECRET_ASSIGNMENT = re.compile(
+    rf"(?P<prefix>{_TEXT_SECRET_PREFIX})(?P<quote>['\"])(?P<value>[^'\"\r\n]{{8,}})(?P=quote)",
+    re.IGNORECASE,
+)
+_UNQUOTED_SECRET_ASSIGNMENT = re.compile(
+    rf"(?P<prefix>{_TEXT_SECRET_PREFIX})(?P<value>[A-Za-z0-9_~+/=-]{{16,}})(?=$|[\s,;}}\]])",
     re.IGNORECASE,
 )
 # Field-level hiding is reserved for explicit host-internal structure fields.
@@ -68,7 +81,7 @@ _MEDIA_TYPES = frozenset(
     }
 )
 _MEDIA_MARKER = "[media omitted from persistent history]"
-_SECRET_MARKER = "[secret omitted from persistent history]"
+_SECRET_MARKER = "[secret value omitted]"
 _PATH_MARKER = "[local path omitted from persistent history]"
 # Marker emitted by projection versions < 3 when executable path evidence was
 # replaced.  Used by the explicit legacy-projection migration to find affected
@@ -178,6 +191,44 @@ def _media_marker_block() -> dict[str, str]:
     return {"type": "text", "text": _MEDIA_MARKER}
 
 
+def _sanitize_text(value: str) -> tuple[str, ProjectionStatus]:
+    """Hide credential values without destroying the surrounding evidence.
+
+    Provider-visible tool results often contain source code that manipulates a
+    variable named ``token`` or ``secret``.  A field name is not itself a
+    credential, so whole-string omission makes ordinary auth/config work
+    impossible.  Only high-confidence literal spans are replaced here; typed
+    mappings are still protected by ``_SECRET_FIELD`` below.
+    """
+
+    text = str(value)
+    redacted = False
+
+    def replace_group(match: re.Match[str]) -> str:
+        nonlocal redacted
+        redacted = True
+        return f"{match.group('prefix')}{_SECRET_MARKER}"
+
+    def replace_match(_match: re.Match[str]) -> str:
+        nonlocal redacted
+        redacted = True
+        return _SECRET_MARKER
+
+    def replace_quoted(match: re.Match[str]) -> str:
+        nonlocal redacted
+        redacted = True
+        quote = match.group("quote")
+        return f"{match.group('prefix')}{quote}{_SECRET_MARKER}{quote}"
+
+    text = _BEARER_SECRET.sub(replace_group, text)
+    text = _OPENAI_SECRET.sub(replace_match, text)
+    text = _JWT_SECRET.sub(replace_match, text)
+    text = _QUOTED_SECRET_ASSIGNMENT.sub(replace_quoted, text)
+    text = _UNQUOTED_SECRET_ASSIGNMENT.sub(replace_group, text)
+    text = _CONTROL_CHARS.sub(" ", text)
+    return text, ProjectionStatus.SKIPPED_UNSAFE if redacted else ProjectionStatus.COMPLETE
+
+
 def _sanitize_value(value: Any, *, key: str = "") -> tuple[Any, ProjectionStatus]:
     normalized_key = str(key or "")
     if _SECRET_FIELD.search(normalized_key):
@@ -209,9 +260,21 @@ def _sanitize_value(value: Any, *, key: str = "") -> tuple[Any, ProjectionStatus
     if isinstance(value, str):
         if value.lower().startswith("data:") and ";base64," in value[:160].lower():
             return _MEDIA_MARKER, ProjectionStatus.MEDIA_OMITTED
-        if _SECRET_VALUE.search(value):
-            return _SECRET_MARKER, ProjectionStatus.SKIPPED_UNSAFE
-        return _CONTROL_CHARS.sub(" ", value), ProjectionStatus.COMPLETE
+        # OpenAI-compatible tool arguments are serialized JSON.  Preserve the
+        # provider wire byte-for-byte when clean, but redact typed secret fields
+        # structurally so the result remains valid JSON instead of becoming an
+        # unusable marker string.
+        if normalized_key == "arguments":
+            try:
+                parsed = json.loads(value)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed = None
+            if isinstance(parsed, Mapping):
+                clean, status = _sanitize_value(parsed)
+                if status is ProjectionStatus.COMPLETE:
+                    return _CONTROL_CHARS.sub(" ", value), status
+                return json.dumps(clean, ensure_ascii=False, sort_keys=True, separators=(",", ":")), status
+        return _sanitize_text(value)
     if value is None or isinstance(value, (bool, int, float)):
         try:
             json.dumps(value, allow_nan=False)

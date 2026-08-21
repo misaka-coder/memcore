@@ -1,10 +1,10 @@
-"""Path evidence fidelity acceptance tests (projection semantics V3).
+"""Evidence fidelity acceptance tests (projection semantics V4).
 
 These tests pin the new contract: executable path evidence (tool call
 arguments, tool results, assistant final text, PowerShell counter syntax)
 survives the provider projection byte-for-byte, while secrets, media and
 explicit host-internal path fields stay protected.  They also cover the
-explicit legacy-projection migration.
+explicit legacy-projection migration and granular credential redaction.
 """
 
 from __future__ import annotations
@@ -19,7 +19,9 @@ from typing import Any
 from memcore import (
     ANTHROPIC_PROFILE,
     CANONICAL_PROFILE,
+    DEEPSEEK_PROFILE,
     OPENAI_PROFILE,
+    OPENAI_RESPONSES_PROFILE,
     Actor,
     EntryOrigin,
     HashedEmbeddingProvider,
@@ -29,6 +31,7 @@ from memcore import (
     LLMResult,
     MemorySystem,
     Namespace,
+    PROJECTION_VERSION,
     ProjectionMessageInput,
     ProjectionStatus,
     SQLiteMemoryStore,
@@ -279,10 +282,103 @@ class PathEvidencePreservationTests(PathEvidenceBase):
 
 
 class PathEvidenceProtectionTests(PathEvidenceBase):
+    def test_credential_variable_names_in_source_code_do_not_hide_the_tool_result(self) -> None:
+        source = (
+            "def fetch_token(response):\n"
+            "    token = response.json()\n"
+            "    pt_key = payload.get('pt_key')\n"
+            "    return token, pt_key\n"
+        )
+        clean, status = sanitize_timeline_value(source)
+        self.assertEqual(status, ProjectionStatus.COMPLETE)
+        self.assertEqual(clean, source)
+
+    def test_literal_secret_is_redacted_without_destroying_surrounding_evidence(self) -> None:
+        source = (
+            "before = 'keep this line'\n"
+            "token = 'abcdefghijklmnopqrstuvwxyz123456'\n"
+            "after = response.json()\n"
+        )
+        clean, status = sanitize_timeline_value(source)
+        self.assertEqual(status, ProjectionStatus.SKIPPED_UNSAFE)
+        self.assertIn("before = 'keep this line'", clean)
+        self.assertIn("token = '[secret value omitted]'", clean)
+        self.assertIn("after = response.json()", clean)
+        self.assertNotIn("abcdefghijklmnopqrstuvwxyz123456", clean)
+
+    def test_json_text_secret_value_is_redacted_without_breaking_json(self) -> None:
+        raw = '{"status":"ok","pt_key":"abcdefghijklmnopqrstuvwxyz123456","count":2}'
+        clean, status = sanitize_timeline_value(raw)
+        self.assertEqual(status, ProjectionStatus.SKIPPED_UNSAFE)
+        parsed = json.loads(clean)
+        self.assertEqual(parsed["status"], "ok")
+        self.assertEqual(parsed["pt_key"], "[secret value omitted]")
+        self.assertEqual(parsed["count"], 2)
+
+    def test_openai_tool_arguments_remain_valid_json_when_a_secret_field_is_redacted(self) -> None:
+        original = '{"api_key":"sk-abcdefghijklmnopqrstuvwxyz","path":"/opt/akane/project"}'
+        clean, status = sanitize_projection_payload(
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call-secret",
+                        "type": "function",
+                        "function": {"name": "exec", "arguments": original},
+                    }
+                ],
+            },
+            provider_profile=OPENAI_PROFILE,
+        )
+        self.assertEqual(status, ProjectionStatus.SKIPPED_UNSAFE)
+        arguments = clean["tool_calls"][0]["function"]["arguments"]
+        parsed = json.loads(arguments)
+        self.assertEqual(parsed["api_key"], "[secret value omitted]")
+        self.assertEqual(parsed["path"], "/opt/akane/project")
+
+    def test_open_turn_projections_keep_auth_related_source_code_visible(self) -> None:
+        source = "token = response.json()\nheaders = {'Authorization': token}\nprint(headers)"
+        handle = self.mem.begin_turn(
+            stimuli=[_stimulus("inspect auth code", source_id="auth-user")],
+            turn_id="auth-open-turn",
+        )
+        self.mem.append_entry(
+            _action("auth-call", source_id="auth-action", name="exec_run", arguments={"command": "cat login.py"}),
+            turn_id=handle.turn_id,
+        )
+        self.mem.append_entry(
+            _observation("auth-call", source_id="auth-result", text=source),
+            turn_id=handle.turn_id,
+        )
+        for profile in (OPENAI_PROFILE, DEEPSEEK_PROFILE, OPENAI_RESPONSES_PROFILE, ANTHROPIC_PROFILE):
+            with self.subTest(profile=profile):
+                projection = self.mem.build_context_projection(provider_profile=profile)
+                if profile in {OPENAI_PROFILE, DEEPSEEK_PROFILE}:
+                    result = next(payload for payload in projection.payloads if payload.get("role") == "tool")
+                    visible = result["content"]
+                elif profile == OPENAI_RESPONSES_PROFILE:
+                    result = next(
+                        payload for payload in projection.payloads if payload.get("type") == "function_call_output"
+                    )
+                    visible = result["output"]
+                else:
+                    result = next(
+                        block
+                        for payload in projection.payloads
+                        for block in payload.get("content", [])
+                        if isinstance(block, Mapping) and block.get("type") == "tool_result"
+                    )
+                    visible = result["content"]
+                self.assertEqual(visible, source)
+
     def test_secrets_still_removed(self) -> None:
         for raw, expected in (
-            ({"api_key": "sk-abc12345678901234567890"}, "[secret omitted"),
-            ("Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0", "[secret omitted"),
+            ({"api_key": "sk-abc12345678901234567890"}, "[secret value omitted]"),
+            (
+                "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0",
+                "[secret value omitted]",
+            ),
         ):
             clean, status = sanitize_timeline_value(raw)
             self.assertEqual(status, ProjectionStatus.SKIPPED_UNSAFE)
@@ -450,7 +546,7 @@ class LegacyPathProjectionMigrationTests(PathEvidenceBase):
         self.assertEqual(report["preserved_without_raw_source"], 0)
 
         row = dict(self.store._conn.execute("SELECT * FROM prompt_projections WHERE projection_id = ?", ("legacy-proj",)).fetchone())
-        self.assertEqual(int(row["projection_version"]), 3)
+        self.assertEqual(int(row["projection_version"]), PROJECTION_VERSION)
         restored = json.loads(row["payload_json"])["tool_calls"][0]["function"]["arguments"]
         self.assertEqual(json.loads(restored)["command"], WINDOWS_PATH_COMMAND)
         self.assertNotIn("local path omitted", restored)
@@ -931,7 +1027,7 @@ class LegacyPathProjectionMigrationTests(PathEvidenceBase):
                     "SELECT * FROM prompt_projections WHERE projection_id = ?", ("restart-proj",)
                 ).fetchone()
             )
-            self.assertEqual(int(row["projection_version"]), 3)
+            self.assertEqual(int(row["projection_version"]), PROJECTION_VERSION)
             reopened_mem.close()
             reopened_store.close()
 

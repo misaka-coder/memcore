@@ -209,7 +209,7 @@ class TimelineReadViews(unittest.TestCase):
         self.assertEqual(result["coverage"]["next_cursor"], "")
         self.assertEqual(result["coverage"]["entry_count"], 5)
 
-    def test_read_entry_is_current_conversation_only_and_sanitizes_model_visible_data(self) -> None:
+    def test_read_entry_is_scoped_redacts_secret_value_and_keeps_executable_path(self) -> None:
         self.mem.record_user_turn(
             "凭据 sk-abcdefghijklmnopqrstuvwxyz 和 C:\\Users\\alice\\secret.txt",
             timestamp=_ts(11),
@@ -222,7 +222,8 @@ class TimelineReadViews(unittest.TestCase):
 
         self.assertEqual(own["status"], "ok")
         self.assertNotIn("sk-abcdefghijklmnopqrstuvwxyz", own["text"])
-        self.assertNotIn("C:\\Users\\alice", own["text"])
+        self.assertIn("[secret value omitted]", own["text"])
+        self.assertIn("C:\\Users\\alice\\secret.txt", own["text"])
         self.assertEqual(out_of_scope["status"], "empty")
         self.assertEqual(out_of_scope["reason"], "entry_not_found_or_out_of_scope")
 
