@@ -319,6 +319,10 @@ memcore 是**纯机制**:它不含任何具体人格、领域调教或模型权�
 `open_memory(memory_id|memory_ids, ...)` 构成终局工具结果的投影、观测和回读闭环；
 精确契约见
 [`docs/operation_projection_settlement_v1.md`](docs/operation_projection_settlement_v1.md)。
+需要在开放工具轮中只刷新当前 turn 的宿主可调用
+`build_open_turn_projection(turn_id=..., provider_profile=...)`；它只接受当前命名空间
+拥有且仍为 open 的 turn，不含其它历史或摘要，也不替代完整请求使用的
+`build_context_projection()`。
 
 ## 跑测试
 

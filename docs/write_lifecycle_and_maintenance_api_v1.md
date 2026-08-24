@@ -294,6 +294,14 @@ provider-visible message projection for the current conversation. The result
 includes message payloads, stable prefix hash, per-entry hashes, projection and
 compaction generations, and `has_compact_history`.
 
+`build_open_turn_projection(turn_id=..., provider_profile=...)` is the focused
+host adapter for refreshing one active native tool loop after appending a tool
+batch. It accepts only a turn owned by the current conversation namespace whose
+status is still `open`; it returns that turn's prompt-visible provider messages
+without scanning compact summaries or other turns. It is an optimization of
+active-turn reconstruction, not a second history surface: every complete model
+request must still use `build_context_projection()` or `build_context_surface()`.
+
 When the host's actual wire messages differ from MemCore's standard adapter,
 call `record_request_projection(...)` before sending the request. The declared
 turn suffix must byte-canonically match the actual history suffix; missing

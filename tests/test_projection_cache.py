@@ -635,6 +635,71 @@ class ProviderAdapterTests(ProjectionBase):
         self.assertEqual(next_turn.payloads[-1]["role"], "user")
         self.assertIn("普通下一问", next_turn.payloads[-1]["content"])
 
+    def test_open_turn_projection_matches_full_projection_suffix_without_other_history(self) -> None:
+        first = self.mem.begin_turn(
+            stimuli=[_stimulus("旧问题", source_id="focused-old-user")],
+            turn_id="focused-old-turn",
+        )
+        self.mem.complete_turn(
+            turn_id=first.turn_id,
+            semantic_text="旧答案",
+            provider_output_raw='{"speech":"旧答案"}',
+            memory_annotation={},
+            annotation_status="accepted",
+            source_id="focused-old-final",
+        )
+        current = self.mem.begin_turn(
+            stimuli=[_stimulus("继续查", source_id="focused-current-user")],
+            turn_id="focused-current-turn",
+        )
+        self.mem.append_entry(
+            _action("focused-call", source_id="focused-action"),
+            turn_id=current.turn_id,
+        )
+        self.mem.append_entry(
+            _observation("focused-call", source_id="focused-result", text="真实结果"),
+            turn_id=current.turn_id,
+        )
+
+        full = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)
+        focused = self.mem.build_open_turn_projection(
+            turn_id=current.turn_id,
+            provider_profile=OPENAI_PROFILE,
+        )
+
+        full_current = tuple(message.payload for message in full.messages if message.turn_id == current.turn_id)
+        self.assertEqual(focused.payloads, full_current)
+        self.assertEqual(
+            [message.turn_id for message in focused.messages],
+            [current.turn_id] * len(focused.messages),
+        )
+        self.assertNotIn("旧答案", str(focused.payloads))
+        self.assertFalse(focused.has_compact_history)
+
+    def test_open_turn_projection_rejects_closed_and_missing_turns(self) -> None:
+        closed = self.mem.begin_turn(
+            stimuli=[_stimulus("关闭", source_id="focused-closed-user")],
+            turn_id="focused-closed-turn",
+        )
+        self.mem.complete_turn(
+            turn_id=closed.turn_id,
+            semantic_text="完成",
+            provider_output_raw='{"speech":"完成"}',
+            memory_annotation={},
+            annotation_status="accepted",
+            source_id="focused-closed-final",
+        )
+        with self.assertRaisesRegex(SchemaError, "open_turn_projection_turn_not_open"):
+            self.mem.build_open_turn_projection(
+                turn_id=closed.turn_id,
+                provider_profile=OPENAI_PROFILE,
+            )
+        with self.assertRaisesRegex(SchemaError, "open_turn_projection_turn_not_found"):
+            self.mem.build_open_turn_projection(
+                turn_id="missing-turn",
+                provider_profile=OPENAI_PROFILE,
+            )
+
 
 class PrefixAndLedgerTests(ProjectionBase):
     def test_non_native_json_or_tag_protocol_can_freeze_its_actual_history(self) -> None:

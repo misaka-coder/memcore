@@ -703,6 +703,69 @@ class MemorySystem:
             has_compact_history=any(message.projection_status is ProjectionStatus.SETTLED for message in messages),
         )
 
+    def build_open_turn_projection(
+        self,
+        *,
+        turn_id: str,
+        provider_profile: str,
+    ) -> ContextProjection:
+        """Build the provider projection for one owned open turn only.
+
+        This focused facade is for hosts that need to refresh an active native
+        tool loop after appending a batch. It does not include compact memory
+        records or any other turn, and it never replaces
+        :meth:`build_context_projection` as the authoritative full-history
+        request builder.
+        """
+
+        normalized_turn_id = str(turn_id or "").strip()
+        if not normalized_turn_id:
+            raise SchemaError("open_turn_projection_turn_id_required")
+        profile = normalize_provider_profile(provider_profile)
+        try:
+            handle = self.store.get_turn(
+                namespace=self.namespace,
+                turn_id=normalized_turn_id,
+            )
+            if handle is None:
+                raise SchemaError("open_turn_projection_turn_not_found")
+            if handle.status != TurnStatus.OPEN:
+                raise SchemaError("open_turn_projection_turn_not_open")
+            entries = [
+                entry
+                for entry in self.store.get_turn_entries(
+                    namespace=self.namespace,
+                    turn_id=normalized_turn_id,
+                )
+                if entry.prompt_visible
+            ]
+            compaction_generation, projection_generation = self.store.get_conversation_generations(
+                namespace=self.namespace
+            )
+        except NotImplementedError as exc:
+            raise SchemaError("store_timeline_v2_unsupported") from exc
+
+        messages = list(
+            provider_safe_projection_messages(
+                self._freeze_turn_projection(
+                    turn_id=normalized_turn_id,
+                    entries=entries,
+                    provider_profile=profile,
+                ),
+                provider_profile=profile,
+            )
+        )
+        return ContextProjection(
+            provider_profile=profile,
+            messages=tuple(messages),
+            projection_version=max((message.projection_version for message in messages), default=1),
+            stable_prefix_hash=stable_projection_hash([message.payload for message in messages]),
+            entry_projection_hashes=build_entry_projection_hashes(messages),
+            compaction_generation=compaction_generation,
+            projection_generation=projection_generation,
+            has_compact_history=False,
+        )
+
     def build_context_surface(
         self,
         *,
