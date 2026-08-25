@@ -72,6 +72,11 @@ LATEST_SCHEMA_STATEMENTS = (
     ON messages(tenant_id, user_id, domain_id, conversation_id, seq_no)
     """,
     """
+    CREATE INDEX IF NOT EXISTS idx_messages_prompt_visible_scope_seq
+    ON messages(tenant_id, user_id, domain_id, conversation_id, seq_no)
+    WHERE is_summarized = 0 AND prompt_visible = 1
+    """,
+    """
     CREATE INDEX IF NOT EXISTS idx_messages_scope_turn
     ON messages(tenant_id, user_id, domain_id, conversation_id, turn_id, seq_no)
     """,

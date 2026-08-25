@@ -64,7 +64,7 @@ from ..timeline import (
     TurnStatus,
     resolve_retrieval_visibility,
 )
-from .base import LineageClosure, MemoryStore, RawTurnWindow
+from .base import ContextProjectionRows, LineageClosure, MemoryStore, RawTurnWindow
 from .migrations import migrate_database, project_legacy_role
 
 _JSON_FIELDS = {
@@ -2517,6 +2517,105 @@ class SQLiteMemoryStore(MemoryStore):
                 [*params, normalized_turn, normalized_profile],
             ).fetchall()
         return [ProjectionMessage.from_record(self._row_to_record(row, "prompt_projections")) for row in rows]
+
+    def get_context_projection_rows(
+        self,
+        *,
+        namespace: Namespace,
+        turn_ids: tuple[str, ...],
+        provider_profile: str,
+    ) -> ContextProjectionRows:
+        """Read all projection-ledger rows needed by one context build.
+
+        The scalar facade used to issue two queries for nearly every visible
+        turn.  A context build already knows its complete turn-id set, so read
+        the same rows in bounded ``IN`` batches while holding the store lock.
+        """
+
+        normalized_turn_ids = tuple(
+            dict.fromkeys(str(turn_id or "").strip() for turn_id in turn_ids if str(turn_id or "").strip())
+        )
+        profile = str(provider_profile or "").strip().lower()
+        if not normalized_turn_ids or not profile:
+            return ContextProjectionRows({}, {}, {})
+
+        scope_clause, scope_params = self._scope_clause(namespace, with_conversation=True)
+        projection_rows: list[sqlite3.Row] = []
+        settlement_rows: list[sqlite3.Row] = []
+        # Keep well below SQLite's traditional 999-variable ceiling after
+        # namespace/profile parameters are included.
+        chunk_size = 400
+        with self._lock:
+            for offset in range(0, len(normalized_turn_ids), chunk_size):
+                chunk = normalized_turn_ids[offset : offset + chunk_size]
+                placeholders = ",".join("?" for _ in chunk)
+                projection_rows.extend(
+                    self._conn.execute(
+                        f"""
+                        SELECT * FROM prompt_projections
+                        WHERE {scope_clause} AND provider_profile = ?
+                          AND turn_id IN ({placeholders})
+                        ORDER BY turn_id, projection_index
+                        """,
+                        [*scope_params, profile, *chunk],
+                    ).fetchall()
+                )
+                settlement_rows.extend(
+                    self._conn.execute(
+                        f"""
+                        SELECT * FROM turn_projection_settlement
+                        WHERE {scope_clause} AND provider_profile = ?
+                          AND turn_id IN ({placeholders})
+                        ORDER BY turn_id
+                        """,
+                        [*scope_params, profile, *chunk],
+                    ).fetchall()
+                )
+
+            settlement_ids = tuple(
+                f"{str(row['turn_id'] or '')}:{profile}"
+                for row in settlement_rows
+                if str(row["settlement_status"] or "") == "settled" and str(row["turn_id"] or "")
+            )
+            settled_rows: list[sqlite3.Row] = []
+            for offset in range(0, len(settlement_ids), chunk_size):
+                chunk = settlement_ids[offset : offset + chunk_size]
+                placeholders = ",".join("?" for _ in chunk)
+                settled_rows.extend(
+                    self._conn.execute(
+                        f"""
+                        SELECT * FROM settled_prompt_projection
+                        WHERE settlement_id IN ({placeholders})
+                        ORDER BY settlement_id, projection_index
+                        """,
+                        list(chunk),
+                    ).fetchall()
+                )
+
+        projections_by_turn: dict[str, list[ProjectionMessage]] = {}
+        for row in projection_rows:
+            message = ProjectionMessage.from_record(self._row_to_record(row, "prompt_projections"))
+            projections_by_turn.setdefault(str(message.turn_id or ""), []).append(message)
+        settlements_by_turn = {
+            str(row["turn_id"] or ""): dict(row)
+            for row in settlement_rows
+            if str(row["turn_id"] or "")
+        }
+        settlement_turns = {
+            f"{str(row['turn_id'] or '')}:{profile}": str(row["turn_id"] or "")
+            for row in settlement_rows
+            if str(row["turn_id"] or "")
+        }
+        settled_rows_by_turn: dict[str, list[dict[str, Any]]] = {}
+        for row in settled_rows:
+            turn_id = settlement_turns.get(str(row["settlement_id"] or ""), "")
+            if turn_id:
+                settled_rows_by_turn.setdefault(turn_id, []).append(dict(row))
+        return ContextProjectionRows(
+            projections_by_turn={key: tuple(value) for key, value in projections_by_turn.items()},
+            settlements_by_turn=settlements_by_turn,
+            settled_rows_by_turn={key: tuple(value) for key, value in settled_rows_by_turn.items()},
+        )
 
     def list_projection_audits(
         self,

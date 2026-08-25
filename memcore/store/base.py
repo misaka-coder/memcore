@@ -69,6 +69,20 @@ class RawTurnWindow:
     reason: str = ""
 
 
+@dataclass(frozen=True)
+class ContextProjectionRows:
+    """One namespace-scoped batch of rows needed to rebuild provider history.
+
+    Stores may leave this facade unsupported; ``MemorySystem`` keeps the
+    existing per-turn read path as a compatibility fallback.  Implementations
+    must preserve the same row ordering as the corresponding scalar methods.
+    """
+
+    projections_by_turn: dict[str, tuple[ProjectionMessage, ...]]
+    settlements_by_turn: dict[str, dict[str, Any]]
+    settled_rows_by_turn: dict[str, tuple[dict[str, Any], ...]]
+
+
 class MemoryStore(ABC):
     def runtime_identity(self) -> str:
         """Safe process-local identity; must never expose a database path."""
@@ -322,6 +336,17 @@ class MemoryStore(ABC):
         turn_id: str,
         provider_profile: str,
     ) -> list[ProjectionMessage]:
+        raise NotImplementedError
+
+    def get_context_projection_rows(
+        self,
+        *,
+        namespace: Namespace,
+        turn_ids: tuple[str, ...],
+        provider_profile: str,
+    ) -> ContextProjectionRows:
+        """Batch-read frozen/full and settled projection rows for visible turns."""
+
         raise NotImplementedError
 
     def migrate_legacy_path_projections(

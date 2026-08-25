@@ -633,6 +633,21 @@ class MemorySystem:
     def build_context_projection(self, *, provider_profile: str) -> ContextProjection:
         """Build and freeze this conversation's provider-visible append-only history."""
 
+        projection, _entries = self._build_context_projection_with_entries(provider_profile=provider_profile)
+        return projection
+
+    def _build_context_projection_with_entries(
+        self,
+        *,
+        provider_profile: str,
+    ) -> tuple[ContextProjection, list[TimelineEntry]]:
+        """Build one projection and return the exact entries used by it.
+
+        ``ContextSurface`` needs both products.  Returning the owned snapshot
+        avoids re-reading and re-decoding every visible timeline row after the
+        projection has already been built.
+        """
+
         profile = normalize_provider_profile(provider_profile)
         try:
             episodic = self.store.get_visible_episodic_summaries(
@@ -654,7 +669,7 @@ class MemorySystem:
             group_id = entry.turn_id or f"legacy.{stable_projection_hash({'source_id': entry.source_id})}"
             grouped.setdefault(group_id, []).append(entry)
 
-        messages: list[ProjectionMessage] = []
+        memory_records: list[tuple[dict[str, Any], str, str, str]] = []
         for record, id_key, prefix in (
             *((item, "semantic_id", "semantic") for item in reversed(semantic)),
             *(
@@ -663,12 +678,39 @@ class MemorySystem:
                 if str(item.get("retrieval_visibility") or "default") == "default"
             ),
         ):
+            source_id = str(record.get(id_key) or "").strip()
+            turn_id = self._projection_ledger.memory_turn_id(
+                source_id=source_id,
+                id_key=id_key,
+                turn_prefix=prefix,
+            )
+            memory_records.append((record, id_key, prefix, turn_id))
+
+        projection_rows = None
+        batch_reader = getattr(self.store, "get_context_projection_rows", None)
+        if callable(batch_reader):
+            try:
+                projection_rows = batch_reader(
+                    namespace=self.namespace,
+                    turn_ids=tuple((*[item[3] for item in memory_records], *grouped.keys())),
+                    provider_profile=profile,
+                )
+            except NotImplementedError:
+                projection_rows = None
+
+        messages: list[ProjectionMessage] = []
+        for record, id_key, prefix, turn_id in memory_records:
             messages.extend(
                 self._freeze_memory_record_projection(
                     record=record,
                     id_key=id_key,
                     turn_prefix=prefix,
                     provider_profile=profile,
+                    saved_projections=(
+                        projection_rows.projections_by_turn.get(turn_id, ())
+                        if projection_rows is not None
+                        else None
+                    ),
                 )
             )
         for turn_id, turn_entries in grouped.items():
@@ -677,6 +719,22 @@ class MemorySystem:
                     turn_id=turn_id,
                     entries=turn_entries,
                     provider_profile=profile,
+                    saved_projections=(
+                        projection_rows.projections_by_turn.get(turn_id, ())
+                        if projection_rows is not None
+                        else None
+                    ),
+                    settlement=(
+                        projection_rows.settlements_by_turn.get(turn_id)
+                        if projection_rows is not None
+                        else None
+                    ),
+                    settled_rows=(
+                        projection_rows.settled_rows_by_turn.get(turn_id, ())
+                        if projection_rows is not None
+                        else None
+                    ),
+                    rows_preloaded=projection_rows is not None,
                 )
             )
 
@@ -692,7 +750,7 @@ class MemorySystem:
                 provider_profile=profile,
             )
         )
-        return ContextProjection(
+        projection = ContextProjection(
             provider_profile=profile,
             messages=tuple(messages),
             projection_version=max((message.projection_version for message in messages), default=1),
@@ -702,6 +760,7 @@ class MemorySystem:
             projection_generation=projection_generation,
             has_compact_history=any(message.projection_status is ProjectionStatus.SETTLED for message in messages),
         )
+        return projection, entries
 
     def build_open_turn_projection(
         self,
@@ -782,14 +841,9 @@ class MemorySystem:
         """
 
         del session_id
-        projection = self.build_context_projection(provider_profile=provider_profile)
+        projection, visible_entries = self._build_context_projection_with_entries(provider_profile=provider_profile)
         current_id = str(current_source_id or "").strip()
-        try:
-            entries_by_source_id = {
-                entry.source_id: entry for entry in self.store.list_prompt_visible_entries(namespace=self.namespace)
-            }
-        except NotImplementedError as exc:
-            raise SchemaError("store_timeline_v2_unsupported") from exc
+        entries_by_source_id = {entry.source_id: entry for entry in visible_entries}
 
         def _surface_payload(message: ProjectionMessage) -> dict[str, Any]:
             if message.projection_status in {ProjectionStatus.REQUEST_FROZEN, ProjectionStatus.SETTLED}:
@@ -971,15 +1025,26 @@ class MemorySystem:
         turn_id: str,
         entries: list[TimelineEntry],
         provider_profile: str,
+        saved_projections: Sequence[ProjectionMessage] | None = None,
+        settlement: Mapping[str, Any] | None = None,
+        settled_rows: Sequence[Mapping[str, Any]] | None = None,
+        rows_preloaded: bool = False,
     ) -> list[ProjectionMessage]:
-        from .settlement import load_settled_projection
+        from .settlement import load_settled_projection, settled_rows_to_messages
 
-        settled = load_settled_projection(
-            self.store,
-            namespace=self.namespace,
-            turn_id=turn_id,
-            provider_profile=provider_profile,
-        )
+        if rows_preloaded:
+            settled = None
+            if settlement and str(settlement.get("settlement_status") or "") == "settled":
+                if not settled_rows:
+                    raise SchemaError("settled_projection_rows_missing")
+                settled = settled_rows_to_messages(settlement, settled_rows)
+        else:
+            settled = load_settled_projection(
+                self.store,
+                namespace=self.namespace,
+                turn_id=turn_id,
+                provider_profile=provider_profile,
+            )
         if settled is not None:
             return settled
         try:
@@ -988,6 +1053,7 @@ class MemorySystem:
                 turn_id=turn_id,
                 entries=entries,
                 provider_profile=provider_profile,
+                saved_projections=saved_projections,
             )
         except NotImplementedError as exc:
             raise SchemaError("store_timeline_v2_unsupported") from exc
@@ -999,6 +1065,7 @@ class MemorySystem:
         id_key: str,
         turn_prefix: str,
         provider_profile: str,
+        saved_projections: Sequence[ProjectionMessage] | None = None,
     ) -> list[ProjectionMessage]:
         try:
             return self._projection_ledger.freeze_memory_record(
@@ -1007,6 +1074,7 @@ class MemorySystem:
                 id_key=id_key,
                 turn_prefix=turn_prefix,
                 provider_profile=provider_profile,
+                saved_projections=saved_projections,
             )
         except NotImplementedError as exc:
             raise SchemaError("store_timeline_v2_unsupported") from exc

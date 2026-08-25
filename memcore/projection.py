@@ -1553,12 +1553,17 @@ class ProjectionLedger:
         turn_id: str,
         entries: Sequence[TimelineEntry],
         provider_profile: str,
+        saved_projections: Sequence[ProjectionMessage] | None = None,
     ) -> list[ProjectionMessage]:
         profile = _validated_profile(provider_profile)
-        saved = self.store.get_turn_projections(
-            namespace=namespace,
-            turn_id=turn_id,
-            provider_profile=profile,
+        saved = (
+            list(saved_projections)
+            if saved_projections is not None
+            else self.store.get_turn_projections(
+                namespace=namespace,
+                turn_id=turn_id,
+                provider_profile=profile,
+            )
         )
         visible_entries = [entry for entry in entries if entry.prompt_visible]
         covered = tuple(source_id for message in saved for source_id in message.source_ids)
@@ -1575,16 +1580,12 @@ class ProjectionLedger:
                     start_index=start_index,
                 )
             )
-            self.store.save_turn_projections(
+            appended = self.store.save_turn_projections(
                 namespace=namespace,
                 turn_id=turn_id,
                 projections=generated,
             )
-            saved = self.store.get_turn_projections(
-                namespace=namespace,
-                turn_id=turn_id,
-                provider_profile=profile,
-            )
+            saved.extend(appended)
         return saved
 
     def freeze_memory_record(
@@ -1595,16 +1596,21 @@ class ProjectionLedger:
         id_key: str,
         turn_prefix: str,
         provider_profile: str,
+        saved_projections: Sequence[ProjectionMessage] | None = None,
     ) -> list[ProjectionMessage]:
         profile = _validated_profile(provider_profile)
         source_id = str(record.get(id_key) or "").strip()
         if not source_id:
             raise SchemaError("projection_memory_source_id_required")
         turn_id = self.memory_turn_id(source_id=source_id, id_key=id_key, turn_prefix=turn_prefix)
-        saved = self.store.get_turn_projections(
-            namespace=namespace,
-            turn_id=turn_id,
-            provider_profile=profile,
+        saved = (
+            list(saved_projections)
+            if saved_projections is not None
+            else self.store.get_turn_projections(
+                namespace=namespace,
+                turn_id=turn_id,
+                provider_profile=profile,
+            )
         )
         if saved:
             return saved
@@ -1614,16 +1620,12 @@ class ProjectionLedger:
             source_id=source_id,
             enable_flavor=self.enable_flavor,
         )
-        self.store.save_turn_projections(
+        stored = self.store.save_turn_projections(
             namespace=namespace,
             turn_id=turn_id,
             projections=[generated],
         )
-        return self.store.get_turn_projections(
-            namespace=namespace,
-            turn_id=turn_id,
-            provider_profile=profile,
-        )
+        return list(stored)
 
     @staticmethod
     def memory_turn_id(*, source_id: str, id_key: str, turn_prefix: str) -> str:

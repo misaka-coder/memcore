@@ -103,6 +103,111 @@ class ContextContractTests(unittest.TestCase):
             ).projection_hash,
         )
 
+    def test_surface_reads_visible_entries_once_and_uses_projection_batch(self) -> None:
+        for index in range(3):
+            handle = self.mem.begin_turn(
+                stimuli=[
+                    TimelineEntryInput(
+                        source_id=f"batch-user-{index}",
+                        kind="message.user",
+                        origin=EntryOrigin.USER,
+                        turn_role=TurnRole.STIMULUS,
+                        semantic_text=f"hello-{index}",
+                        payload={"text": f"hello-{index}"},
+                    )
+                ],
+                turn_id=f"batch-turn-{index}",
+            )
+            self.mem.complete_turn(
+                turn_id=handle.turn_id,
+                semantic_text=f"reply-{index}",
+                provider_output_raw=f"reply-{index}",
+                timestamp=1_724_000_000 + index,
+            )
+        # Freeze the rows once; the measured rebuild must only read them.
+        self.mem.build_context_surface(
+            provider_profile=OPENAI_PROFILE,
+            current_source_id="batch-user-2",
+        )
+
+        with (
+            patch.object(
+                self.store,
+                "list_prompt_visible_entries",
+                wraps=self.store.list_prompt_visible_entries,
+            ) as visible_read,
+            patch.object(
+                self.store,
+                "get_context_projection_rows",
+                wraps=self.store.get_context_projection_rows,
+            ) as batch_read,
+            patch.object(
+                self.store,
+                "get_turn_projections",
+                side_effect=AssertionError("scalar projection read must not run"),
+            ),
+            patch.object(
+                self.store,
+                "get_turn_projection_settlement",
+                side_effect=AssertionError("scalar settlement read must not run"),
+            ),
+        ):
+            surface = self.mem.build_context_surface(
+                provider_profile=OPENAI_PROFILE,
+                current_source_id="batch-user-2",
+            )
+
+        self.assertTrue(surface.projection_hash)
+        self.assertEqual(visible_read.call_count, 1)
+        self.assertEqual(batch_read.call_count, 1)
+
+    def test_projection_batch_fallback_is_byte_equivalent(self) -> None:
+        handle = self.mem.begin_turn(
+            stimuli=[
+                TimelineEntryInput(
+                    source_id="fallback-user",
+                    kind="message.user",
+                    origin=EntryOrigin.USER,
+                    turn_role=TurnRole.STIMULUS,
+                    semantic_text="hello",
+                    payload={"text": "hello"},
+                )
+            ],
+            turn_id="fallback-turn",
+        )
+        self.mem.complete_turn(
+            turn_id=handle.turn_id,
+            semantic_text="reply",
+            provider_output_raw="reply",
+            timestamp=1_724_000_000,
+        )
+        batched = self.mem.build_context_surface(
+            provider_profile=OPENAI_PROFILE,
+            current_source_id="fallback-user",
+        )
+        with patch.object(self.store, "get_context_projection_rows", side_effect=NotImplementedError):
+            fallback = self.mem.build_context_surface(
+                provider_profile=OPENAI_PROFILE,
+                current_source_id="fallback-user",
+            )
+        self.assertEqual(fallback.as_dict(), batched.as_dict())
+
+    def test_prompt_visible_query_uses_partial_scope_index(self) -> None:
+        plan = self.store._conn.execute(
+            """
+            EXPLAIN QUERY PLAN
+            SELECT * FROM messages
+            WHERE tenant_id = ? AND user_id = ? AND domain_id = ? AND conversation_id = ?
+              AND is_summarized = 0 AND prompt_visible = 1
+            ORDER BY seq_no
+            """,
+            ("t", "u", "d", "c"),
+        ).fetchall()
+        self.assertIn(
+            "idx_messages_prompt_visible_scope_seq",
+            " ".join(str(column) for row in plan for column in row),
+        )
+
     def test_event_profile_is_not_downgraded_to_context_inject(self) -> None:
         self.mem.begin_turn(
             stimuli=[
