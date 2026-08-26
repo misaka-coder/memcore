@@ -239,6 +239,48 @@ class MemorySystem:
             raise SchemaError("store_timeline_v2_unsupported") from exc
         return self._refresh_turn_handle_after_index(handle)
 
+    def begin_turn_from_existing_sources(
+        self,
+        *,
+        stimulus_source_ids: list[str],
+        annotation_target_ids: list[str] | None = None,
+        turn_id: str = "",
+        opened_at: int | None = None,
+    ) -> TurnHandle:
+        """Open a model-response turn around existing standalone facts/events.
+
+        This preserves the original sequence, timestamp, actor, content and
+        source IDs.  It is intended for delayed/ambient response decisions
+        where the real stimulus was already appended to the timeline and must
+        not be copied into a synthetic second message.
+        """
+
+        source_ids = [str(item or "").strip() for item in stimulus_source_ids]
+        if not source_ids or any(not item for item in source_ids):
+            raise SchemaError("turn_stimulus_source_id_required")
+        if len(set(source_ids)) != len(source_ids):
+            raise SchemaError("turn_duplicate_stimulus_source_id")
+        targets = (
+            source_ids
+            if annotation_target_ids is None
+            else [str(item or "").strip() for item in annotation_target_ids]
+        )
+        now = int(opened_at or time.time())
+        try:
+            handle = self.store.begin_turn_from_existing_sources(
+                namespace=self.namespace,
+                stimulus_source_ids=source_ids,
+                annotation_target_ids=targets,
+                turn_id=turn_id,
+                opened_at=now,
+                operation_projection_policy=self.config.operation_projection_policy,
+                operation_settlement_min_utf8_bytes=self.config.operation_settlement_min_utf8_bytes,
+                operation_settlement_min_saved_ratio=self.config.operation_settlement_min_saved_ratio,
+            )
+        except NotImplementedError as exc:
+            raise SchemaError("store_existing_stimulus_turn_unsupported") from exc
+        return self._refresh_turn_handle_after_index(handle)
+
     def append_entry(self, entry: TimelineEntryInput, *, turn_id: str = "") -> TimelineEntry:
         """Append an intermediate/action/observation to an open V2 turn."""
 

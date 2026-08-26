@@ -328,6 +328,104 @@ class SQLiteMemoryStore(MemoryStore):
                 ),
             )
 
+    def begin_turn_from_existing_sources(
+        self,
+        *,
+        namespace: Namespace,
+        stimulus_source_ids: list[str],
+        annotation_target_ids: list[str],
+        turn_id: str = "",
+        opened_at: int = 0,
+        operation_projection_policy: str = "full_until_raw_compaction",
+        operation_settlement_min_utf8_bytes: int = 256,
+        operation_settlement_min_saved_ratio: float = 0.5,
+    ) -> TurnHandle:
+        if not stimulus_source_ids:
+            raise SchemaError("turn_stimulus_required")
+        source_ids = tuple(
+            self._normalize_relation_id(item, field="stimulus_source_id") for item in stimulus_source_ids
+        )
+        if len(set(source_ids)) != len(source_ids):
+            raise SchemaError("turn_duplicate_stimulus_source_id")
+        targets = tuple(
+            self._normalize_relation_id(item, field="annotation_target_id") for item in annotation_target_ids
+        )
+        if len(set(targets)) != len(targets):
+            raise SchemaError("turn_duplicate_annotation_target")
+        if not set(targets).issubset(source_ids):
+            raise SchemaError("turn_annotation_target_not_in_stimuli")
+
+        normalized_turn_id = self._normalize_relation_id(turn_id or uuid.uuid4().hex, field="turn_id")
+        opened = int(opened_at or time.time())
+        with self._lock, self._conn:
+            existing_turn = self._conn.execute(
+                "SELECT * FROM turns WHERE turn_id = ?", (normalized_turn_id,)
+            ).fetchone()
+            if existing_turn is not None:
+                self._assert_scope_owner(existing_turn, namespace, id_label=f"turn_id={normalized_turn_id!r}")
+                existing_stimuli = tuple(self._json_list(existing_turn["stimulus_source_ids_json"]))
+                existing_targets = tuple(self._json_list(existing_turn["annotation_target_ids_json"]))
+                if existing_stimuli != source_ids or existing_targets != targets:
+                    raise SchemaError("turn_idempotency_conflict")
+                return self._turn_handle_from_row(existing_turn)
+
+            for source_id in source_ids:
+                row = self._conn.execute(
+                    "SELECT * FROM messages WHERE source_id = ?", (source_id,)
+                ).fetchone()
+                if row is None:
+                    raise SchemaError("turn_existing_stimulus_not_found")
+                self._assert_scope_owner(row, namespace, id_label=f"source_id={source_id!r}")
+                if str(row["turn_id"] or "") or str(row["turn_role"] or ""):
+                    raise SchemaError("turn_existing_stimulus_already_linked")
+                if str(row["relation_status"] or "") != "standalone":
+                    raise SchemaError("turn_existing_stimulus_not_standalone")
+            self._conn.execute(
+                """
+                INSERT INTO turns(
+                    turn_id, tenant_id, user_id, domain_id, conversation_id, status,
+                    stimulus_source_ids_json, annotation_target_ids_json,
+                    opened_at, operation_projection_policy,
+                    operation_settlement_min_utf8_bytes, operation_settlement_min_saved_ratio,
+                    row_version
+                ) VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, 1)
+                """,
+                (
+                    normalized_turn_id,
+                    namespace.tenant_id or "",
+                    namespace.user_id,
+                    namespace.domain_id or "",
+                    namespace.conversation_id or "",
+                    _json_dumps(list(source_ids)),
+                    _json_dumps(list(targets)),
+                    opened,
+                    str(operation_projection_policy or "full_until_raw_compaction").strip(),
+                    int(operation_settlement_min_utf8_bytes or 256),
+                    float(
+                        operation_settlement_min_saved_ratio
+                        if operation_settlement_min_saved_ratio is not None
+                        else 0.5
+                    ),
+                ),
+            )
+            placeholders = ",".join("?" for _ in source_ids)
+            self._conn.execute(
+                f"""
+                UPDATE messages
+                SET turn_id = ?, turn_role = 'stimulus', relation_status = 'linked',
+                    row_version = row_version + 1
+                WHERE source_id IN ({placeholders})
+                """,
+                (normalized_turn_id, *source_ids),
+            )
+            self._ensure_conversation_state_locked(namespace=namespace, updated_at=opened)
+            turn = self._conn.execute(
+                "SELECT * FROM turns WHERE turn_id = ?", (normalized_turn_id,)
+            ).fetchone()
+            if turn is None:  # pragma: no cover - transaction invariant
+                raise SchemaError("turn_open_failed")
+            return self._turn_handle_from_row(turn)
+
     def append_entry(self, *, namespace: Namespace, entry: TimelineEntryInput) -> TimelineEntry:
         if not isinstance(entry, TimelineEntryInput):
             raise TypeError("entry must be a TimelineEntryInput")

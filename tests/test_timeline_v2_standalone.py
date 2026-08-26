@@ -16,6 +16,7 @@ from memcore import (
     MemoryConfig,
     MemorySystem,
     Namespace,
+    NamespaceError,
     RetrievalPolicy,
     RetrievalVisibility,
     SchemaError,
@@ -85,6 +86,100 @@ class TimelineV2StandaloneTests(unittest.TestCase):
                     payload={"text": "冲突内容"},
                     timestamp=1000,
                 )
+            )
+
+    def test_existing_standalone_entry_can_become_real_turn_stimulus_without_copy(self) -> None:
+        original = self.mem.append_standalone_entry(
+            TimelineEntryInput(
+                source_id="ambient-message",
+                kind="message.user",
+                origin=EntryOrigin.USER,
+                turn_role=None,
+                semantic_text="群友随后问起这条消息",
+                actor=Actor(stable_id="qq-2", display_name="群友"),
+                timestamp=1234,
+            )
+        )
+
+        opened = self.mem.begin_turn_from_existing_sources(
+            stimulus_source_ids=[original.source_id],
+            turn_id="ambient-response-turn",
+            opened_at=1300,
+        )
+        repeated = self.mem.begin_turn_from_existing_sources(
+            stimulus_source_ids=[original.source_id],
+            turn_id="ambient-response-turn",
+            opened_at=1400,
+        )
+
+        self.assertEqual(opened.turn_id, "ambient-response-turn")
+        self.assertEqual(repeated.turn_id, opened.turn_id)
+        self.assertEqual(len(self.store.list_prompt_visible_entries(namespace=self.mem.namespace)), 1)
+        linked = opened.stimuli[0]
+        self.assertEqual(linked.source_id, original.source_id)
+        self.assertEqual(linked.timestamp, 1234)
+        self.assertIsNotNone(linked.namespace.actor)
+        self.assertEqual(linked.namespace.actor.display_name, "群友")
+        self.assertEqual(linked.turn_role, TurnRole.STIMULUS)
+        self.assertEqual(linked.relation_status, "linked")
+
+        completed = self.mem.complete_turn(
+            turn_id=opened.turn_id,
+            semantic_text="我看到了。",
+            provider_output_raw='{"speech":"我看到了。"}',
+            annotation_status="missing",
+            source_id="ambient-response-final",
+            timestamp=1301,
+        )
+        self.assertTrue(completed.completed)
+        self.assertEqual(
+            [
+                entry.source_id
+                for entry in self.store.get_turn_entries(
+                    namespace=self.mem.namespace,
+                    turn_id=opened.turn_id,
+                )
+            ],
+            ["ambient-message", "ambient-response-final"],
+        )
+
+    def test_existing_stimulus_turn_rejects_cross_scope_and_already_linked_sources(self) -> None:
+        self.mem.append_standalone_entry(
+            TimelineEntryInput(
+                source_id="already-standalone",
+                kind="message.user",
+                origin=EntryOrigin.USER,
+                turn_role=None,
+                semantic_text="one",
+                timestamp=1500,
+            )
+        )
+        self.mem.begin_turn_from_existing_sources(
+            stimulus_source_ids=["already-standalone"],
+            turn_id="first-owner-turn",
+            opened_at=1501,
+        )
+        with self.assertRaisesRegex(SchemaError, "turn_existing_stimulus_already_linked"):
+            self.mem.begin_turn_from_existing_sources(
+                stimulus_source_ids=["already-standalone"],
+                turn_id="second-owner-turn",
+                opened_at=1502,
+            )
+
+        other = MemorySystem(
+            llm=NoopLLM(),
+            namespace=Namespace(user_id="other", conversation_id="other-c"),
+            timezone="Asia/Shanghai",
+            config=MemoryConfig(),
+            store=self.store,
+            index=self.mem.index,
+            embedding=self.mem.embedding,
+        )
+        with self.assertRaisesRegex(NamespaceError, "different namespace"):
+            other.begin_turn_from_existing_sources(
+                stimulus_source_ids=["already-standalone"],
+                turn_id="cross-scope-turn",
+                opened_at=1503,
             )
 
     def test_staged_metadata_stays_explicit_until_atomic_completion(self) -> None:

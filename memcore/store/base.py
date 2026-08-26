@@ -103,6 +103,26 @@ class MemoryStore(ABC):
     ) -> TurnHandle:
         raise NotImplementedError
 
+    def begin_turn_from_existing_sources(
+        self,
+        *,
+        namespace: Namespace,
+        stimulus_source_ids: list[str],
+        annotation_target_ids: list[str],
+        turn_id: str = "",
+        opened_at: int = 0,
+        operation_projection_policy: str = "full_until_raw_compaction",
+        operation_settlement_min_utf8_bytes: int = 256,
+        operation_settlement_min_saved_ratio: float = 0.5,
+    ) -> TurnHandle:
+        """Open a turn by linking existing standalone timeline entries.
+
+        Stores that do not implement this optional Timeline V2 primitive fail
+        explicitly instead of duplicating or fabricating stimulus entries.
+        """
+
+        raise NotImplementedError
+
     def append_entry(self, *, namespace: Namespace, entry: TimelineEntryInput) -> TimelineEntry:
         raise NotImplementedError
 
