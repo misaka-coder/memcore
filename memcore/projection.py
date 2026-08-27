@@ -229,11 +229,16 @@ def _sanitize_text(value: str) -> tuple[str, ProjectionStatus]:
     return text, ProjectionStatus.SKIPPED_UNSAFE if redacted else ProjectionStatus.COMPLETE
 
 
-def _sanitize_value(value: Any, *, key: str = "") -> tuple[Any, ProjectionStatus]:
+def _sanitize_value(
+    value: Any,
+    *,
+    key: str = "",
+    preserve_path_fields: bool = False,
+) -> tuple[Any, ProjectionStatus]:
     normalized_key = str(key or "")
     if _SECRET_FIELD.search(normalized_key):
         return _SECRET_MARKER, ProjectionStatus.SKIPPED_UNSAFE
-    if _LOCAL_PATH_FIELD.search(normalized_key):
+    if not preserve_path_fields and _LOCAL_PATH_FIELD.search(normalized_key):
         return _PATH_MARKER, ProjectionStatus.SKIPPED_UNSAFE
     if isinstance(value, (bytes, bytearray, memoryview)):
         return _MEDIA_MARKER, ProjectionStatus.MEDIA_OMITTED
@@ -245,7 +250,12 @@ def _sanitize_value(value: Any, *, key: str = "") -> tuple[Any, ProjectionStatus
         status = ProjectionStatus.COMPLETE
         for raw_key, item in sorted(value.items(), key=lambda pair: str(pair[0])):
             child_key = str(raw_key)
-            clean, child_status = _sanitize_value(item, key=child_key)
+            child_preserves_paths = preserve_path_fields or (raw_type == "tool_use" and child_key == "input")
+            clean, child_status = _sanitize_value(
+                item,
+                key=child_key,
+                preserve_path_fields=child_preserves_paths,
+            )
             result[child_key] = clean
             status = merge_projection_status(status, child_status)
         return result, status
@@ -253,7 +263,10 @@ def _sanitize_value(value: Any, *, key: str = "") -> tuple[Any, ProjectionStatus
         items: list[Any] = []
         status = ProjectionStatus.COMPLETE
         for item in value:
-            clean, child_status = _sanitize_value(item)
+            clean, child_status = _sanitize_value(
+                item,
+                preserve_path_fields=preserve_path_fields,
+            )
             items.append(clean)
             status = merge_projection_status(status, child_status)
         return items, status
@@ -270,7 +283,7 @@ def _sanitize_value(value: Any, *, key: str = "") -> tuple[Any, ProjectionStatus
             except (TypeError, ValueError, json.JSONDecodeError):
                 parsed = None
             if isinstance(parsed, Mapping):
-                clean, status = _sanitize_value(parsed)
+                clean, status = _sanitize_value(parsed, preserve_path_fields=True)
                 if status is ProjectionStatus.COMPLETE:
                     return _CONTROL_CHARS.sub(" ", value), status
                 return json.dumps(clean, ensure_ascii=False, sort_keys=True, separators=(",", ":")), status

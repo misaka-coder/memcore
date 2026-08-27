@@ -191,6 +191,43 @@ class PathEvidencePreservationTests(PathEvidenceBase):
         self.assertIsInstance(parsed, dict)
         self.assertEqual(parsed["cwd"], r"C:\Users\Public")
 
+    def test_explicit_path_named_tool_arguments_remain_executable(self) -> None:
+        arguments = {
+            "local_path": r"C:\Users\Public\Documents\STATE.md",
+            "absolute_path": "/srv/akane/workspace/STATE.md",
+            "api_key": "secret-value-that-must-not-survive",
+        }
+
+        payload = self._openai_tool_call_projection(arguments)
+        parsed = json.loads(payload["tool_calls"][0]["function"]["arguments"])
+
+        self.assertEqual(parsed["local_path"], arguments["local_path"])
+        self.assertEqual(parsed["absolute_path"], arguments["absolute_path"])
+        self.assertEqual(parsed["api_key"], "[secret value omitted]")
+
+    def test_anthropic_tool_input_preserves_path_named_arguments(self) -> None:
+        payload, status = sanitize_projection_payload(
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "call-path-input",
+                        "name": "workspace_write",
+                        "input": {
+                            "local_path": r"C:\Users\Public\Documents\STATE.md",
+                            "api_key": "secret-value-that-must-not-survive",
+                        },
+                    }
+                ],
+            }
+        )
+
+        tool_input = payload["content"][0]["input"]
+        self.assertEqual(tool_input["local_path"], r"C:\Users\Public\Documents\STATE.md")
+        self.assertEqual(tool_input["api_key"], "[secret value omitted]")
+        self.assertEqual(status, ProjectionStatus.SKIPPED_UNSAFE)
+
     def test_anthropic_tool_use_and_result_keep_paths(self) -> None:
         use_payload, use_status = sanitize_projection_payload(
             {
