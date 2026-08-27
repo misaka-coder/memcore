@@ -143,6 +143,31 @@ class TimelineV2StandaloneTests(unittest.TestCase):
             ["ambient-message", "ambient-response-final"],
         )
 
+    def test_existing_standalone_entry_cannot_be_relinked_after_projection_freezes(self) -> None:
+        original = self.mem.append_standalone_entry(
+            TimelineEntryInput(
+                source_id="already-projected-ambient",
+                kind="message.user",
+                origin=EntryOrigin.USER,
+                turn_role=None,
+                semantic_text="已经进入过模型上下文",
+                timestamp=1400,
+            )
+        )
+        projection = self.mem.build_context_projection(provider_profile="openai_chat")
+        self.assertEqual(projection.messages[0].source_ids, (original.source_id,))
+
+        with self.assertRaisesRegex(SchemaError, "turn_existing_stimulus_projection_frozen"):
+            self.mem.begin_turn_from_existing_sources(
+                stimulus_source_ids=[original.source_id],
+                turn_id="must-not-relink-frozen-source",
+                opened_at=1401,
+            )
+
+        unchanged = self.store.get_entry(namespace=self.mem.namespace, source_id=original.source_id)
+        self.assertEqual(unchanged.turn_id, "")
+        self.assertEqual(unchanged.relation_status, "standalone")
+
     def test_existing_stimulus_turn_rejects_cross_scope_and_already_linked_sources(self) -> None:
         self.mem.append_standalone_entry(
             TimelineEntryInput(

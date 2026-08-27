@@ -369,6 +369,30 @@ class SQLiteMemoryStore(MemoryStore):
                     raise SchemaError("turn_idempotency_conflict")
                 return self._turn_handle_from_row(existing_turn)
 
+            scope_clause, scope_params = self._scope_clause(namespace, with_conversation=True)
+            frozen_projection_source_ids: set[str] = set()
+            for item in self._conn.execute(
+                f"SELECT source_ids_json FROM prompt_projections WHERE {scope_clause}",
+                scope_params,
+            ).fetchall():
+                frozen_projection_source_ids.update(self._json_list(item["source_ids_json"]))
+            settlement_ids = [
+                f'{str(item["turn_id"] or "")}:{str(item["provider_profile"] or "")}'
+                for item in self._conn.execute(
+                    f"SELECT turn_id, provider_profile FROM turn_projection_settlement WHERE {scope_clause}",
+                    scope_params,
+                ).fetchall()
+                if str(item["turn_id"] or "") and str(item["provider_profile"] or "")
+            ]
+            if settlement_ids:
+                placeholders = ",".join("?" for _ in settlement_ids)
+                for item in self._conn.execute(
+                    f"SELECT source_ids_json FROM settled_prompt_projection "
+                    f"WHERE settlement_id IN ({placeholders})",
+                    settlement_ids,
+                ).fetchall():
+                    frozen_projection_source_ids.update(self._json_list(item["source_ids_json"]))
+
             for source_id in source_ids:
                 row = self._conn.execute(
                     "SELECT * FROM messages WHERE source_id = ?", (source_id,)
@@ -380,6 +404,8 @@ class SQLiteMemoryStore(MemoryStore):
                     raise SchemaError("turn_existing_stimulus_already_linked")
                 if str(row["relation_status"] or "") != "standalone":
                     raise SchemaError("turn_existing_stimulus_not_standalone")
+                if source_id in frozen_projection_source_ids:
+                    raise SchemaError("turn_existing_stimulus_projection_frozen")
             self._conn.execute(
                 """
                 INSERT INTO turns(
