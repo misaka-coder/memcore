@@ -19,6 +19,10 @@ class SchemaError(MemcoreError):
     """输出字段契约被违反且无法安全回退(焊死的字段契约)。"""
 
 
+class StaleSnapshotError(MemcoreError):
+    """A valid concurrent append made a previously read snapshot obsolete."""
+
+
 class NamespaceError(MemcoreError):
     """命名空间缺少必填硬隔离键,或键格式非法。"""
 

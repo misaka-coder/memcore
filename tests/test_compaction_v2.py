@@ -92,6 +92,21 @@ class FailSecondSummaryStore(SQLiteMemoryStore):
         return super()._add_summary_locked(namespace=namespace, record=record)
 
 
+class ProjectionRaceStore(SQLiteMemoryStore):
+    def __init__(self) -> None:
+        super().__init__(":memory:")
+        self.after_first_snapshot = None
+        self.snapshot_reads = 0
+
+    def list_compaction_bundles(self, *, namespace: Namespace) -> list[TurnBundle]:
+        bundles = super().list_compaction_bundles(namespace=namespace)
+        self.snapshot_reads += 1
+        callback = self.after_first_snapshot
+        if self.snapshot_reads == 1 and callback is not None:
+            callback()
+        return bundles
+
+
 def _projected_config(**overrides: Any) -> MemoryConfig:
     values: dict[str, Any] = {
         "raw_token_trigger": 260,
@@ -271,6 +286,71 @@ class CompactionV2Base(unittest.TestCase):
 
 
 class ClosedTurnPlanningTests(CompactionV2Base):
+    def test_request_projection_append_reloads_stale_compaction_snapshot(self) -> None:
+        store = ProjectionRaceStore()
+        mem, _, _ = self.make_mem(
+            config=_projected_config(raw_token_trigger=100, compaction_min_recent_turns=1),
+            store=store,
+        )
+        try:
+            _complete_simple_turn(mem, 0, text="旧轮次" + "x" * 800)
+            handle = mem.begin_turn(
+                stimuli=[_stimulus("正在继续工具任务", source_id="active-user", timestamp=3000)],
+                turn_id="active-turn",
+                opened_at=3000,
+            )
+
+            def freeze_longer_request() -> None:
+                mem.record_tool_exchange(
+                    turn_id=handle.turn_id,
+                    tool_name="github-mcp.get-issue",
+                    tool_call_id="call-race",
+                    tool_input={"issue_number": 123},
+                    result={"state": "open"},
+                    timestamp=3001,
+                    source_id_prefix="race",
+                )
+                mem.build_context_projection(provider_profile=OPENAI_PROFILE)
+                frozen = store.get_turn_projections(
+                    namespace=mem.namespace,
+                    turn_id=handle.turn_id,
+                    provider_profile=OPENAI_PROFILE,
+                )
+                turn_inputs = [
+                    ProjectionMessageInput(
+                        provider_profile=item.provider_profile,
+                        payload=item.payload,
+                        source_ids=item.source_ids,
+                        projection_index=item.projection_index,
+                        projection_status=item.projection_status,
+                    )
+                    for item in frozen
+                ]
+                mem.record_request_projection(
+                    turn_id=handle.turn_id,
+                    provider_profile=OPENAI_PROFILE,
+                    turn_messages=turn_inputs,
+                    history_messages=[item.payload for item in frozen],
+                )
+
+            store.after_first_snapshot = freeze_longer_request
+
+            result = mem.compact_due_sync(provider_profile=OPENAI_PROFILE)
+
+            self.assertEqual(result["status"], "compacted")
+            self.assertEqual(store.snapshot_reads, 2)
+            self.assertEqual(set(result["summary_source_ids"]), {"user-0", "final-0"})
+            active = store.get_turn_entries(namespace=mem.namespace, turn_id=handle.turn_id)
+            self.assertEqual(
+                [entry.source_id for entry in active],
+                ["active-user", "race:tool_use", "race:tool_result"],
+            )
+            projected = mem.build_context_projection(provider_profile=OPENAI_PROFILE)
+            self.assertIn("race:tool_result", {item.source_id for item in projected.entry_projection_hashes})
+        finally:
+            mem.close()
+            store.close()
+
     def test_ratio_planner_selects_enough_complete_components_in_one_pass(self) -> None:
         config = _projected_config(
             raw_token_trigger=900,

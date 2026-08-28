@@ -22,7 +22,7 @@ from .compaction_v2 import (
     TurnBundle,
 )
 from .config import MemoryConfig
-from .errors import SchemaError
+from .errors import SchemaError, StaleSnapshotError
 from .index.base import VectorIndex
 from .index.entry_builder import build_semantic_entry, build_summary_entry
 from .index.metadata_filters import INDEX_SCHEMA_KEY, INDEX_SCHEMA_VERSION
@@ -109,26 +109,39 @@ class Compaction:
         self.runtime = runtime or MemCoreRuntime()
 
     def run_due(self, *, namespace: Namespace, provider_profile: str = "") -> dict[str, Any]:
-        result = CompactionResult().to_dict()
         profile = str(provider_profile or self.config.projection_profile).strip().lower()
-        result["provider_profile"] = profile
         lock = self.runtime.lock_registry.lock_for(
             store_identity=self.store.runtime_identity(),
             namespace=namespace,
         )
         if not lock.acquire(blocking=False):
+            result = CompactionResult().to_dict()
+            result["provider_profile"] = profile
             result["status"] = "busy"
             return result
         try:
-            try:
-                bundles = self.store.list_compaction_bundles(namespace=namespace)
-            except NotImplementedError:
-                bundles = []
-            if bundles:
-                self._summarize_timeline(namespace, bundles, result, provider_profile=profile)
-            self._semanticize_episodic(namespace, result)
-            return result
+            for snapshot_attempt in range(2):
+                result = CompactionResult().to_dict()
+                result["provider_profile"] = profile
+                try:
+                    try:
+                        bundles = self.store.list_compaction_bundles(namespace=namespace)
+                    except NotImplementedError:
+                        bundles = []
+                    if bundles:
+                        self._summarize_timeline(namespace, bundles, result, provider_profile=profile)
+                    self._semanticize_episodic(namespace, result)
+                    return result
+                except StaleSnapshotError:
+                    if snapshot_attempt == 0:
+                        continue
+                    result["status"] = "stale_projection"
+                    result["reason"] = "projection_generation_changed"
+                    return result
+            return result  # pragma: no cover - bounded loop always returns
         except SchemaError as exc:
+            result = CompactionResult().to_dict()
+            result["provider_profile"] = profile
             result["status"] = "failed"
             result["reason"] = str(exc)
             return result

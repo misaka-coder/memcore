@@ -103,7 +103,8 @@ components and pass through this same planner and atomic commit path.
 Important fields returned by `compact_due_sync()` / the background future:
 
 - `status`: `not_due`, `compacted`, `blocked_by_open_turn`, `failed`, `busy`, or
-  a structured stale status;
+  `stale_projection` when two bounded reads both lose a race to a valid request
+  append;
 - `before_raw_projected_tokens` / `after_raw_projected_tokens`;
 - `planned_source_tokens` / `selected_projected_tokens`;
 - `source_turn_count` / `source_entry_count`;
@@ -113,3 +114,9 @@ Important fields returned by `compact_due_sync()` / the background future:
 One call advances at most one raw generation and one semantic batch. Repeated
 background scheduling drains a backlog without a single request loop calling
 the summary model until the namespace is empty.
+
+Compaction retries one stale provider-projection snapshot after reloading the
+SQLite timeline. It never treats a longer request-frozen projection as evidence
+that history was rewritten. If the projection changes again during that bounded
+retry, the call returns `stale_projection/projection_generation_changed` and
+leaves all raw records untouched for the next background pass.

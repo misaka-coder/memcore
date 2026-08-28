@@ -15,7 +15,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
-from .errors import SchemaError
+from .errors import SchemaError, StaleSnapshotError
 from .kind_contract import is_valid_kind, is_valid_kind_prefix, normalize_kind
 from .namespace import Namespace
 from .rendering import render_semantic_snippet, render_summary_snippet
@@ -1581,6 +1581,8 @@ class ProjectionLedger:
         covered = tuple(source_id for message in saved for source_id in message.source_ids)
         expected = tuple(entry.source_id for entry in visible_entries)
         if covered != expected[: len(covered)]:
+            if len(covered) > len(expected) and expected == covered[: len(expected)]:
+                raise StaleSnapshotError("projection_entries_stale")
             raise SchemaError("projection_history_not_append_only")
         remaining = visible_entries[len(covered) :]
         if remaining:

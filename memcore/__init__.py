@@ -49,7 +49,7 @@ from .embedding.hashed import HashedEmbeddingProvider
 from .embedding.huggingface import HuggingFaceEmbeddingProvider
 from .embedding.http import HTTPEmbeddingProvider, RoleAwareHTTPEmbeddingProvider
 from .embedding.verify import verify_embedding
-from .errors import ConfigError, MemcoreError, NamespaceError, PromptError, SchemaError
+from .errors import ConfigError, MemcoreError, NamespaceError, PromptError, SchemaError, StaleSnapshotError
 from .prompts import PromptOverrides
 from .projection import (
     ANTHROPIC_PROFILE,
@@ -304,6 +304,7 @@ __all__ = [
     "MemcoreError",
     "ConfigError",
     "SchemaError",
+    "StaleSnapshotError",
     "NamespaceError",
     "PromptError",
     # 提示词治理
