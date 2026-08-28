@@ -623,7 +623,7 @@ def resolve_retrieval_visibility(
     annotation_status: AnnotationStatus | str,
 ) -> RetrievalVisibility:
     resolved_policy = _coerce_enum(RetrievalPolicy, policy, "timeline_entry_invalid_retrieval_policy")
-    resolved_status = _coerce_enum(
+    _coerce_enum(
         AnnotationStatus,
         annotation_status,
         "timeline_entry_invalid_annotation_status",
@@ -634,7 +634,10 @@ def resolve_retrieval_visibility(
         return RetrievalVisibility.EXPLICIT
     if resolved_policy is RetrievalPolicy.NEVER:
         return RetrievalVisibility.NEVER
-    return RetrievalVisibility.DEFAULT if resolved_status.accepted else RetrievalVisibility.EXPLICIT
+    # AUTO is the normal model-readable timeline policy.  Annotation metadata
+    # enriches later filtering/ranking, but its absence or parse status must not
+    # turn an otherwise valid conversation entry into hidden memory.
+    return RetrievalVisibility.DEFAULT
 
 
 def _validated_kind(value: Any) -> str:

@@ -34,13 +34,6 @@ from .timeline_read import timestamp_iso
 from .time_anchor import normalize_retrieval_time_hint
 from .token_counter import TokenCounter
 
-_ACCEPTED_DEFAULT_STATUSES = (
-    "accepted_host",
-    "accepted_model",
-    "derived",
-    "derived_turn_final",
-)
-
 
 @dataclass(frozen=True)
 class RetrievalRequest:
@@ -572,15 +565,12 @@ class ReadPipeline:
             where["timestamp"] = timestamp
 
         kind_clause = self._kind_clause(request.kind_patterns)
+        # Metadata/annotation status is enrichment, not admission.  Normal
+        # model-readable memory is selected by the caller's retrieval policy
+        # plus typed trace boundaries; missing metadata must remain searchable.
         default_admission: dict[str, Any] = {
             "$and": [
                 {"retrieval_visibility": "default"},
-                {
-                    "$or": [
-                        {"annotation_status": {"$in": list(_ACCEPTED_DEFAULT_STATUSES)}},
-                        {"retrieval_policy": "always"},
-                    ]
-                },
                 {"is_trace_kind": False},
             ]
         }
@@ -924,19 +914,18 @@ class ReadPipeline:
         if hard.kind_patterns and not any(self._kind_matches(kind, pattern) for pattern in hard.kind_patterns):
             return False
         visibility = str(record.get("retrieval_visibility") or "explicit")
-        annotation = str(record.get("annotation_status") or "unannotated")
         retrieval_policy = str(record.get("retrieval_policy") or "auto")
         if retrieval_policy == "never":
             return False
-        is_trace = kind.split(".", 1)[0] in {"material", "tool"}
-        default_allowed = (
-            visibility == "default"
-            and (annotation in _ACCEPTED_DEFAULT_STATUSES or retrieval_policy == "always")
-            and not is_trace
+        root_kind = kind.split(".", 1)[0]
+        turn_role = str(record.get("turn_role") or "")
+        is_trace = (
+            turn_role in {"action", "observation"}
+            or root_kind in {"material", "tool"}
+            or kind == "memory.operation_digest"
         )
-        explicit_allowed = (
-            hard.include_explicit and annotation != "accepted_legacy" and (visibility == "explicit" or is_trace)
-        )
+        default_allowed = visibility == "default" and not is_trace
+        explicit_allowed = hard.include_explicit and (visibility == "explicit" or is_trace)
         if not (default_allowed or explicit_allowed):
             return False
         if visibility == "never":
@@ -1181,10 +1170,12 @@ class ReadPipeline:
         if visibility != "default":
             return False
         root_kind = entry.kind.split(".", 1)[0]
-        annotation = entry.annotation_status.value
-        return root_kind not in {"material", "tool"} and (
-            annotation in _ACCEPTED_DEFAULT_STATUSES or policy == "always"
+        is_trace = (
+            entry.turn_role in {TurnRole.ACTION, TurnRole.OBSERVATION}
+            or root_kind in {"material", "tool"}
+            or entry.kind == "memory.operation_digest"
         )
+        return not is_trace
 
     @staticmethod
     def _complete_correlation_branch(entries: list[TimelineEntry]) -> bool:

@@ -61,6 +61,14 @@ Namespace、会话授权、可见性、kind、时间、删除状态、lineage、
 
 现有 raw token 差值压缩属于已经运行的基础记忆生命周期，不是本方案新增的检索限制。模型供应商的物理上下文上限由宿主传输层负责，不能反过来成为 MemCore 在效果尚未验证前缩小检索和扩窗能力的理由。
 
+### 2.6 Metadata 不是模型可读准入
+
+普通消息、阶段摘要和长期语义只要已经通过宿主授权写入，就不会因为
+`memory_metadata` 缺失、无效或为空而变成“数据库里存在、模型却永远找不到”的记录。
+metadata 用于调用方明确要求的 facet/role/entity/topic 过滤与排序增强；硬准入只来自
+Namespace、时间、lineage、当前可见内容去重、调用方显式的 `explicit/never` 策略，
+以及工具/材料/operation 等 typed trace 的独立读取边界。
+
 ## 3. 三层记忆职责
 
 | 层 | 主要职责 | 语义检索角色 | 能否时间线扩窗 |
@@ -455,6 +463,10 @@ raw_projected_tokens >= raw_token_trigger
 阶段摘要是 raw 的压缩表示，不承担精确证据恢复职责。
 
 metadata 继承必须逐字段处理：模型生成的某一字段为空时，只补该字段的合法来源值；不能因为 `entity_anchors` 非空就阻止 `memory_facets/about_roles/topic_terms` 的继承。
+
+阶段摘要采用配置化滑动窗口：默认累计到 10 条时，将最旧 5 条压入长期语义并保留
+最近 5 条 episodic。这里的“5”是每次批次与压缩后的近期窗口，不是仅保存或仅允许
+浏览最近 5 条；更早 episodic 在语义压缩成功前始终可以浏览、检索和打开。
 
 ### 9.3 长期记忆窗口
 

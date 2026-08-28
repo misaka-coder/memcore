@@ -54,10 +54,14 @@ def _retrieval_metadata(record: dict[str, Any], *, default_kind: str) -> dict[st
     lineage_status = str(record.get("lineage_status") or "raw").strip().lower()
     trace_metadata = record.get("trace_metadata") if isinstance(record.get("trace_metadata"), dict) else {}
     root = kind.split(".", 1)[0]
+    turn_role = str(record.get("turn_role") or "").strip().lower()
+    is_trace = (
+        turn_role in {"action", "observation"} or root in {"material", "tool"} or kind == "memory.operation_digest"
+    )
     return {
         "kind_exact": kind,
         **kind_filter_flags(kind),
-        "is_trace_kind": root in {"material", "tool"},
+        "is_trace_kind": is_trace,
         "retrieval_visibility": visibility,
         "retrieval_policy": str(record.get("retrieval_policy") or "auto").strip().lower(),
         "annotation_status": annotation_status,
@@ -65,7 +69,7 @@ def _retrieval_metadata(record: dict[str, Any], *, default_kind: str) -> dict[st
         "lineage_status": lineage_status,
         "is_legacy_migration": annotation_status == "accepted_legacy" or bool(trace_metadata.get("legacy_categories")),
         "turn_id": str(record.get("turn_id") or ""),
-        "turn_role": str(record.get("turn_role") or ""),
+        "turn_role": turn_role,
         "correlation_id": str(record.get("correlation_id") or ""),
         "index_schema_version": INDEX_SCHEMA_VERSION,
         "index_schema_key": INDEX_SCHEMA_KEY,

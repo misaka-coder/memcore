@@ -11,7 +11,7 @@ from ..kind_contract import is_valid_kind, is_valid_kind_prefix, normalize_kind
 
 _SAFE_KEY = re.compile(r"^[A-Za-z0-9_]+$")
 
-INDEX_SCHEMA_VERSION = 3
+INDEX_SCHEMA_VERSION = 4
 KIND_FLAG_SCHEMA_VERSION = 1
 VISIBILITY_SCHEMA_VERSION = 1
 ENTITY_FLAG_SCHEMA_VERSION = 1

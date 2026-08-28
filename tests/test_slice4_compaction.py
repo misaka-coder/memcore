@@ -714,6 +714,37 @@ class SemanticAndReinforcement(unittest.TestCase):
         self.assertEqual(recent[0]["source_summary_ids"], ["ep0", "ep1", "ep2"])
         self.assertEqual(recent[0]["index_status"], "indexed")
 
+    def test_default_ten_five_window_ignores_legacy_metadata_admission_flags(self) -> None:
+        config = MemoryConfig(
+            episodic_compact_trigger_count=10,
+            episodic_compact_batch_size=5,
+        )
+        compaction = Compaction(
+            store=self.store,
+            index=self.index,
+            llm=CannedLLM(),
+            config=config,
+            timezone="Asia/Shanghai",
+        )
+        for index in range(10):
+            self.store.add_summary(
+                namespace=self.ns,
+                record={
+                    "summary_id": f"legacy-hidden-{index}",
+                    "kind": "memory.episode_summary",
+                    "timestamp": 100 + index,
+                    "diary_summary": f"第 {index} 段普通对话",
+                    "retrieval_visibility": "explicit",
+                    "semanticize": False,
+                },
+            )
+
+        result = compaction.run_due(namespace=self.ns)
+        remaining = self.store.get_uncompacted_episodic_summaries(namespace=self.ns)
+
+        self.assertEqual(result["semantic_created"], 1)
+        self.assertEqual([item["summary_id"] for item in remaining], [f"legacy-hidden-{i}" for i in range(5, 10)])
+
     def test_semantic_prompt_keeps_full_episode_evidence(self) -> None:
         llm = CapturingLLM()
         compaction = Compaction(

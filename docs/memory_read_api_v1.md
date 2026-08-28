@@ -135,6 +135,12 @@ Important parameters:
 - `include_explicit` + `kind_patterns`: host-authorized explicit trace/event/
   material retrieval. They do not open arbitrary kinds.
 
+Ordinary raw messages, episodic summaries, and semantic memories remain eligible
+when optional annotation metadata is missing, invalid, or empty. Default read
+admission is governed by hard namespace/time/lineage boundaries, current-visible
+de-duplication, and typed trace separation. Metadata facets/roles/entities narrow
+the candidate set only when the caller actually supplies those filters.
+
 Trusted Python code that needs domain status and diagnostics should use:
 
 ```python

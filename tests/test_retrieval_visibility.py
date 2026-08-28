@@ -218,6 +218,42 @@ class KindMetadataTests(unittest.TestCase):
 
 
 class StructuredAdmissionTests(unittest.TestCase):
+    def test_missing_metadata_does_not_hide_an_ordinary_completed_turn(self) -> None:
+        store, index, embedding = _backends()
+        mem = _memory(store, index, embedding)
+        try:
+            mem.begin_turn(
+                stimuli=[
+                    TimelineEntryInput(
+                        source_id="missing-user",
+                        kind="message.user",
+                        origin=EntryOrigin.USER,
+                        turn_role=TurnRole.STIMULUS,
+                        semantic_text="周四把蓝色账本交给林舟",
+                        payload={"text": "周四把蓝色账本交给林舟"},
+                        timestamp=1800,
+                    )
+                ],
+                turn_id="missing-turn",
+            )
+            completed = mem.complete_turn(
+                turn_id="missing-turn",
+                semantic_text="好，我记下了。",
+                provider_output_raw="好，我记下了。",
+                memory_annotation=None,
+                annotation_status="missing",
+                timestamp=1801,
+                source_id="missing-final",
+            )
+
+            self.assertEqual(completed.updated_targets[0].retrieval_visibility.value, "default")
+            result = mem.retrieve_structured("蓝色账本 林舟")
+            self.assertEqual(result.status, "found")
+            self.assertTrue(any(match.source_id == "missing-user" for match in result.matches))
+        finally:
+            mem.close()
+            store.close()
+
     def test_accepted_v2_message_returns_structured_match_and_persists_index_generation(self) -> None:
         store, index, embedding = _backends()
         mem = _memory(store, index, embedding)
@@ -306,6 +342,22 @@ class StructuredAdmissionTests(unittest.TestCase):
         finally:
             mem.close()
             store.close()
+
+    def test_protocol_neutral_action_is_still_a_trace_not_ordinary_memory(self) -> None:
+        entry = build_raw_entry(
+            {
+                "source_id": "operation-action",
+                "tenant_id": "",
+                "user_id": "user",
+                "domain_id": "",
+                "conversation_id": "c1",
+                "kind": "operation.catalog.request",
+                "turn_role": "action",
+                "semantic_text": "load catalog",
+                "retrieval_visibility": "default",
+            }
+        )
+        self.assertTrue(entry["metadata"]["is_trace_kind"])
 
     def test_annotated_event_uses_the_same_default_admission_as_a_message(self) -> None:
         store, index, embedding = _backends()

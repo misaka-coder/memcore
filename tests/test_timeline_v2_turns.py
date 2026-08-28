@@ -298,7 +298,7 @@ class BasicTurnCompletionTests(TurnLifecycleBase):
             "message.assistant.voice",
         )
 
-    def test_missing_annotation_stays_explicit_instead_of_becoming_empty_accepted(self) -> None:
+    def test_missing_annotation_remains_model_readable_without_becoming_accepted(self) -> None:
         handle = self.mem.begin_turn(stimuli=[_stimulus("普通输入", source_id="s1")], turn_id="turn-missing")
         result = self.mem.complete_turn(
             turn_id=handle.turn_id,
@@ -309,9 +309,9 @@ class BasicTurnCompletionTests(TurnLifecycleBase):
             timestamp=200,
         )
         self.assertEqual(result.updated_targets[0].annotation_status, AnnotationStatus.MISSING)
-        self.assertEqual(result.updated_targets[0].retrieval_visibility, RetrievalVisibility.EXPLICIT)
+        self.assertEqual(result.updated_targets[0].retrieval_visibility, RetrievalVisibility.DEFAULT)
         self.assertEqual(result.final_entry.annotation_status, AnnotationStatus.UNANNOTATED)
-        self.assertEqual(result.final_entry.retrieval_visibility, RetrievalVisibility.EXPLICIT)
+        self.assertEqual(result.final_entry.retrieval_visibility, RetrievalVisibility.DEFAULT)
 
     def test_valid_empty_annotation_remains_accepted_and_differs_from_missing(self) -> None:
         handle = self.mem.begin_turn(
@@ -343,7 +343,7 @@ class BasicTurnCompletionTests(TurnLifecycleBase):
             provider_output_raw="raw",
             annotation_status="missing",
         )
-        self.assertEqual(result.updated_targets[0].retrieval_visibility, RetrievalVisibility.EXPLICIT)
+        self.assertEqual(result.updated_targets[0].retrieval_visibility, RetrievalVisibility.DEFAULT)
         self.assertEqual(result.updated_targets[0].kind, "event.qq.poke")
         self.assertEqual(result.updated_targets[0].memory_metadata, {})
 

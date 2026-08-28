@@ -377,7 +377,7 @@ class SQLiteMemoryStore(MemoryStore):
             ).fetchall():
                 frozen_projection_source_ids.update(self._json_list(item["source_ids_json"]))
             settlement_ids = [
-                f'{str(item["turn_id"] or "")}:{str(item["provider_profile"] or "")}'
+                f"{str(item['turn_id'] or '')}:{str(item['provider_profile'] or '')}"
                 for item in self._conn.execute(
                     f"SELECT turn_id, provider_profile FROM turn_projection_settlement WHERE {scope_clause}",
                     scope_params,
@@ -387,16 +387,13 @@ class SQLiteMemoryStore(MemoryStore):
             if settlement_ids:
                 placeholders = ",".join("?" for _ in settlement_ids)
                 for item in self._conn.execute(
-                    f"SELECT source_ids_json FROM settled_prompt_projection "
-                    f"WHERE settlement_id IN ({placeholders})",
+                    f"SELECT source_ids_json FROM settled_prompt_projection WHERE settlement_id IN ({placeholders})",
                     settlement_ids,
                 ).fetchall():
                     frozen_projection_source_ids.update(self._json_list(item["source_ids_json"]))
 
             for source_id in source_ids:
-                row = self._conn.execute(
-                    "SELECT * FROM messages WHERE source_id = ?", (source_id,)
-                ).fetchone()
+                row = self._conn.execute("SELECT * FROM messages WHERE source_id = ?", (source_id,)).fetchone()
                 if row is None:
                     raise SchemaError("turn_existing_stimulus_not_found")
                 self._assert_scope_owner(row, namespace, id_label=f"source_id={source_id!r}")
@@ -445,9 +442,7 @@ class SQLiteMemoryStore(MemoryStore):
                 (normalized_turn_id, *source_ids),
             )
             self._ensure_conversation_state_locked(namespace=namespace, updated_at=opened)
-            turn = self._conn.execute(
-                "SELECT * FROM turns WHERE turn_id = ?", (normalized_turn_id,)
-            ).fetchone()
+            turn = self._conn.execute("SELECT * FROM turns WHERE turn_id = ?", (normalized_turn_id,)).fetchone()
             if turn is None:  # pragma: no cover - transaction invariant
                 raise SchemaError("turn_open_failed")
             return self._turn_handle_from_row(turn)
@@ -2721,9 +2716,7 @@ class SQLiteMemoryStore(MemoryStore):
             message = ProjectionMessage.from_record(self._row_to_record(row, "prompt_projections"))
             projections_by_turn.setdefault(str(message.turn_id or ""), []).append(message)
         settlements_by_turn = {
-            str(row["turn_id"] or ""): dict(row)
-            for row in settlement_rows
-            if str(row["turn_id"] or "")
+            str(row["turn_id"] or ""): dict(row) for row in settlement_rows if str(row["turn_id"] or "")
         }
         settlement_turns = {
             f"{str(row['turn_id'] or '')}:{profile}": str(row["turn_id"] or "")
@@ -3465,7 +3458,6 @@ class SQLiteMemoryStore(MemoryStore):
             namespace,
             with_conversation=not bool(cross_conversation),
         )
-        visibility_clause = "" if include_explicit else " AND retrieval_visibility = 'default'"
         effective_start = "CASE WHEN period_start_ts > 0 THEN period_start_ts ELSE timestamp END"
         effective_end = "CASE WHEN period_end_ts > 0 THEN period_end_ts ELSE timestamp END"
         with self._lock:
@@ -3474,7 +3466,6 @@ class SQLiteMemoryStore(MemoryStore):
                 SELECT * FROM summaries
                 WHERE {scope_clause}
                   AND kind = 'memory.episode_summary'
-                  {visibility_clause}
                   AND {effective_end} >= ?
                   AND {effective_start} < ?
                 ORDER BY {effective_start} ASC, timestamp ASC, summary_id ASC
@@ -3505,7 +3496,6 @@ class SQLiteMemoryStore(MemoryStore):
             namespace,
             with_conversation=not bool(cross_conversation),
         )
-        visibility_clause = "" if include_explicit else " AND retrieval_visibility = 'default'"
         effective_start = "CASE WHEN period_start_ts > 0 THEN period_start_ts ELSE timestamp END"
         effective_end = "CASE WHEN period_end_ts > 0 THEN period_end_ts ELSE timestamp END"
         with self._lock:
@@ -3513,7 +3503,6 @@ class SQLiteMemoryStore(MemoryStore):
                 f"""
                 SELECT * FROM semantic_summaries
                 WHERE {scope_clause}
-                  {visibility_clause}
                   AND {effective_end} >= ?
                   AND {effective_start} < ?
                 ORDER BY {effective_start} ASC, timestamp ASC, semantic_id ASC
@@ -3614,7 +3603,7 @@ class SQLiteMemoryStore(MemoryStore):
         scope_clause, params = self._scope_clause(namespace, with_conversation=True)
         sql = (
             f"SELECT * FROM summaries WHERE {scope_clause} "
-            "AND is_semanticized = 0 AND semanticize = 1 ORDER BY timestamp ASC"
+            "AND kind = 'memory.episode_summary' AND is_semanticized = 0 ORDER BY timestamp ASC"
         )
         if limit is not None:
             sql += " LIMIT ?"

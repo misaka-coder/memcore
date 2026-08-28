@@ -261,9 +261,7 @@ class MemorySystem:
         if len(set(source_ids)) != len(source_ids):
             raise SchemaError("turn_duplicate_stimulus_source_id")
         targets = (
-            source_ids
-            if annotation_target_ids is None
-            else [str(item or "").strip() for item in annotation_target_ids]
+            source_ids if annotation_target_ids is None else [str(item or "").strip() for item in annotation_target_ids]
         )
         now = int(opened_at or time.time())
         try:
@@ -717,7 +715,7 @@ class MemorySystem:
             *(
                 (item, "summary_id", "summary")
                 for item in reversed(episodic)
-                if str(item.get("retrieval_visibility") or "default") == "default"
+                if str(item.get("kind") or "") == "memory.episode_summary"
             ),
         ):
             source_id = str(record.get(id_key) or "").strip()
@@ -749,9 +747,7 @@ class MemorySystem:
                     turn_prefix=prefix,
                     provider_profile=profile,
                     saved_projections=(
-                        projection_rows.projections_by_turn.get(turn_id, ())
-                        if projection_rows is not None
-                        else None
+                        projection_rows.projections_by_turn.get(turn_id, ()) if projection_rows is not None else None
                     ),
                 )
             )
@@ -762,19 +758,13 @@ class MemorySystem:
                     entries=turn_entries,
                     provider_profile=profile,
                     saved_projections=(
-                        projection_rows.projections_by_turn.get(turn_id, ())
-                        if projection_rows is not None
-                        else None
+                        projection_rows.projections_by_turn.get(turn_id, ()) if projection_rows is not None else None
                     ),
                     settlement=(
-                        projection_rows.settlements_by_turn.get(turn_id)
-                        if projection_rows is not None
-                        else None
+                        projection_rows.settlements_by_turn.get(turn_id) if projection_rows is not None else None
                     ),
                     settled_rows=(
-                        projection_rows.settled_rows_by_turn.get(turn_id, ())
-                        if projection_rows is not None
-                        else None
+                        projection_rows.settled_rows_by_turn.get(turn_id, ()) if projection_rows is not None else None
                     ),
                     rows_preloaded=projection_rows is not None,
                 )

@@ -57,9 +57,12 @@ entries. See `examples/non_native_operation_timeline.py`.
 | Treat Actor as soft | `Actor(stable_id=platform_id, display_name=nickname)` for group attribution only. | Actor cannot isolate tenants/users; nickname IDs break attribution after rename. |
 | Share runtime deliberately | Multiple systems in one process may share one `MemCoreRuntime`; its creator closes it. | Unnecessary executor sets or premature shared-runtime shutdown. |
 
-Never place API keys, bearer tokens, passwords, local absolute paths, cached
-paths, storage-relative paths, database paths, or binary/base64 media in stored
-payloads, prompt projections, receipts, logs, or snapshots.
+The host owns write admission. API keys, bearer tokens, passwords, binary/base64
+media, and host-internal diagnostics must be rejected or replaced by authorized
+handles before calling MemCore. MemCore is not a business-content classifier.
+Do not erase executable path or command semantics that the model needs to finish
+an authorized task; keep host-internal database/cache/run-log locations out of
+stable prompts, public summaries, logs, and snapshots instead.
 
 ## Typed `kind` rules
 
@@ -294,6 +297,8 @@ Before claiming integration complete, verify with real host request construction
 - [ ] A failed final/tool/delivery path aborts the open turn.
 - [ ] Visible memory appears on the next normal turn.
 - [ ] `retrieve_for_turn` excludes current/prompt-visible lineage.
+- [ ] Missing, invalid, or empty optional metadata does not hide an otherwise
+      valid ordinary message, episodic summary, or semantic memory.
 - [ ] `browse_memory -> open_memory(content) -> sources/raw` navigation works.
 - [ ] Exact local-time `read_timeline` returns the intended start-inclusive,
       end-exclusive range.
@@ -305,9 +310,10 @@ Before claiming integration complete, verify with real host request construction
 - [ ] If settlement is enabled, the open turn stays full, the next turn sees a
       reloadable card, and `open_memory(content)` restores the original result.
 - [ ] Cross-user/hard-namespace reads and writes are rejected.
-- [ ] No secret, binary media, or host-internal path field (`cached_path`,
-      `storage_relpath`, `database_path`, …) enters persisted projection data;
-      executable path evidence stays byte-for-byte intact.
+- [ ] The host rejects secrets and binary media before write; host-internal path
+      fields (`cached_path`, `storage_relpath`, `database_path`, …) do not enter
+      stable/public projection data, while authorized executable path evidence
+      stays byte-for-byte intact.
 
 ## Read next
 

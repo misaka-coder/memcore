@@ -59,12 +59,16 @@ memcore 不每轮额外调用一个 router LLM 判断要不要搜。
 
 价值:先裁候选,再算向量/BM25。模型传入 `memory_facets=["preference"]`、`about_roles=["user"]` 时,系统只和满足条件的记忆计算相似度,不是全量算完再后置过滤。
 
+metadata 是排序与显式过滤能力，不是普通记忆的入场券。调用方没有传这些过滤条件时，
+空 metadata、缺失 annotation 或 annotation 解析失败不会让普通 raw、episodic、semantic
+从模型可读历史和普通检索中消失。
+
 ### 7. 只放宽零候选实体,不突破调用方边界
 
 检索先严格使用模型传入的过滤参数。准确实体条件令某个 raw/derived 池候选为零时，
 只在该池移除实体强制 flag；原始 query 和实体高权重仍参与排序，并返回 strict/effective
 候选数。facet、role、`source_layers` 与 Namespace、conversation、time、visibility、
-annotation、kind、lineage 和 index generation 都不静默放宽。
+typed kind、lineage 和 index generation 都不静默放宽。
 
 价值:旧记录缺少准确实体标签时仍有召回机会，但模型猜错 facet/主体不会被系统
 悄悄改成宽搜，调用方能从 diagnostics 看见实际发生了什么。

@@ -80,6 +80,10 @@ Important optional fields:
 - `retrieval_policy` accepts `auto / always / explicit / never`;
 - `retrieval_visibility` accepts `default / explicit / never`;
 - `annotation_status` accepts the public `AnnotationStatus` values;
+- `auto` resolves ordinary conversational records to `default` independently of
+  optional metadata/annotation completeness. Use `explicit` or `never` only as
+  an intentional caller policy for typed traces or product authorization, not
+  as a fallback for missing model metadata;
 - `trust` accepts `untrusted_data / trusted_instruction`. Historical memory and
   tool output should normally remain `untrusted_data`;
 - `semanticize=False` prevents the entry from becoming semantic-memory input;

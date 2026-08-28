@@ -310,6 +310,72 @@ class LatestSchemaTests(unittest.TestCase):
             finally:
                 connection.close()
 
+    def test_v6_upgrade_repairs_metadata_gated_memory_without_rewriting_content(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "v6.sqlite3"
+            namespace = Namespace(user_id="u1", conversation_id="c1")
+            store = SQLiteMemoryStore(str(path))
+            store.add_message(
+                namespace=namespace,
+                role="user",
+                content="早晨的重要原话",
+                timestamp=100,
+                source_id="ordinary-message",
+            )
+            store.add_summary(
+                namespace=namespace,
+                record={
+                    "summary_id": "morning-episode",
+                    "kind": "memory.episode_summary",
+                    "timestamp": 101,
+                    "diary_summary": "早晨的重要摘要",
+                },
+            )
+            store.add_summary(
+                namespace=namespace,
+                record={
+                    "summary_id": "operation-digest",
+                    "kind": "memory.operation_digest",
+                    "timestamp": 102,
+                    "diary_summary": "工具轨迹",
+                },
+            )
+            store.close()
+
+            connection = sqlite3.connect(path)
+            try:
+                connection.execute(
+                    "UPDATE messages SET annotation_status='missing', retrieval_policy='auto', "
+                    "retrieval_visibility='explicit', index_status='indexed', index_schema_version=3, "
+                    "index_key='old' WHERE source_id='ordinary-message'"
+                )
+                connection.execute(
+                    "UPDATE summaries SET retrieval_visibility='explicit', semanticize=0, "
+                    "index_status='indexed', index_schema_version=3, index_key='old' "
+                    "WHERE summary_id='morning-episode'"
+                )
+                connection.execute("PRAGMA user_version = 6")
+                connection.commit()
+            finally:
+                connection.close()
+
+            upgraded = SQLiteMemoryStore(str(path))
+            try:
+                message = upgraded.get_record_by_source_id("ordinary-message")
+                episode = upgraded.get_record_by_source_id("morning-episode")
+                operation = upgraded.get_record_by_source_id("operation-digest")
+                self.assertEqual(upgraded.schema_version, CURRENT_SCHEMA_VERSION)
+                self.assertEqual(message["content"], "早晨的重要原话")
+                self.assertEqual(message["retrieval_visibility"], "default")
+                self.assertEqual(episode["diary_summary"], "早晨的重要摘要")
+                self.assertEqual(episode["retrieval_visibility"], "default")
+                self.assertEqual(episode["semanticize"], 1)
+                self.assertEqual(operation["retrieval_visibility"], "explicit")
+                self.assertEqual(operation["semanticize"], 0)
+                self.assertTrue(all(row["index_status"] == "pending" for row in (message, episode, operation)))
+            finally:
+                upgraded.close()
+
 
 class V1MigrationTests(unittest.TestCase):
     def test_v3_catalog_migration_backfills_metrics_without_rewriting_memory_content(self) -> None:

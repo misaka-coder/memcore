@@ -61,7 +61,7 @@ AI 完成接入前必须跑清单末尾的聚焦验收；“字段存在”不�
   按 namespace 加锁,outbox 索引);`MemorySystem` 写侧 record/compact 接通。压缩 LLM 失败时不会提交空摘要,
   会返回 `summary_retry_pending` / `semantic_retry_pending`,并保留原记录供下一轮后台压缩重试。
 - **切片 5(读侧)✅**:`retrieval` —— 显式 retrieve 工具 → metadata 前置过滤 → raw/derived 分池混合检索 + RRF → 确定性分数与关系完整性检查；原始 query 始终保留，`entity_anchors` 高权重，`topic_terms` 只作普通辅助；`time_hint.start_at/end_at` 复用时间线的本地/ISO 解析并在评分前执行起点包含、终点不包含的硬过滤，未知答案不需要也不允许伪装成实体锚点；
-  `build_prompt_context` 只拼可见三层,是否检索交给聊天模型调用工具决定。**读写侧全闭环。**
+  `build_prompt_context` 只拼可见三层,是否检索交给聊天模型调用工具决定。普通消息、阶段摘要和长期语义不以 metadata/annotation 是否完整作为模型可读准入条件；metadata 只在调用方明确传入过滤条件时缩小候选。**读写侧全闭环。**
 - **时间线工具 ✅**:`read_timeline(...)` 支持无需 epoch 的 `time_range.start_at/end_at` 小时/分钟级读取，旧日期/时间段字段归一到同一 timestamp 路径，也支持以 raw `source_id` 为锚点读取前后完整 turn；默认 `conversation` 投影保留完整对话/事件并把大工具与材料轨迹变成可展开凭据，`full/tools` 可显式切换。模型侧 native dispatcher 默认使用可配置的有限页面预算，按完整 turn 无损分页，并返回所选总量、本页总量、`partial/page_boundary`、后续动作和可校验 `next_cursor`；native result 只发送一份渲染正文，不再把等价 `messages` 正文重复喂给模型。可信宿主直接调用 Python API 时仍保留结构化 messages/text 双视图，并可显式使用 `page_token_budget=0` 完整读取。
 - **记忆目录导航 ✅**:`browse_memory(...)` 按确定性时间范围返回有界卡片目录与 raw 覆盖状态；`open_memory(memory_id, view=card/content/sources)` 可从摘要正文继续展开精确子摘要或完整 raw 逻辑单元。`sources` 默认使用 `conversation` 投影：完整保留对话/事件，工具、Skill 与材料正文只显示可按 `source_id` 重载的紧凑轨迹；只有显式 `projection=full/tools` 或打开单条 raw `content` 才返回工具正文。`retrieve_for_turn(within_memory_id=...)` 可在已选节点的精确 lineage 内继续做 dense/BM25 模糊检索，实体条件放宽不会移除该边界，段内为空也不会退回全库。分页使用 namespace-safe 稳定键 cursor，不截断卡片/turn，缺失 lineage 明确返回 `partial`。
 - **精确条目展开 ✅**:`read_entry(source_id, detail)` 是 `open_memory(view="content")` 的 current-conversation raw-only 兼容适配；summary/semantic、越权 ID、密钥和本地路径不会伪装成 raw 正文。
@@ -93,6 +93,7 @@ AI 完成接入前必须跑清单末尾的聚焦验收；“字段存在”不�
 - **开放动作/结果时间线 ✅**:`append_action(...)` / `append_observation(...)` 可记录原生工具、JSON、XML、标签或宿主自定义协议；模型实际看到的完整结果与调用一起写入统一时间线。默认策略把完整 provider 投影保留到 raw token 压缩；可选 `compact_after_terminal` 在 final 后把足够大的旧 observation 变为可按 `source_id` 回读的冻结卡片，不修改 SQLite 原文、action、final 或真实 provider wire。小型 `retention_anchor` 仍只在 operation 压缩后保留资源 ID、版本、hash 等重载锚点。
 - **终局工具投影 settlement ✅**:`MemoryConfig.operation_projection_policy` 提供稳定 wire value `full_until_raw_compaction`（默认）与 `compact_after_terminal`；策略在 `begin_turn` 冻结，settlement 原子发布并支持 `settled/settled_noop/full_fallback`，`build_context_projection().has_compact_history` 和 `settlement_metrics()` 提供宿主提示与安全观测。完整 API、回读闭环、缓存规则和迁移语义见 [`operation_projection_settlement_v1.md`](docs/operation_projection_settlement_v1.md)。
 - **有界后台维护 ✅**:每次 `compact_due` 只提交一个 raw compaction generation 和一个 semantic batch；
+  episodic 达到配置窗口（默认 10）时压缩最旧一批（默认 5），保留最近 5 条继续常驻，不把“当前只显示 5 条”误写成“历史只保存 5 条”。
   token 模式按配置比例一次选足最旧的完整 turn/component，不再被旧条目批次或独立 source 上限提前截断。
 
 核心 + 评测台 + Timeline V2 + provider projection + embedding 三路 + outbox 自愈
@@ -296,6 +297,10 @@ memcore 是**纯机制**:它不含任何具体人格、领域调教或模型权�
 | 统一 metadata 契约 + 提示词骨架 + 校验插槽 | **领域补充说明**与**调参**(窗口/阈值)；不能替换固定 facet/role 协议 |
 | embedding 接口 + 三路适配器 + 自检 | **embedding 模型**(本地 / API / 自有) |
 | 隔离、outbox 自愈、遗忘、评测台 | 领域**合规规则**(memcore 只保证记忆不越权变指令) |
+
+宿主决定什么内容可以进入 MemCore，并在写入前处理密钥、Cookie、二进制和宿主内部诊断。
+MemCore 不内置业务内容分类器，也不因 metadata 为空而让已经合法写入的普通记忆不可浏览、
+不可检索。任务所需的命令参数和可执行路径属于时间线证据，不应被通用内核改写成失去语义的占位符。
 
 > 焊死项(时间锚点、字段契约、"只输出 JSON"等)无法被外部覆盖;插槽只能补充。详见 `prompts.PromptOverrides`。
 

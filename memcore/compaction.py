@@ -318,7 +318,7 @@ class Compaction:
             )
         summary_messages: list[ProjectionMessage] = []
         for saved in committed.summaries:
-            if str(saved.get("retrieval_visibility") or "default") != "default":
+            if str(saved.get("kind") or "") != "memory.episode_summary":
                 continue
             summary_messages.extend(
                 self.projection_ledger.freeze_memory_record(
@@ -383,7 +383,7 @@ class Compaction:
             *(
                 (item, "summary_id", "summary")
                 for item in reversed(episodic)
-                if str(item.get("retrieval_visibility") or "default") == "default"
+                if str(item.get("kind") or "") == "memory.episode_summary"
             ),
         ):
             messages.extend(
@@ -461,9 +461,6 @@ class Compaction:
             metadata["retrieval_priority"] = _highest_priority(
                 *(item.get("retrieval_priority") for item in accepted_metadata)
             )
-        visibility = (
-            "default" if any(entry.retrieval_visibility.value == "default" for entry in entries) else "explicit"
-        )
         catalog = normalize_catalog_fields(payload)
         record = {
             "summary_id": summary_id,
@@ -485,8 +482,12 @@ class Compaction:
             "source_entry_count": len(entries),
             "memory_metadata": metadata,
             "semantic_tags": _merge_unique(metadata.get("entity_anchors"), metadata.get("topic_terms")),
-            "retrieval_visibility": visibility,
-            "semanticize": visibility == "default",
+            # An episode is the normal model-readable compression of a prompt-
+            # visible conversation segment.  Source metadata/annotation status
+            # enriches it but never controls whether the episode remains
+            # visible or may enter the 10 -> oldest 5 semantic roll-up.
+            "retrieval_visibility": "default",
+            "semanticize": True,
             "compaction_schema_version": self.config.compaction_schema_version,
         }
         return SummaryRecordInput(

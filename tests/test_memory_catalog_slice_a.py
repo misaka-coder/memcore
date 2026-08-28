@@ -194,10 +194,13 @@ class CatalogStoreTests(unittest.TestCase):
             cross_conversation=True,
         )
 
-        self.assertEqual([item["summary_id"] for item in current], ["crosses-start", "inside", "point"])
+        self.assertEqual(
+            [item["summary_id"] for item in current],
+            ["crosses-start", "inside", "explicit", "point"],
+        )
         self.assertEqual(
             [item["summary_id"] for item in across],
-            ["crosses-start", "inside", "other-conversation", "point"],
+            ["crosses-start", "inside", "explicit", "other-conversation", "point"],
         )
         self.assertEqual(current[-1]["is_semanticized"], 1)
 

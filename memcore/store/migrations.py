@@ -14,7 +14,7 @@ from typing import Any, Iterable
 
 from ..errors import SchemaError
 
-CURRENT_SCHEMA_VERSION = 6
+CURRENT_SCHEMA_VERSION = 7
 
 _CORE_TABLES = frozenset({"messages", "summaries", "semantic_summaries"})
 _TRACE_CATEGORIES = frozenset({"event_trace", "material_trace", "tool_trace"})
@@ -586,7 +586,7 @@ def migrate_database(connection: sqlite3.Connection) -> int:
         else:
             if has_core != _CORE_TABLES:
                 raise SchemaError("sqlite_schema_partial_core_tables")
-            if version not in {0, 1, 2, 3, 4, 5, CURRENT_SCHEMA_VERSION}:
+            if version not in {0, 1, 2, 3, 4, 5, 6, CURRENT_SCHEMA_VERSION}:
                 raise SchemaError("sqlite_schema_unsupported_version")
             if version < 2:
                 _migrate_v1_to_v2(connection)
@@ -600,6 +600,8 @@ def migrate_database(connection: sqlite3.Connection) -> int:
                 _migrate_v4_to_v5(connection)
             if version < 6:
                 _migrate_v5_to_v6(connection)
+            if version < 7:
+                _migrate_v6_to_v7(connection)
 
         _execute_statements(connection, _CATALOG_INDEX_STATEMENTS)
         _validate_latest_schema(connection)
@@ -730,6 +732,48 @@ def _migrate_v5_to_v6(connection: sqlite3.Connection) -> None:
     _add_missing_columns(connection, "turns", _V6_TURN_COLUMNS)
     _add_missing_columns(connection, "turn_projection_settlement", _V6_SETTLEMENT_COLUMNS)
     _execute_statements(connection, LATEST_SCHEMA_STATEMENTS)
+
+
+def _migrate_v6_to_v7(connection: sqlite3.Connection) -> None:
+    """Remove metadata-derived admission from ordinary model-readable memory.
+
+    The old rows remain byte-for-byte memory truth.  This migration only
+    repairs derived policy fields and invalidates index projections so a
+    restart/reindex applies the new admission contract.
+    """
+
+    connection.execute(
+        """
+        UPDATE messages
+        SET retrieval_visibility = 'default', index_status = 'pending',
+            index_schema_version = 0, index_key = ''
+        WHERE retrieval_policy IN ('auto', 'always')
+          AND retrieval_visibility != 'never'
+          AND turn_role NOT IN ('action', 'observation')
+          AND kind NOT LIKE 'material.%'
+          AND kind NOT LIKE 'tool.%'
+        """
+    )
+    connection.execute(
+        """
+        UPDATE summaries
+        SET retrieval_visibility = 'default', semanticize = 1,
+            index_status = 'pending', index_schema_version = 0, index_key = ''
+        WHERE kind = 'memory.episode_summary'
+        """
+    )
+    connection.execute(
+        """
+        UPDATE semantic_summaries
+        SET retrieval_visibility = 'default', index_status = 'pending',
+            index_schema_version = 0, index_key = ''
+        """
+    )
+    # Trace classification is part of index metadata and changed in schema 4;
+    # every row must be rebuilt even when its stored policy fields were already
+    # correct.
+    for table in ("messages", "summaries", "semantic_summaries"):
+        connection.execute(f"UPDATE {table} SET index_status = 'pending', index_schema_version = 0, index_key = ''")
 
 
 def _backfill_summary_catalog_metrics(connection: sqlite3.Connection) -> None:

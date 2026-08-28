@@ -104,10 +104,11 @@ V2 使用实际 provider projection 的 token 预算规划完整 turn。这是�
 - `dispatch_native_memory_tool` 同时返回完整 result 与紧凑 `receipt`；宿主把模型实际看到的完整结果写成同一 turn 的 operation observation，并把只含选择器、返回 ID、coverage、cursor 和稳定 hash 的 receipt 放在 retention anchor。正文随统一 raw token 生命周期跨轮可见，receipt 不得替代正文；非原生适配可直接调用 `build_memory_operation_receipt`；
 - `read_entry`：兼容期 raw-only 薄适配，新接入使用 `open_memory(view="content")`；
 - `load_material`：只负责调用宿主提供的材料 loader，不保存文件本体；
-- 普通检索只接纳 `retrieval_visibility=default` 的记录；没有有效 annotation 的
-  standalone 事件、operation 和 material 轨迹默认是 `explicit`，不会混入普通候选；
-- 这不是“事件永不检索”：V2 `event.*` 如果作为轮次 stimulus 并获得有效
-  `accepted_model/accepted_host` annotation,默认准入规则与普通消息相同；
+- 普通消息、episodic 和 semantic 的模型可读准入不依赖 metadata/annotation 是否完整；
+  `auto` 普通记录进入 `retrieval_visibility=default`，可选 metadata 只在调用方显式传入
+  facet/role/entity/topic 条件时缩小候选；
+- standalone 事件、operation 和 material 轨迹按 typed kind 默认保持 `explicit`，不会
+  混入普通候选；事件作为正常轮次 stimulus 时按普通消息进入默认准入；
   关联的模型 final 会通过 stimulus/final relation 一起返回；
 - standalone `record_external_event()` 或没有有效 annotation 的事件保持 explicit,
   需要 `include_explicit=true`、明确 `kind_patterns` 和宿主授权才能检索；
@@ -193,6 +194,11 @@ MemCore 不包含也不推断这些产品资产：
 - persona 与领域补充提示词；固定 metadata facet/role 契约不能由宿主换成另一套同义词；
 - 文件本体、OCR、视觉模型和 derived store；
 - 生产环境 embedding 模型选择。
+
+宿主还负责决定哪些业务内容可以写入，以及在写入前隔离密钥、Cookie、二进制和
+内部诊断。MemCore 不把 metadata 当内容安全分类器；一旦普通内容被合法写入，空 metadata
+不会使它不可见。模型完成授权任务所需的命令参数和可执行路径应保留原意，内部存储路径
+则由宿主留在运行日志/句柄边界之外。
 
 通过 `LLMClient`、`EmbeddingProvider`、`MemoryStore`、`VectorIndex`、
 `RendererRegistry`、`TokenCounter` 和 `material_loader` 注入这些边界，
