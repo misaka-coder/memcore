@@ -28,6 +28,7 @@ from memcore.index.entry_builder import build_raw_entry
 from memcore.index.metadata_filters import (
     INDEX_SCHEMA_KEY,
     INDEX_SCHEMA_VERSION,
+    kind_filter_flags,
     kind_filter_key,
     kind_prefixes,
 )
@@ -181,6 +182,16 @@ class KindMetadataTests(unittest.TestCase):
         key = kind_filter_key("event.finance")
         self.assertEqual(key, kind_filter_key("event.finance"))
         self.assertRegex(key, r"^memory_kind__v1_[a-f0-9]{64}$")
+
+    def test_hyphenated_kind_uses_the_shared_grammar_for_index_flags(self) -> None:
+        kind = "tool.github-mcp.get-issue.result"
+        self.assertEqual(
+            kind_prefixes(kind),
+            ("tool", "tool.github-mcp", "tool.github-mcp.get-issue", kind),
+        )
+        key = kind_filter_key("tool.github-mcp.get-issue")
+        self.assertRegex(key, r"^memory_kind__v1_[a-f0-9]{64}$")
+        self.assertTrue(kind_filter_flags(kind)[key])
 
     def test_index_entry_contains_visibility_kind_and_generation_scalars(self) -> None:
         entry = build_raw_entry(

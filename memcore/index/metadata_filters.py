@@ -7,9 +7,9 @@ import re
 import unicodedata
 from typing import Any
 
+from ..kind_contract import is_valid_kind, is_valid_kind_prefix, normalize_kind
+
 _SAFE_KEY = re.compile(r"^[A-Za-z0-9_]+$")
-_KIND_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)+$")
-_KIND_PREFIX_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)*$")
 
 INDEX_SCHEMA_VERSION = 3
 KIND_FLAG_SCHEMA_VERSION = 1
@@ -58,8 +58,8 @@ def entity_filter_key(entity: str) -> str:
 
 def kind_prefixes(kind: str) -> tuple[str, ...]:
     """Return every dot-delimited prefix for one validated open kind."""
-    normalized = str(kind or "").strip().lower()
-    if not _KIND_PATTERN.fullmatch(normalized):
+    normalized = normalize_kind(kind)
+    if not is_valid_kind(normalized):
         raise ValueError("invalid_kind")
     parts = normalized.split(".")
     return tuple(".".join(parts[:index]) for index in range(1, len(parts) + 1))
@@ -67,8 +67,8 @@ def kind_prefixes(kind: str) -> tuple[str, ...]:
 
 def kind_filter_key(kind_prefix: str) -> str:
     """Use a versioned full digest so arbitrary future kinds remain safe Chroma keys."""
-    normalized = str(kind_prefix or "").strip().lower()
-    if not normalized or not all(_SAFE_KEY.fullmatch(part) for part in normalized.split(".")):
+    normalized = normalize_kind(kind_prefix)
+    if not is_valid_kind_prefix(normalized):
         raise ValueError("invalid_kind_prefix")
     digest = hashlib.sha256(f"kind_flag_v{KIND_FLAG_SCHEMA_VERSION}:{normalized}".encode("utf-8")).hexdigest()
     return f"memory_kind__v{KIND_FLAG_SCHEMA_VERSION}_{digest}"
@@ -83,8 +83,8 @@ def normalize_kind_pattern(pattern: str) -> tuple[str, bool]:
     normalized = str(pattern or "").strip().lower()
     is_prefix = normalized.endswith(".*")
     kind = normalized[:-2] if is_prefix else normalized
-    validator = _KIND_PREFIX_PATTERN if is_prefix else _KIND_PATTERN
-    if not validator.fullmatch(kind):
+    valid = is_valid_kind_prefix(kind) if is_prefix else is_valid_kind(kind)
+    if not valid:
         raise ValueError("invalid_kind_pattern")
     return kind, is_prefix
 

@@ -16,6 +16,7 @@ from enum import Enum
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from .errors import SchemaError
+from .kind_contract import is_valid_kind, is_valid_kind_prefix, normalize_kind
 from .namespace import Namespace
 from .rendering import render_semantic_snippet, render_summary_snippet
 from .text_utils import normalize_text
@@ -32,8 +33,6 @@ STANDARD_PROJECTION_PROFILES = frozenset(
     {CANONICAL_PROFILE, OPENAI_PROFILE, ANTHROPIC_PROFILE, DEEPSEEK_PROFILE, OPENAI_RESPONSES_PROFILE}
 )
 
-_KIND_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)+$")
-_KIND_PREFIX_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)*$")
 _PROFILE_PATTERN = re.compile(r"^[a-z][a-z0-9_.-]{0,79}$")
 _ID_PATTERN = re.compile(r"^[^\x00-\x1f\x7f]{1,256}$")
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
@@ -684,8 +683,8 @@ class RendererRegistry:
         renderer: Renderer,
         compact_renderer: Renderer | None = None,
     ) -> None:
-        normalized = str(kind or "").strip()
-        if not _KIND_PATTERN.fullmatch(normalized):
+        normalized = normalize_kind(kind)
+        if not is_valid_kind(normalized):
             raise SchemaError("renderer_invalid_exact_kind")
         self._register(
             self._exact,
@@ -705,8 +704,8 @@ class RendererRegistry:
         renderer: Renderer,
         compact_renderer: Renderer | None = None,
     ) -> None:
-        normalized = str(kind_prefix or "").strip().rstrip(".*")
-        if not _KIND_PREFIX_PATTERN.fullmatch(normalized):
+        normalized = normalize_kind(str(kind_prefix or "").rstrip(".*"))
+        if not is_valid_kind_prefix(normalized):
             raise SchemaError("renderer_invalid_kind_prefix")
         self._register(
             self._prefix,

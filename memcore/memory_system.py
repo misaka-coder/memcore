@@ -1716,11 +1716,19 @@ class MemorySystem:
 
     def _reindex_batch(self, records: list[dict[str, Any]]) -> tuple[int, int]:
         indexable: list[tuple[dict[str, Any], dict[str, Any]]] = []
-        completed = 0
+        completed = failed = 0
         for record in records:
-            entry = self._build_index_entry(record)
+            try:
+                entry = self._build_index_entry(record)
+            except Exception:
+                source_id = self._record_index_id(record)
+                if source_id:
+                    self.store.set_index_status(source_id, "pending")
+                failed += 1
+                continue
             source_id = str(entry.get("source_id") or "").strip()
             if not source_id:
+                failed += 1
                 continue
             if str(record.get("retrieval_visibility") or "") == RetrievalVisibility.NEVER.value:
                 self.index.delete([source_id])
@@ -1729,7 +1737,7 @@ class MemorySystem:
                 continue
             indexable.append((record, entry))
         if not indexable:
-            return completed, 0
+            return completed, failed
         try:
             self.index.upsert([entry for _, entry in indexable])
         except Exception:
@@ -1737,12 +1745,12 @@ class MemorySystem:
                 midpoint = len(indexable) // 2
                 left_completed, left_failed = self._reindex_batch([record for record, _ in indexable[:midpoint]])
                 right_completed, right_failed = self._reindex_batch([record for record, _ in indexable[midpoint:]])
-                return completed + left_completed + right_completed, left_failed + right_failed
+                return completed + left_completed + right_completed, failed + left_failed + right_failed
             for record, entry in indexable:
                 source_id = str(entry.get("source_id") or self._record_index_id(record)).strip()
                 if source_id:
                     self.store.set_index_status(source_id, "pending")
-            return completed, len(indexable)
+            return completed, failed + len(indexable)
         for _, entry in indexable:
             self.store.set_index_state(
                 str(entry["source_id"]),
@@ -1750,7 +1758,7 @@ class MemorySystem:
                 index_schema_version=INDEX_SCHEMA_VERSION,
                 index_key=INDEX_SCHEMA_KEY,
             )
-        return completed + len(indexable), 0
+        return completed + len(indexable), failed
 
     @staticmethod
     def _record_index_id(record: dict[str, Any]) -> str:

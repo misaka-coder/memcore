@@ -6,6 +6,7 @@ import unittest
 
 from memcore import HashedEmbeddingProvider, MemoryConfig, MemorySystem, Namespace, SQLiteMemoryStore
 from memcore.index.memory_index import InMemoryVectorIndex
+from memcore.index.metadata_filters import kind_filter_key
 from memcore.llm.base import LLMClient, LLMRequest, LLMResult, TaskType
 
 
@@ -260,6 +261,61 @@ class OutboxResilience(unittest.TestCase):
 
         self.assertEqual(out, {"scanned": 1, "reindexed": 0, "failed": 1})
         self.assertEqual({r["source_id"] for r in self.store.list_pending_index()}, {"s1"})
+
+    def test_reindex_all_isolates_one_malformed_legacy_kind(self) -> None:
+        fresh_index = InMemoryVectorIndex(embedding=self.emb)
+        mem = self._mem(index=fresh_index)
+        self.store.add_message(
+            namespace=mem.namespace,
+            role="user",
+            content="合法记录仍应完成热加载",
+            timestamp=1000,
+            source_id="good",
+        )
+        self.store.add_message(
+            namespace=mem.namespace,
+            role="user",
+            content="模拟升级前遗留坏 kind",
+            timestamp=1001,
+            source_id="legacy-bad",
+        )
+        with self.store._lock, self.store._conn:  # noqa: SLF001 - migration-corruption fixture
+            self.store._conn.execute(  # noqa: SLF001 - migration-corruption fixture
+                "UPDATE messages SET kind = ?, index_status = 'indexed' WHERE source_id = ?",
+                ("bad kind", "legacy-bad"),
+            )
+
+        out = mem.reindex_all(batch_size=64)
+
+        self.assertEqual(out, {"scanned": 2, "reindexed": 1, "failed": 1})
+        self.assertEqual(fresh_index.count(), 1)
+        self.assertEqual({row["source_id"] for row in self.store.list_pending_index()}, {"legacy-bad"})
+
+    def test_hyphenated_mcp_kind_survives_restart_reindex_and_retrieval(self) -> None:
+        ns = Namespace(user_id="u1", conversation_id="c1")
+        self.store.add_message(
+            namespace=ns,
+            role="tool",
+            content="GitHub issue 123 is open",
+            timestamp=1000,
+            source_id="mcp-result",
+            kind="tool.github-mcp.get-issue.result",
+            retrieval_visibility="default",
+        )
+        fresh_index = InMemoryVectorIndex(embedding=self.emb)
+        mem = self._mem(namespace=ns, index=fresh_index)
+
+        out = mem.reindex_all(current_conversation_only=True)
+        hits = fresh_index.keyword_search(
+            query_text="GitHub issue 123",
+            entity_anchors=[],
+            topic_terms=[],
+            where={kind_filter_key("tool.github-mcp"): True},
+            n_results=10,
+        )
+
+        self.assertEqual(out, {"scanned": 1, "reindexed": 1, "failed": 0})
+        self.assertEqual([hit["source_id"] for hit in hits], ["mcp-result"])
 
 
 if __name__ == "__main__":

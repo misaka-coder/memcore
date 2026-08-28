@@ -9,12 +9,12 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Mapping
 
 from .errors import SchemaError
+from .kind_contract import is_valid_kind, normalize_kind
 from .namespace import Actor, Namespace
 
 if TYPE_CHECKING:
     from .projection import ProjectionMessage, ProjectionMessageInput
 
-_KIND_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)+$")
 _ID_PATTERN = re.compile(r"^[^\x00-\x1f\x7f]{1,256}$")
 OPERATION_RETENTION_ANCHOR_KEY = "retention_anchor"
 OPERATION_RETENTION_ANCHOR_STATUS_KEY = "retention_anchor_status"
@@ -123,8 +123,8 @@ class TimelineEntryInput:
     compatibility_role: str = ""
 
     def __post_init__(self) -> None:
-        kind = str(self.kind or "").strip()
-        if len(kind) > 160 or not _KIND_PATTERN.fullmatch(kind):
+        kind = normalize_kind(self.kind)
+        if not is_valid_kind(kind):
             raise SchemaError("timeline_entry_invalid_kind")
         object.__setattr__(self, "kind", kind)
         object.__setattr__(self, "origin", _coerce_enum(EntryOrigin, self.origin, "timeline_entry_invalid_origin"))
@@ -638,8 +638,8 @@ def resolve_retrieval_visibility(
 
 
 def _validated_kind(value: Any) -> str:
-    kind = str(value or "").strip()
-    if len(kind) > 160 or not _KIND_PATTERN.fullmatch(kind):
+    kind = normalize_kind(value)
+    if not is_valid_kind(kind):
         raise SchemaError("timeline_entry_invalid_kind")
     return kind
 
