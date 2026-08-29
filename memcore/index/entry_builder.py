@@ -52,7 +52,6 @@ def _retrieval_metadata(record: dict[str, Any], *, default_kind: str) -> dict[st
     annotation_status = str(record.get("annotation_status") or "unannotated").strip().lower()
     trust = str(record.get("trust") or "untrusted_data").strip().lower()
     lineage_status = str(record.get("lineage_status") or "raw").strip().lower()
-    trace_metadata = record.get("trace_metadata") if isinstance(record.get("trace_metadata"), dict) else {}
     root = kind.split(".", 1)[0]
     turn_role = str(record.get("turn_role") or "").strip().lower()
     is_trace = (
@@ -67,7 +66,6 @@ def _retrieval_metadata(record: dict[str, Any], *, default_kind: str) -> dict[st
         "annotation_status": annotation_status,
         "trust": trust,
         "lineage_status": lineage_status,
-        "is_legacy_migration": annotation_status == "accepted_legacy" or bool(trace_metadata.get("legacy_categories")),
         "turn_id": str(record.get("turn_id") or ""),
         "turn_role": turn_role,
         "correlation_id": str(record.get("correlation_id") or ""),

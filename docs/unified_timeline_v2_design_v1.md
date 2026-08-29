@@ -14,7 +14,7 @@
 - Slice 3 `Projection ledger` 已提交（`38727e1`）：versioned renderer registry、canonical/OpenAI/Anthropic adapter、不可变 projection rows、请求 hash audit、final projection 原子提交和 strict-prefix 验收；
 - Slice 4 `Compaction V2` 已提交（`41d55b4`）：共享 `MemCoreRuntime`、terminal-turn/token planning、summary/semantic 两阶段原子提交、episode/operation lineage 分离，以及压缩后 summary/semantic projection；
 - 后续压缩可靠性修复已提交（`23213d9`、`006ead2`、`d97afbc`），并在差值策略 repair 中收口：按实际 provider projection 规划一次 raw generation；token 模式按比例选足完整 component，不再复用旧条目批次或独立 source 上限；单次 `run_due()` 仍只提交一个 raw generation 和一个 semantic batch；
-- Slice 5 `Retrieval admission` 已提交（`df09a50`）：结构化 query/result、visibility/annotation/kind/conversation/index-generation 硬准入、开放 kind prefix flags、评分前过滤与有界 semantic relaxation；
+- Slice 5 `Retrieval admission` 已提交（`df09a50`，后续已清理 annotation 准入）：结构化 query/result、visibility/kind/conversation/index-generation 硬准入、开放 kind prefix flags、评分前过滤与有界 semantic relaxation；annotation 仅为语义元数据与来源状态；
 - Slice 6 `Relation expansion` 已提交（`3523c26`）：Namespace-safe lineage closure、stimulus/final 原子组、并行 correlation branch、派生层去重、visible lineage 排除与精确 token budget；
 - Akane cutover primitives 已实现：无模型回复的 typed standalone entry，以及不提前授予检索准入的 staged annotation；
 - 宿主中立的 `append_action` / `append_observation` 薄接口已实现；JSON、XML、
@@ -165,12 +165,12 @@ source / tool_name / call_id / status / mime / file_id / provider / host tags
 
 `retrieval_policy=auto` 时:
 
-- 接收到有效、已接受的 `memory_annotation` 后，记录进入普通检索候选；
-- 没有有效 annotation 时，使用宿主/namespace 的未标注输入策略，默认只允许显式检索；
-- fallback、解析失败后补出的空 metadata 不等于有效模型 annotation；
+- 普通消息和事件进入 default 检索候选，与 `memory_annotation` 是否存在或解析成功无关；
+- fallback、解析失败后补出的空 metadata 不等于有效模型 annotation，但也不会隐藏原始记忆；
+- action/observation、tool/material 与 operation digest 仍由 typed trace 边界保持 explicit；
 - `always/explicit/never` 用于宿主的明确覆盖，不需要 MemCore 穷举 event kind。
 
-因此普通消息和事件可以一视同仁；真正的区别是它是否完成了一个具有记忆标注的模型轮次，而不是它的 kind 是否叫 `event.*`。
+因此普通消息和事件可以一视同仁；annotation 改善检索排序和语义理解，但不是记忆存在性的许可证。
 
 ## 5. 稳定渲染与模型投影
 
@@ -480,7 +480,7 @@ Timeline V2 已有正式 schema version/migration runner。后续迁移应满足
 - 拆分 memory annotation/trace metadata；
 - annotation target；
 - terminal-only commit；
-- 事件与普通输入统一的 annotation-driven retrieval admission。
+- 事件与普通输入统一的 retrieval policy；annotation 只提供语义元数据与来源状态，不决定普通记忆能否检索。
 
 ### D. Projection ledger 与缓存验收
 
@@ -514,7 +514,7 @@ Timeline V2 已有正式 schema version/migration runner。后续迁移应满足
 
 ### 检索与前置过滤
 
-- 有效 annotation 的事件可按配置进入普通检索，无需事件白名单；
+- 普通事件按 retrieval policy 进入普通检索，无需 annotation 或事件白名单；
 - 只有 trace metadata 的工具默认不进入普通检索；
 - `include_explicit` 配合宿主授权的 kind pattern 可检索开放 kind；
 - namespace、visible source ids、visibility 和 kind 硬过滤发生在向量/BM25 评分前；
@@ -715,7 +715,7 @@ index_schema_version INTEGER NOT NULL DEFAULT 0
 index_key TEXT NOT NULL DEFAULT ''
 ```
 
-`kind=memory.operation_digest` 时 migration/default resolver 强制 `retrieval_visibility=explicit`、`semanticize=0`。`memory.episode_summary` 的 visibility 由有效 source lineage 推导，不能把 source categories 的 trace 并集直接复制过来。
+`kind=memory.operation_digest` 时 migration/default resolver 强制 `retrieval_visibility=explicit`、`semanticize=0`。`memory.episode_summary` 是已结算的普通派生记忆，固定进入 default 检索；source lineage 负责可追溯与失效传播，不再充当摘要可见性的第二套准入规则。
 
 `semantic_summaries` 增加：
 
@@ -988,11 +988,10 @@ SQLite standalone 写入对相同 source id + 相同 typed payload 幂等；同 
 always -> default
 explicit -> explicit
 never -> never
-auto + accepted_model/accepted_host/accepted_legacy annotation -> default
-auto + unannotated/fallback/rejected -> namespace 配置，默认 explicit
+auto -> default（与 annotation 是否存在、是否解析成功无关）
 ```
 
-当 target 获得 default visibility，同一 turn 的 assistant final 继承 default，并获得 `derived_turn_final` 状态，因此既可以独立参与语义评分，也可以通过关系扩窗与 target 成对返回；中间 intermediate/action/observation 保持 explicit。配置变化若需要重算旧记录，必须调用结构化 maintenance API 重新物化 visibility 并 reindex，不能在查询时悄悄改变历史行为。
+同一 turn 的 assistant final 继承 target 的 visibility，并获得 `derived_turn_final` 状态，因此既可以独立参与语义评分，也可以通过关系扩窗与 target 成对返回；中间 intermediate/action/observation 保持 explicit。annotation status 继续如实记录元数据来源和解析状态，但不改变普通输入的 admission。配置变化若需要重算旧记录，必须调用结构化 maintenance API 重新物化 visibility 并 reindex，不能在查询时悄悄改变历史行为。
 
 ## 18. 渲染与 Projection Ledger 实现
 
@@ -1279,7 +1278,7 @@ RetrievalResult
 - 完整 Namespace；
 - conversation scope 和宿主授权的 cross-conversation scope；
 - `retrieval_visibility`；
-- `annotation_status` 对应的准入规则；
+- annotation status（仅作为可观察元数据，不参与硬准入）；
 - kind exact/prefix flags；
 - trust/trace admission；
 - 精确 time range；
@@ -1317,8 +1316,8 @@ kind_exact = "event.finance.flash"
 
 普通候选的准入规则：
 
-- raw stimulus 必须是 `retrieval_visibility=default` 且 annotation status 为 `accepted_model/accepted_host`，或由宿主明确设置 `retrieval_policy=always`；`accepted_legacy` 不进入 V2；
-- assistant final 在 accepted turn 中物化为 `retrieval_visibility=default + annotation_status=derived_turn_final`，可以独立评分，也可通过 turn relation expansion 随 stimulus 返回；
+- 普通 raw stimulus 由 `retrieval_policy` 物化 visibility；`auto/always` 为 default，`explicit` 仅显式检索，`never` 永不检索。annotation status（包括 `accepted_legacy`）不承担 admission；
+- assistant final 继承 target visibility，可以独立评分，也可通过 turn relation expansion 随 stimulus 返回；有 accepted annotation 时标为 `derived_turn_final`，否则如实保持 `unannotated`，两者不改变继承的 visibility；
 - derived summary 必须是 `annotation_status=derived`，并拥有已验证 lineage 和独立的 derived visibility；
 - `never` 永远不可检索；
 - `explicit` 只有请求与宿主 policy 同时允许时进入候选。
@@ -1416,11 +1415,11 @@ SQLite 保存当前 index generation 和每条 entry 的 indexed generation。ki
 ### 20.9 当前实现检查点（2026-07-21）
 
 - `RetrievalRequest -> RetrievalQueryPlan -> RetrievalResult` 已成为唯一检索算法；旧 `retrieve()/retrieve_for_turn() -> list[str]` 只渲染结构化 matches，不再维护第二套搜索或过滤逻辑；
-- HardFilterPlan 固定 Namespace、conversation scope、time range、visibility、annotation、kind patterns、trust、lineage 状态、visible source ids 与 index schema generation；semantic relaxation 只允许依次移除 importance、categories、subject scopes；
+- HardFilterPlan 固定 Namespace、conversation scope、time range、visibility、kind patterns、trust、lineage 状态、visible source ids 与 index schema generation；semantic relaxation 只允许依次移除 importance、categories、subject scopes；
 - `kind_patterns` 仅接受 exact kind 或尾部 `.*` prefix；kind flags 使用 versioned SHA-256 完整 digest，新增业务 kind 不要求修改 MemCore 枚举；
-- 普通 default admission 接受有效 model/host annotation、derived summary/final 和宿主明确 `always` policy；`tool.*`/`material.*` 只能通过 `include_explicit + kind_patterns` 打开；
-- 旧 `tool_trace/event_trace/material_trace` category 不再能扩大候选池，迁移记录的 `accepted_legacy/legacy_categories` 也不进入 V2 检索；
-- index entry 已物化 visibility、annotation、kind、trust、lineage 和 schema-generation 标量；Chroma collection 名包含 index/kind/visibility schema generation，避免新旧过滤语义混在同一 collection；
+- 普通 default admission 只看物化 visibility 与 typed trace 边界；annotation 缺失、失败或来自 legacy 都不隐藏普通记忆。`tool.*`/`material.*` 只能通过 `include_explicit + kind_patterns` 打开；
+- 旧 `tool_trace/event_trace/material_trace` category 不再能扩大候选池；迁移记录与新记录使用同一 policy/kind 边界，不再有 legacy 专属黑名单；
+- index entry 已物化 visibility、annotation（仅供观察/排序）、kind、trust、lineage 和 schema-generation 标量；Chroma collection 名包含 index/kind/visibility schema generation，避免新旧过滤语义混在同一 collection；
 - dense/BM25 的零分候选不会为了填满 top-k 被返回；配置阈值与 rejected counts 已进入结构化结果；
 - Store 回取使用 Namespace-safe raw/summary/semantic lookup。若第三方 index 忽略 hard where 并返回越界 source，整次查询返回 `unavailable/index_filter_unsupported`，不会靠后置删除伪装成功；
 - Retrieval admission 提交点仍以单记录 seed 为输入；实际返回原子组、lineage closure 和 result token budget 已由下节 Relation expansion 接管；
@@ -1695,7 +1694,7 @@ tests/test_slice_concurrency.py
 - 两个以上并行 call 乱序返回仍按 correlation 成对；
 - success/error/cancelled 都能闭合 branch；
 - pending branch 阻止 final/compaction；
-- event 与 message 在有效 annotation 下得到相同检索准入。
+- event 与 message 由相同 retrieval policy 得到检索准入，annotation 成败不改变该边界。
 
 投影与缓存：
 

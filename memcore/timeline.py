@@ -620,14 +620,8 @@ class TurnAbortResult:
 
 def resolve_retrieval_visibility(
     policy: RetrievalPolicy | str,
-    annotation_status: AnnotationStatus | str,
 ) -> RetrievalVisibility:
     resolved_policy = _coerce_enum(RetrievalPolicy, policy, "timeline_entry_invalid_retrieval_policy")
-    _coerce_enum(
-        AnnotationStatus,
-        annotation_status,
-        "timeline_entry_invalid_annotation_status",
-    )
     if resolved_policy is RetrievalPolicy.ALWAYS:
         return RetrievalVisibility.DEFAULT
     if resolved_policy is RetrievalPolicy.EXPLICIT:

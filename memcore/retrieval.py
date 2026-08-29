@@ -542,7 +542,6 @@ class ReadPipeline:
             "domain_id": domain,
             "index_schema_version": INDEX_SCHEMA_VERSION,
             "index_schema_key": INDEX_SCHEMA_KEY,
-            "is_legacy_migration": False,
             "trust": "untrusted_data",
             "lineage_status": {"$in": ["raw", "valid"]},
         }
@@ -579,7 +578,6 @@ class ReadPipeline:
             explicit_admission = {
                 "$and": [
                     kind_clause,
-                    {"annotation_status": {"$ne": "accepted_legacy"}},
                     {
                         "$or": [
                             {"retrieval_visibility": "explicit"},
@@ -906,9 +904,6 @@ class ReadPipeline:
         if str(record.get("index_key") or "") != INDEX_SCHEMA_KEY:
             return False
         if str(record.get("trust") or "untrusted_data") != "untrusted_data":
-            return False
-        trace_metadata = record.get("trace_metadata") if isinstance(record.get("trace_metadata"), dict) else {}
-        if str(record.get("annotation_status") or "") == "accepted_legacy" or trace_metadata.get("legacy_categories"):
             return False
         kind = str(record.get("kind") or "legacy.unknown").lower()
         if hard.kind_patterns and not any(self._kind_matches(kind, pattern) for pattern in hard.kind_patterns):

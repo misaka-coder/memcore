@@ -434,7 +434,6 @@ class MemoryStore(ABC):
         start_ts: int,
         end_ts: int,
         cross_conversation: bool = False,
-        include_explicit: bool = False,
     ) -> list[dict[str, Any]]:
         """Return every overlapping episodic summary in deterministic time order."""
         raise NotImplementedError
@@ -446,7 +445,6 @@ class MemoryStore(ABC):
         start_ts: int,
         end_ts: int,
         cross_conversation: bool = False,
-        include_explicit: bool = False,
     ) -> list[dict[str, Any]]:
         """Return every overlapping semantic summary in deterministic time order."""
         raise NotImplementedError

@@ -631,7 +631,7 @@ class SQLiteMemoryStore(MemoryStore):
                 annotation = annotations_by_target[target_id]
                 target_row = next(row for row in target_rows if str(row["source_id"]) == target_id)
                 policy = RetrievalPolicy(str(target_row["retrieval_policy"] or RetrievalPolicy.AUTO.value))
-                visibility = resolve_retrieval_visibility(policy, annotation.status)
+                visibility = resolve_retrieval_visibility(policy)
                 target_visibilities.append(visibility)
                 any_accepted = any_accepted or annotation.status.accepted
                 annotation_metadata = self._completion_annotation_metadata(
@@ -1781,9 +1781,21 @@ class SQLiteMemoryStore(MemoryStore):
                 and _has_semantic_metadata(memory_metadata)
                 else "unannotated"
             )
+        retrieval_policy = str(fields.get("retrieval_policy") or "auto")
         retrieval_visibility = str(fields.get("retrieval_visibility") or "")
         if not retrieval_visibility:
-            retrieval_visibility = "default" if annotation_status.startswith("accepted_") else "explicit"
+            root_kind = kind.split(".", 1)[0]
+            is_trace = (
+                turn_role in {"action", "observation"}
+                or root_kind in {"material", "tool"}
+                or kind == "memory.operation_digest"
+            )
+            if retrieval_policy == "never":
+                retrieval_visibility = "never"
+            elif retrieval_policy == "explicit" or is_trace:
+                retrieval_visibility = "explicit"
+            else:
+                retrieval_visibility = "default"
         trace_metadata = dict(role_projection["trace_metadata"])
         if isinstance(fields.get("trace_metadata"), dict):
             trace_metadata.update(fields["trace_metadata"])
@@ -1822,7 +1834,7 @@ class SQLiteMemoryStore(MemoryStore):
             "annotation_source": str(
                 fields.get("annotation_source") or ("host" if annotation_status == "accepted_host" else "")
             ),
-            "retrieval_policy": str(fields.get("retrieval_policy") or "auto"),
+            "retrieval_policy": retrieval_policy,
             "retrieval_visibility": retrieval_visibility,
             "semanticize": int(
                 fields.get(
@@ -3443,7 +3455,6 @@ class SQLiteMemoryStore(MemoryStore):
         start_ts: int,
         end_ts: int,
         cross_conversation: bool = False,
-        include_explicit: bool = False,
     ) -> list[dict[str, Any]]:
         if isinstance(start_ts, bool) or isinstance(end_ts, bool):
             raise ValueError("catalog_time_range_requires_integer_timestamps")
@@ -3481,7 +3492,6 @@ class SQLiteMemoryStore(MemoryStore):
         start_ts: int,
         end_ts: int,
         cross_conversation: bool = False,
-        include_explicit: bool = False,
     ) -> list[dict[str, Any]]:
         if isinstance(start_ts, bool) or isinstance(end_ts, bool):
             raise ValueError("catalog_time_range_requires_integer_timestamps")

@@ -154,7 +154,7 @@ hard filters 永不放宽:
 ```text
 tenant_id / user_id / domain_id / conversation scope
 time_hint(date_label/time_of_day/start_ts/end_ts)
-retrieval visibility / annotation / kind / trust
+retrieval visibility / kind / trust
 source_layers / exclude_source_ids / lineage closure
 index schema generation
 ```

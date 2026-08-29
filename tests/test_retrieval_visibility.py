@@ -422,7 +422,7 @@ class StructuredAdmissionTests(unittest.TestCase):
             other.close()
             store.close()
 
-    def test_accepted_legacy_is_not_admitted_by_v2(self) -> None:
+    def test_accepted_legacy_ordinary_memory_is_retrievable(self) -> None:
         store, index, embedding = _backends()
         mem = _memory(store, index, embedding)
         try:
@@ -445,7 +445,47 @@ class StructuredAdmissionTests(unittest.TestCase):
                 index_key=INDEX_SCHEMA_KEY,
             )
             result = mem.retrieve_structured("旧兼容可乐", entity_anchors=["旧兼容可乐"])
-            self.assertEqual(result.status, "empty")
+            self.assertEqual(result.status, "found")
+            self.assertEqual(result.matches[0].source_id, "legacy-user")
+        finally:
+            mem.close()
+            store.close()
+
+    def test_legacy_add_message_defaults_follow_policy_and_trace_kind(self) -> None:
+        store, index, embedding = _backends()
+        mem = _memory(store, index, embedding)
+        try:
+            ordinary = store.add_message(
+                namespace=mem.namespace,
+                role="user",
+                content="没有元数据的普通消息",
+                timestamp=4100,
+                source_id="legacy-ordinary",
+                kind="message.user",
+            )
+            tool = store.add_message(
+                namespace=mem.namespace,
+                role="tool",
+                content="工具结果",
+                timestamp=4101,
+                source_id="legacy-tool",
+                kind="tool.shell.result",
+                turn_role="observation",
+            )
+            never = store.add_message(
+                namespace=mem.namespace,
+                role="user",
+                content="明确不检索",
+                timestamp=4102,
+                source_id="legacy-never",
+                kind="message.user",
+                retrieval_policy="never",
+            )
+
+            self.assertEqual(ordinary["annotation_status"], "unannotated")
+            self.assertEqual(ordinary["retrieval_visibility"], "default")
+            self.assertEqual(tool["retrieval_visibility"], "explicit")
+            self.assertEqual(never["retrieval_visibility"], "never")
         finally:
             mem.close()
             store.close()
