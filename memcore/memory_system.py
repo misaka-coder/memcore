@@ -1634,6 +1634,11 @@ class MemorySystem:
             provider_profile=provider_profile,
         )
 
+    def request_shutdown(self) -> None:
+        """Stop accepting useful compaction output for this system instance."""
+
+        self._compaction.request_shutdown()
+
     def close(self, *, wait: bool = True) -> None:
         """收掉后台压缩线程。store/index 生命周期由调用方自理。"""
         if self._owns_runtime:

@@ -68,6 +68,7 @@ class MemoryConfig:
     retrieval_min_dense_score: float = 0.0
     retrieval_min_bm25_score: float = 0.0
     retrieval_min_fused_score: float = 0.0
+    llm_timeout_s: float = 30.0  # 单次结构化请求传输上限；宿主停机仍以协作取消为准
     llm_max_retries: int = 2  # 结构化 LLM 调用建议重试次数;失败仍不提交空记忆
 
     # --- 可见层作用域 ---
@@ -129,6 +130,13 @@ class MemoryConfig:
             value = getattr(self, name)
             if not isinstance(value, (int, float)) or float(value) < 0.0 or not math.isfinite(float(value)):
                 raise ConfigError(f"{name} must be a non-negative finite number, got {value!r}")
+
+        if (
+            not isinstance(self.llm_timeout_s, (int, float))
+            or float(self.llm_timeout_s) <= 0.0
+            or not math.isfinite(float(self.llm_timeout_s))
+        ):
+            raise ConfigError(f"llm_timeout_s must be a positive finite number, got {self.llm_timeout_s!r}")
 
         if not isinstance(self.raw_token_batch_ratio, (int, float)) or not (0 < self.raw_token_batch_ratio < 1):
             raise ConfigError(f"raw_token_batch_ratio must be > 0 and < 1, got {self.raw_token_batch_ratio!r}")

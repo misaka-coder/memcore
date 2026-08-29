@@ -65,8 +65,8 @@ class MemCoreRuntime:
             if self._closed:
                 return
             self._closed = True
-        self._compaction_executor.shutdown(wait=wait)
-        self._index_executor.shutdown(wait=wait)
+        self._compaction_executor.shutdown(wait=wait, cancel_futures=True)
+        self._index_executor.shutdown(wait=wait, cancel_futures=True)
 
 
 __all__ = ["ConversationLockRegistry", "MemCoreRuntime"]

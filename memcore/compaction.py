@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import math
+import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -107,16 +108,37 @@ class Compaction:
             enable_flavor=self.config.enable_flavor,
         )
         self.runtime = runtime or MemCoreRuntime()
+        self._shutdown_requested = threading.Event()
+
+    def request_shutdown(self) -> None:
+        """Cooperatively stop this MemorySystem's compaction work.
+
+        Provider calls cannot be interrupted portably once they are on the
+        wire, so callers still bound transport timeouts.  This signal prevents
+        retries and, critically, prevents a late response from committing new
+        memory after host shutdown has started.
+        """
+
+        self._shutdown_requested.set()
+
+    def _stop_if_shutdown(self, result: dict[str, Any]) -> bool:
+        if not self._shutdown_requested.is_set():
+            return False
+        result["status"] = "cancelled"
+        result["reason"] = "shutdown_requested"
+        return True
 
     def run_due(self, *, namespace: Namespace, provider_profile: str = "") -> dict[str, Any]:
         profile = str(provider_profile or self.config.projection_profile).strip().lower()
+        result = CompactionResult().to_dict()
+        result["provider_profile"] = profile
+        if self._stop_if_shutdown(result):
+            return result
         lock = self.runtime.lock_registry.lock_for(
             store_identity=self.store.runtime_identity(),
             namespace=namespace,
         )
         if not lock.acquire(blocking=False):
-            result = CompactionResult().to_dict()
-            result["provider_profile"] = profile
             result["status"] = "busy"
             return result
         try:
@@ -124,12 +146,16 @@ class Compaction:
                 result = CompactionResult().to_dict()
                 result["provider_profile"] = profile
                 try:
+                    if self._stop_if_shutdown(result):
+                        return result
                     try:
                         bundles = self.store.list_compaction_bundles(namespace=namespace)
                     except NotImplementedError:
                         bundles = []
                     if bundles:
                         self._summarize_timeline(namespace, bundles, result, provider_profile=profile)
+                    if self._stop_if_shutdown(result):
+                        return result
                     self._semanticize_episodic(namespace, result)
                     return result
                 except StaleSnapshotError:
@@ -283,6 +309,8 @@ class Compaction:
                     "topic_headings": [],
                 },
             )
+            if self._stop_if_shutdown(result):
+                return
             if not call.ok or not _has_summary_content(call.data):
                 result["status"] = "failed"
                 result["reason"] = "summary_retry_pending"
@@ -300,6 +328,8 @@ class Compaction:
         if operation_entries:
             summary_inputs.append(self._operation_summary_input(namespace=namespace, entries=operation_entries))
 
+        if self._stop_if_shutdown(result):
+            return
         committed = self.store.commit_summary_batch(
             namespace=namespace,
             snapshot=snapshot,
@@ -622,6 +652,8 @@ class Compaction:
     # --- 阶段摘要 → 长期语义记忆(含强化合并) ---
 
     def _semanticize_episodic(self, namespace: Namespace, result: dict[str, Any]) -> None:
+        if self._stop_if_shutdown(result):
+            return
         cfg = self.config
         eps = self.store.get_uncompacted_episodic_summaries(namespace=namespace)
         if len(eps) < cfg.episodic_compact_trigger_count:
@@ -644,6 +676,8 @@ class Compaction:
                 "topic_headings": [],
             },
         )
+        if self._stop_if_shutdown(result):
+            return
         if not call.ok or not _has_semantic_content(call.data):
             result["semantic_retry_pending"] += 1
             return
@@ -691,6 +725,8 @@ class Compaction:
         target = self._find_reinforcement_target(namespace, incoming)
         if target is not None:
             record = self._merge_reinforcement(target, incoming)
+            if self._stop_if_shutdown(result):
+                return
             reinforcement_target_id = str(target["semantic_id"])
             reinforcement_target_row_version = int(target.get("row_version") or 0)
         else:
@@ -721,6 +757,8 @@ class Compaction:
             reinforcement_target_id=reinforcement_target_id,
             reinforcement_target_row_version=reinforcement_target_row_version,
         )
+        if self._stop_if_shutdown(result):
+            return
         committed = self.store.commit_semantic_batch(
             namespace=namespace,
             commit=SemanticCommitInput(snapshot=snapshot, semantic_record=record),
@@ -842,6 +880,7 @@ class Compaction:
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 response_format=ResponseFormat.JSON,
+                timeout_s=self.config.llm_timeout_s,
                 max_retries=self.config.llm_max_retries,
                 fallback=fallback,
             )

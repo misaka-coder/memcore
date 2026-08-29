@@ -16,6 +16,19 @@ class CannedSummaryLLM(LLMClient):
         return LLMResult(ok=True, data={})
 
 
+class BlockingSummaryLLM(CannedSummaryLLM):
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def call(self, request: LLMRequest) -> LLMResult:
+        if request.task_type == TaskType.SUMMARY:
+            self.started.set()
+            if not self.release.wait(timeout=5):
+                return LLMResult(ok=False, data=request.fallback, error="test_timeout")
+        return super().call(request)
+
+
 class RRFDedup(unittest.TestCase):
     def test_dedup_preserves_order_no_duplicates(self) -> None:
         semantic = [{"source_id": "a", "semantic_score": 0.9}, {"source_id": "b", "semantic_score": 0.8}]
@@ -69,6 +82,32 @@ class AsyncCompaction(unittest.TestCase):
         mem.compact_due_background().result(timeout=5)
         mem.close()
         mem.close()  # 再次 close 不报错
+
+    def test_shutdown_during_provider_call_does_not_commit_late_summary(self) -> None:
+        llm = BlockingSummaryLLM()
+        mem = MemorySystem(
+            llm=llm,
+            namespace=Namespace(user_id="u1", conversation_id="shutdown"),
+            timezone="Asia/Shanghai",
+            embedding=HashedEmbeddingProvider(),
+            config=MemoryConfig(raw_token_trigger=100, episodic_compact_trigger_count=99),
+        )
+        for i in range(4):
+            mem.record_user_turn(f"消息{i}", timestamp=2000 + i)
+        future = mem.compact_due_background()
+        self.assertTrue(llm.started.wait(timeout=2))
+
+        mem.request_shutdown()
+        llm.release.set()
+        result = future.result(timeout=2)
+
+        self.assertEqual(result["status"], "cancelled")
+        self.assertEqual(result["reason"], "shutdown_requested")
+        self.assertEqual(
+            mem.store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10),
+            [],
+        )
+        mem.close()
 
 
 if __name__ == "__main__":
