@@ -501,8 +501,8 @@ memory_metadata 标注宿主指定的本轮记忆目标，不描述回复；无�
 turn_intent：目标在查询历史时填 memory_query，否则留空。
 memory_facets：内容未来可回答的问题类型，从固定枚举中选择。
 about_roles：内容主要描述谁或什么（不是发言参与者），选 user、assistant、third_party、external。
-entity_anchors：内容中已知的准确名称或别名；未知答案不填。
-topic_terms：可用于查询的动作、关系、属性或主题短词。
+entity_anchors：已知且未来正常聊天可能追问的准确名称或别名；未知答案和宽泛上位词不填。
+topic_terms：可用于查询的动作、关系、属性或主题短词，不写句子。
 retrieval_priority：未来召回价值，选 low、normal、high、critical。
 ```
 

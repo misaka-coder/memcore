@@ -39,8 +39,8 @@ class WeldedAlwaysPresent(unittest.TestCase):
         for marker in _WELDED_SUMMARY:
             self.assertIn(marker, s_sum)
         self.assertIn("未来正常聊天", s_sum)
-        self.assertIn("不要机械补太宽泛的上位词", s_sum)
-        self.assertIn("不要写整句或短句", s_sum)
+        self.assertIn("宽泛上位词不填", s_sum)
+        self.assertIn("不写句子", s_sum)
         for marker in _WELDED_SEMANTIC:
             self.assertIn(marker, s_sem)
         self.assertIn("未来正常聊天", s_sem)

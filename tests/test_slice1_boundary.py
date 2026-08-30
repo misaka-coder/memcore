@@ -76,7 +76,7 @@ class MetadataCoercion(unittest.TestCase):
         self.assertIn("本轮记忆目标，不描述回复", instruction)
         self.assertIn("目标在查询历史时填 memory_query", instruction)
         self.assertIn("不是发言参与者", instruction)
-        self.assertIn("未知答案不填", instruction)
+        self.assertIn("未知答案和宽泛上位词不填", instruction)
         self.assertIn("动作、关系、属性或主题短词", instruction)
         self.assertIn("情感余温", instruction)
         self.assertNotIn("优先考虑未来正常聊天", instruction)
