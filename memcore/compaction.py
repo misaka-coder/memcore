@@ -927,7 +927,7 @@ class Compaction:
         rendered: list[str] = []
         for record in batch:
             entry = TimelineEntry.from_record(record)
-            chat_text = self.projection_adapter.render_chat_entry(entry)
+            chat_text = self.projection_adapter.render_chat_entry(entry, include_weekday=True)
             if chat_text is not None:
                 rendered.append(chat_text)
                 continue
