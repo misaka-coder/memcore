@@ -171,6 +171,15 @@ The live request path must:
 - preserve background compaction so a visible reply never waits for summary
   generation.
 
+Episode-summary input reuses the same semantic chat renderer for chat entries.
+Its summary view retains the weekday beside the timestamp so relative dates can
+be resolved without lengthening ordinary provider history.  The summary model
+therefore receives the same time, actor, target, mention,
+reply, forward, observed-mode, voice, emotion, and text/speech facts as the
+chat model.  Tool actions/results remain outside episode prose and continue
+through the operation-digest path; typed events and materials retain their
+dedicated renderers.
+
 Validation compares repeated projection bytes/hashes and measures projection
 construction before and after V5 on a long mixed chat/tool fixture. The upgrade
 is rejected if it introduces query-count growth proportional to the number of

@@ -128,6 +128,9 @@ def _complete_turn(
     timestamp: int = 1000,
     actor: Actor | None = None,
     target_actor: Actor | None = None,
+    user_kind: str = "message.user",
+    user_payload: dict | None = None,
+    assistant_payload: dict | None = None,
 ) -> str:
     turn_id = f"turn-{number}"
     mem.begin_turn(
@@ -136,11 +139,11 @@ def _complete_turn(
         stimuli=[
             TimelineEntryInput(
                 source_id=f"u{number}",
-                kind="message.user",
-                origin=EntryOrigin.USER,
+                kind=user_kind,
+                origin=EntryOrigin.ENVIRONMENT if user_kind == "message.user.observed" else EntryOrigin.USER,
                 turn_role=TurnRole.STIMULUS,
                 semantic_text=user_text,
-                payload={"text": user_text},
+                payload=user_payload or {"text": user_text},
                 timestamp=timestamp,
                 actor=actor,
                 target_actor=target_actor,
@@ -160,6 +163,7 @@ def _complete_turn(
         annotation_status=AnnotationStatus.ACCEPTED_HOST,
         timestamp=timestamp + 1,
         source_id=f"a{number}",
+        payload=assistant_payload,
     )
     if not result.completed:
         raise AssertionError(result)
@@ -646,16 +650,37 @@ class SummaryCycleViaFacade(unittest.TestCase):
             timestamp=1000,
             actor=Actor(stable_id="qq-1", display_name="张三"),
             target_actor=Actor(stable_id="assistant"),
+            user_kind="message.user.observed",
+            user_payload={
+                "text": "我下周三要复盘基金组合",
+                "mentioned_actors": [{"actor_id": "qq-2", "display_name": "李四"}],
+                "reply_reference": {
+                    "actor_id": "qq-3",
+                    "actor_display_name": "Olivia",
+                    "message_id": "reply-1",
+                    "excerpt": "下周三一起复盘",
+                },
+                "forward_references": [{"forward_id": "forward-1", "status": "resolved"}],
+            },
+            assistant_payload={"emotion": "认真"},
         )
 
         mem.compact_due_sync()
 
         summary_requests = [req for req in llm.requests if req.task_type == TaskType.SUMMARY]
         self.assertEqual(len(summary_requests), 1)
-        self.assertIn(
-            "user(张三;id=qq-1) -> assistant: 我下周三要复盘基金组合",
-            summary_requests[0].user_prompt,
-        )
+        prompt = summary_requests[0].user_prompt
+        self.assertIn("actor: 张三 (id=qq-1)", prompt)
+        self.assertIn("target: assistant", prompt)
+        self.assertIn('mentions: ["李四 (id=qq-2)"]', prompt)
+        self.assertIn("reply_to:", prompt)
+        self.assertIn("actor: Olivia (id=qq-3)", prompt)
+        self.assertIn("text: 下周三一起复盘", prompt)
+        self.assertIn('forwards: [{"forward_id":"forward-1","status":"resolved"}]', prompt)
+        self.assertIn("mode: observed", prompt)
+        self.assertIn("text:\n我下周三要复盘基金组合", prompt)
+        self.assertIn("emotion: 认真", prompt)
+        self.assertIn("speech:\n到时一起复盘", prompt)
         self.assertIn("事实、请求、计划或承诺与接收对象有关时必须保留接收方", summary_requests[0].system_prompt)
         self.assertIn("旁观到的群消息不得改写成对助手的请求、承诺或共同经历", summary_requests[0].system_prompt)
 
