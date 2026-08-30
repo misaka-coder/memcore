@@ -927,10 +927,6 @@ class Compaction:
         rendered: list[str] = []
         for record in batch:
             entry = TimelineEntry.from_record(record)
-            chat_text = self.projection_adapter.render_chat_entry(entry, include_weekday=True)
-            if chat_text is not None:
-                rendered.append(chat_text)
-                continue
             if entry.kind.startswith("message.") or entry.turn_role is TurnRole.FINAL:
                 rendered.append(render_raw_snippet([record], tz=self.timezone))
                 continue

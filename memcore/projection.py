@@ -924,18 +924,13 @@ def _append_chat_body(lines: list[str], *, label: str, value: Any, indent: str =
         lines.extend(f"{body_indent}{line}" for line in text.splitlines())
 
 
-def _render_chat_message(entry: TimelineEntry, timezone: str, *, include_weekday: bool = False) -> str:
+def _render_chat_message(entry: TimelineEntry, timezone: str) -> str:
     """Render chat history as compact facts, never as an output-protocol replay."""
 
     payload = dict(entry.payload)
     lines: list[str] = []
     if entry.timestamp > 0:
-        timestamp_label = (
-            timestamp_to_datetime_weekday_label(entry.timestamp, timezone)
-            if include_weekday
-            else timestamp_to_datetime_label(entry.timestamp, timezone)
-        )
-        lines.append(f"time: {timestamp_label}")
+        lines.append(f"time: {timestamp_to_datetime_label(entry.timestamp, timezone)}")
 
     actor = entry.namespace.actor
     if actor is not None:
@@ -1250,19 +1245,12 @@ class ProjectionAdapter:
     def _render(self, entry: TimelineEntry) -> RendererResult:
         return self.renderer_registry.render(entry, timezone=self.timezone)
 
-    def render_chat_entry(self, entry: TimelineEntry, *, include_weekday: bool = False) -> str | None:
-        """Return the shared semantic chat wire, or ``None`` for non-chat kinds."""
-
-        if not _is_chat_message_entry(entry):
-            return None
-        return _render_chat_message(entry, self.timezone, include_weekday=include_weekday)
-
     def context_surface_payload(self, entry: TimelineEntry, *, provider_profile: str) -> dict[str, Any] | None:
         """Render an unfrozen chat entry without exposing host/output protocol fields."""
 
-        text = self.render_chat_entry(entry)
-        if text is None:
+        if not _is_chat_message_entry(entry):
             return None
+        text = _render_chat_message(entry, self.timezone)
         role = "assistant" if entry.origin.value == "assistant" else "user"
         original = dict(entry.payload)
         for key in tuple(original):
