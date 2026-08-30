@@ -224,12 +224,10 @@ class SummaryCycleViaFacade(unittest.TestCase):
         self.assertEqual(results[-1]["summaries_created"], 0)
         self.assertTrue(all(item["summaries_created"] <= 1 for item in results))
         remaining = mem.store.get_unsummarized_messages(namespace=mem.namespace)
-        remaining_source_ids = [message["source_id"] for message in remaining]
-        self.assertGreater(len(remaining_source_ids), 0)
-        self.assertEqual(remaining_source_ids, [f"m{i}" for i in range(10 - len(remaining_source_ids), 10)])
+        self.assertEqual([message["source_id"] for message in remaining], ["m9"])
         visible = mem.store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10)
         summarized_source_ids = {source_id for summary in visible for source_id in summary.get("source_ids", [])}
-        self.assertEqual(summarized_source_ids, {f"m{i}" for i in range(10)} - set(remaining_source_ids))
+        self.assertEqual(summarized_source_ids, {f"m{i}" for i in range(9)})
 
     def test_tool_exchange_joins_one_turn_and_compacts_as_operation_partition(self) -> None:
         cfg = MemoryConfig(raw_token_trigger=1, episodic_compact_trigger_count=99)

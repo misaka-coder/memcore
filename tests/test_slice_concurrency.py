@@ -62,7 +62,7 @@ class AsyncCompaction(unittest.TestCase):
             namespace=Namespace(user_id="u1", conversation_id="c1"),
             timezone="Asia/Shanghai",
             embedding=HashedEmbeddingProvider(),
-            config=MemoryConfig(raw_token_trigger=1, episodic_compact_trigger_count=99),
+            config=MemoryConfig(raw_token_trigger=100, episodic_compact_trigger_count=99),
         )
 
     def test_background_compaction_runs_and_returns_future(self) -> None:
@@ -90,7 +90,7 @@ class AsyncCompaction(unittest.TestCase):
             namespace=Namespace(user_id="u1", conversation_id="shutdown"),
             timezone="Asia/Shanghai",
             embedding=HashedEmbeddingProvider(),
-            config=MemoryConfig(raw_token_trigger=1, episodic_compact_trigger_count=99),
+            config=MemoryConfig(raw_token_trigger=100, episodic_compact_trigger_count=99),
         )
         for i in range(4):
             mem.record_user_turn(f"消息{i}", timestamp=2000 + i)

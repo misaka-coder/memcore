@@ -137,7 +137,7 @@ class OutboxResilience(unittest.TestCase):
         self.assertEqual(self.store.list_pending_index(), [])
 
     def test_compaction_summary_survives_index_down_then_heals(self) -> None:
-        cfg = MemoryConfig(raw_token_trigger=1, episodic_compact_trigger_count=99)
+        cfg = MemoryConfig(raw_token_trigger=100, episodic_compact_trigger_count=99)
         mem = self._mem(llm=_SummaryLLM(), config=cfg)
         for i in range(4):
             mem.record_user_turn(f"消息{i}", timestamp=1000 + i, source_id=f"m{i}")

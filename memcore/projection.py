@@ -20,10 +20,10 @@ from .kind_contract import is_valid_kind, is_valid_kind_prefix, normalize_kind
 from .namespace import Namespace
 from .rendering import render_semantic_snippet, render_summary_snippet
 from .text_utils import normalize_text
-from .time_anchor import TIME_PERIOD_LABELS, timestamp_to_datetime_label, timestamp_to_datetime_weekday_label
+from .time_anchor import TIME_PERIOD_LABELS, timestamp_to_datetime_weekday_label
 from .timeline import TimelineEntry, TimelineEntryInput, TurnRole
 
-PROJECTION_VERSION = 5
+PROJECTION_VERSION = 4
 CANONICAL_PROFILE = "canonical_user_assistant"
 OPENAI_PROFILE = "openai_chat"
 ANTHROPIC_PROFILE = "anthropic_messages"
@@ -904,134 +904,29 @@ def _entry_header(entry: TimelineEntry, timezone: str) -> str:
     return f"[{anchor}] {entry.kind}" if anchor else entry.kind
 
 
-def _chat_actor_value(*, stable_id: Any = "", display_name: Any = "") -> str:
-    stable = _display_scalar(stable_id)
-    display = _display_scalar(display_name)
-    if display and stable and display != stable:
-        return f"{display} (id={stable})"
-    return display or stable
+def _ordinary_message_text(entry: TimelineEntry, timezone: str, label: str) -> str:
+    """Render the two ordinary chat kinds without leaking timeline internals."""
 
-
-def _append_chat_body(lines: list[str], *, label: str, value: Any, indent: str = "") -> None:
-    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
-    text = _CONTROL_CHARS.sub(" ", text)
-    if indent and text and "\n" not in text:
-        lines.append(f"{indent}{label}: {text}")
-        return
-    lines.append(f"{indent}{label}:")
-    if text:
-        body_indent = f"{indent}  " if indent else ""
-        lines.extend(f"{body_indent}{line}" for line in text.splitlines())
-
-
-def _render_chat_message(entry: TimelineEntry, timezone: str) -> str:
-    """Render chat history as compact facts, never as an output-protocol replay."""
-
-    payload = dict(entry.payload)
-    lines: list[str] = []
     if entry.timestamp > 0:
-        lines.append(f"time: {timestamp_to_datetime_label(entry.timestamp, timezone)}")
-
-    actor = entry.namespace.actor
-    if actor is not None:
-        value = _chat_actor_value(
-            stable_id=getattr(actor, "stable_id", ""),
-            display_name=getattr(actor, "display_name", ""),
-        )
-        if value:
-            lines.append(f"actor: {value}")
-    if entry.target_actor is not None:
-        value = _chat_actor_value(
-            stable_id=getattr(entry.target_actor, "stable_id", ""),
-            display_name=getattr(entry.target_actor, "display_name", ""),
-        )
-        if value:
-            lines.append(f"target: {value}")
-
-    mentions: list[str] = []
-    for mention in payload.get("mentioned_actors") or ():
-        if not isinstance(mention, Mapping):
-            continue
-        value = _chat_actor_value(
-            stable_id=mention.get("actor_id"),
-            display_name=mention.get("display_name"),
-        )
-        if value and value not in mentions:
-            mentions.append(value)
-    if mentions:
-        lines.append("mentions: " + json.dumps(mentions, ensure_ascii=False, separators=(",", ":")))
-
-    reply = payload.get("reply_reference")
-    if isinstance(reply, Mapping) and any(
-        str(reply.get(key) or "").strip() for key in ("actor_id", "actor_display_name", "message_id", "excerpt")
-    ):
-        lines.append("reply_to:")
-        value = _chat_actor_value(
-            stable_id=reply.get("actor_id"),
-            display_name=reply.get("actor_display_name"),
-        )
-        if value:
-            lines.append(f"  actor: {value}")
-        reply_timestamp = reply.get("timestamp")
-        try:
-            resolved_reply_timestamp = int(float(reply_timestamp or 0))
-        except (TypeError, ValueError):
-            resolved_reply_timestamp = 0
-        if resolved_reply_timestamp > 0:
-            lines.append(f"  time: {timestamp_to_datetime_label(resolved_reply_timestamp, timezone)}")
-        for key in ("message_id", "conversation_kind", "conversation_id", "attachment_count"):
-            value = _display_scalar(reply.get(key))
-            if value:
-                lines.append(f"  {key}: {value}")
-        if str(reply.get("excerpt") or ""):
-            _append_chat_body(lines, label="text", value=reply.get("excerpt"), indent="  ")
-
-    forwards = payload.get("forward_references")
-    if isinstance(forwards, (list, tuple)) and forwards:
-        safe_forwards, _ = _sanitize_value(list(forwards), key="forward_references")
-        lines.append(
-            "forwards: " + json.dumps(safe_forwards, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-        )
-
-    normalized_kind = str(entry.kind or "").strip().lower()
-    is_assistant = entry.origin.value == "assistant"
-    is_voice = normalized_kind in {"message.user.voice", "message.assistant.voice"}
-    if normalized_kind == "message.user.observed":
-        lines.append("mode: observed")
-    if is_voice:
-        lines.append("medium: voice")
-    if is_assistant:
-        emotion = _display_scalar(payload.get("emotion"))
-        if emotion:
-            lines.append(f"emotion: {emotion}")
-    if is_voice:
-        delivery = _display_scalar(payload.get("delivery_status") or payload.get("delivery"))
-        if delivery and delivery not in {"delivered", "success", "completed"}:
-            lines.append(f"delivery: {delivery}")
-        for key in ("delivered_units", "interrupted_units"):
-            value = payload.get(key)
-            if isinstance(value, (list, tuple)) and value:
-                safe_value, _ = _sanitize_value(list(value), key=key)
-                lines.append(
-                    f"{key}: " + json.dumps(safe_value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-                )
-
-    _append_chat_body(
-        lines,
-        label="speech" if is_assistant else "text",
-        value=payload.get("text") or entry.semantic_text or "",
-    )
-    return "\n".join(lines)
+        full_stamp = timestamp_to_datetime_weekday_label(entry.timestamp, timezone)
+        parts = full_stamp.split()
+        stamp = f"{parts[0]} {parts[-1]}" if len(parts) >= 2 else full_stamp
+    else:
+        stamp = ""
+    text = str(entry.semantic_text or entry.payload.get("text") or "")
+    prefix = f"[{stamp}] " if stamp else ""
+    return f"{prefix}{label}: {text}"
 
 
-def _is_chat_message_entry(entry: TimelineEntry) -> bool:
-    return str(entry.kind or "") in {
-        "message.user",
-        "message.user.observed",
-        "message.user.voice",
-        "message.assistant",
-        "message.assistant.voice",
-    }
+def _has_plain_final_output(entry: TimelineEntry) -> bool:
+    raw = str(entry.payload.get("provider_output_raw") or "")
+    return not raw or raw == entry.semantic_text
+
+
+def _is_ordinary_chat_entry(entry: TimelineEntry) -> bool:
+    """Use the compact chat form only when no attribution facts would be lost."""
+
+    return entry.target_actor is None and not bool(entry.payload.get("mentioned_actors"))
 
 
 def _tool_arguments_json(value: Any) -> str:
@@ -1246,16 +1141,19 @@ class ProjectionAdapter:
         return self.renderer_registry.render(entry, timezone=self.timezone)
 
     def context_surface_payload(self, entry: TimelineEntry, *, provider_profile: str) -> dict[str, Any] | None:
-        """Render an unfrozen chat entry without exposing host/output protocol fields."""
+        """Render an unfrozen ordinary chat entry for the public context surface."""
 
-        if not _is_chat_message_entry(entry):
+        if not _is_ordinary_chat_entry(entry):
             return None
-        text = _render_chat_message(entry, self.timezone)
-        role = "assistant" if entry.origin.value == "assistant" else "user"
+        if entry.kind == "message.user":
+            text = _ordinary_message_text(entry, self.timezone, "User")
+            role = "user"
+        elif entry.kind == "message.assistant" and entry.turn_role is TurnRole.FINAL and _has_plain_final_output(entry):
+            text = _ordinary_message_text(entry, self.timezone, "Assistant")
+            role = "assistant"
+        else:
+            return None
         original = dict(entry.payload)
-        for key in tuple(original):
-            if key not in {"content", "type"}:
-                original.pop(key, None)
         content = original.get("content")
         if isinstance(content, list):
             blocks = [dict(block) for block in content if isinstance(block, Mapping)]
@@ -1279,8 +1177,9 @@ class ProjectionAdapter:
         return original
 
     def _assistant_final_text(self, entry: TimelineEntry) -> str:
-        if _is_chat_message_entry(entry):
-            return _render_chat_message(entry, self.timezone)
+        raw = entry.payload.get("provider_output_raw") if isinstance(entry.payload, dict) else ""
+        if entry.kind == "message.assistant":
+            return str(raw if raw is not None and str(raw) else entry.semantic_text)
         host_state, _ = _sanitize_value(
             {
                 "kind": entry.kind,
@@ -1352,13 +1251,7 @@ class ProjectionAdapter:
         for entry in entries:
             rendered = self._render(entry)
             role = "assistant" if entry.origin.value == "assistant" else "user"
-            content = (
-                _render_chat_message(entry, self.timezone)
-                if _is_chat_message_entry(entry)
-                else self._assistant_final_text(entry)
-                if entry.turn_role is TurnRole.FINAL
-                else rendered.text
-            )
+            content = self._assistant_final_text(entry) if entry.turn_role is TurnRole.FINAL else rendered.text
             if entry.turn_role is TurnRole.OBSERVATION and observation_decider is not None:
                 _, content = observation_decider(entry, content)
             messages.append(
@@ -1443,8 +1336,13 @@ class ProjectionAdapter:
                 payload = {
                     "role": "assistant",
                     "content": (
-                        _render_chat_message(entry, self.timezone)
-                        if _is_chat_message_entry(entry)
+                        _ordinary_message_text(entry, self.timezone, "Assistant")
+                        if (
+                            entry.kind == "message.assistant"
+                            and entry.turn_role is TurnRole.FINAL
+                            and _has_plain_final_output(entry)
+                            and _is_ordinary_chat_entry(entry)
+                        )
                         else self._assistant_final_text(entry)
                         if entry.turn_role is TurnRole.FINAL
                         else rendered.text
@@ -1454,7 +1352,9 @@ class ProjectionAdapter:
                 payload = {
                     "role": "user",
                     "content": (
-                        _render_chat_message(entry, self.timezone) if _is_chat_message_entry(entry) else rendered.text
+                        _ordinary_message_text(entry, self.timezone, "User")
+                        if entry.kind == "message.user" and _is_ordinary_chat_entry(entry)
+                        else rendered.text
                     ),
                 }
             messages.append(
@@ -1516,10 +1416,17 @@ class ProjectionAdapter:
             else:
                 role = "assistant" if entry.origin.value == "assistant" else "user"
                 content = (
-                    _render_chat_message(entry, self.timezone)
-                    if _is_chat_message_entry(entry)
+                    _ordinary_message_text(entry, self.timezone, "Assistant")
+                    if (
+                        entry.kind == "message.assistant"
+                        and entry.turn_role is TurnRole.FINAL
+                        and _has_plain_final_output(entry)
+                        and _is_ordinary_chat_entry(entry)
+                    )
                     else self._assistant_final_text(entry)
                     if entry.turn_role is TurnRole.FINAL
+                    else _ordinary_message_text(entry, self.timezone, "User")
+                    if entry.kind == "message.user" and _is_ordinary_chat_entry(entry)
                     else rendered.text
                 )
                 payload = {"type": "message", "role": role, "content": content}
@@ -1614,10 +1521,17 @@ class ProjectionAdapter:
                 continue
             rendered = self._render(entry)
             text = (
-                _render_chat_message(entry, self.timezone)
-                if _is_chat_message_entry(entry)
+                _ordinary_message_text(entry, self.timezone, "Assistant")
+                if (
+                    entry.kind == "message.assistant"
+                    and entry.turn_role is TurnRole.FINAL
+                    and _has_plain_final_output(entry)
+                    and _is_ordinary_chat_entry(entry)
+                )
                 else self._assistant_final_text(entry)
                 if entry.turn_role is TurnRole.FINAL
+                else _ordinary_message_text(entry, self.timezone, "User")
+                if entry.kind == "message.user" and _is_ordinary_chat_entry(entry)
                 else rendered.text
             )
             role = "assistant" if entry.origin.value == "assistant" else "user"
