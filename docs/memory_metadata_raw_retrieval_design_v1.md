@@ -497,14 +497,13 @@ metadata 继承必须逐字段处理：模型生成的某一字段为空时，�
 ### 10.1 Metadata 标注
 
 ```text
-memory_metadata 标注宿主指定的本轮记忆目标，不是你的回复。
-turn_intent 只在当前内容明确查询历史记忆时填写 memory_query，普通消息留空；它不描述想找的历史内容。
-memory_facets 表示这段内容以后能回答哪类问题，只能从固定枚举选择；没有长期检索价值时留空。
-about_roles 表示内容主要在陈述谁或什么，不表示谁参加了对话；可选 user、assistant、third_party、external。
-entity_anchors 只填写明确出现或能够确定的名称和别名，不要猜测相关实体。
-topic_terms 填写有助于未来查询的动作或主题短词，不要写整句。
-retrieval_priority 表示未来重新找回的价值，使用 low、normal、high、critical。
-不确定时宁可留空，不要为了填字段编造标签。
+memory_metadata 标注宿主指定的本轮记忆目标，不描述回复；无关字段留空。
+turn_intent：目标在查询历史时填 memory_query，否则留空。
+memory_facets：内容未来可回答的问题类型，从固定枚举中选择。
+about_roles：内容主要描述谁或什么（不是发言参与者），选 user、assistant、third_party、external。
+entity_anchors：内容中已知的准确名称或别名；未知答案不填。
+topic_terms：可用于查询的动作、关系、属性或主题短词。
+retrieval_priority：未来召回价值，选 low、normal、high、critical。
 ```
 
 固定 facet 枚举及一句话定义由同一份契约生成并保持稳定，不能由不同宿主提示词各写一版。

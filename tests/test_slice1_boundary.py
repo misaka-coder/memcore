@@ -20,6 +20,7 @@ from memcore import (
     NamespaceError,
     SchemaError,
     TokenCounter,
+    build_memory_metadata_instruction,
     coerce_memory_metadata,
 )
 from memcore.schema import ABOUT_ROLES, MEMORY_FACETS, SEMANTIC_REQUIRED_FIELDS, require_fields
@@ -69,6 +70,17 @@ class ConfigInvariants(unittest.TestCase):
 
 
 class MetadataCoercion(unittest.TestCase):
+    def test_model_instruction_is_concise_and_preserves_field_semantics(self) -> None:
+        instruction = build_memory_metadata_instruction(enable_flavor=True)
+
+        self.assertIn("本轮记忆目标，不描述回复", instruction)
+        self.assertIn("目标在查询历史时填 memory_query", instruction)
+        self.assertIn("不是发言参与者", instruction)
+        self.assertIn("未知答案不填", instruction)
+        self.assertIn("动作、关系、属性或主题短词", instruction)
+        self.assertIn("情感余温", instruction)
+        self.assertNotIn("优先考虑未来正常聊天", instruction)
+
     def test_enum_filtering_and_string_deduplication(self) -> None:
         meta = coerce_memory_metadata(
             {

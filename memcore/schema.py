@@ -164,24 +164,20 @@ def build_memory_metadata_instruction(
     mood_rule = ""
     if enable_flavor:
         mood_rule = (
-            "[情感温度(已启用)] mood_tags 可写 0-3 个，只能从固定枚举选择："
-            f"{' / '.join(MOOD_TAGS)}；它只表达记忆的情感余温，不能污染客观事实。"
+            "mood_tags：情感余温，可从以下枚举选择 0-3 个："
+            f"{' / '.join(MOOD_TAGS)}。"
         )
     elif require_disabled_mood_field:
-        mood_rule = "mood_tags 必须输出为空数组。"
+        mood_rule = "mood_tags：输出空数组。"
     return (
-        "memory_metadata 标注宿主指定的本轮记忆目标，不是你的回复。"
-        "turn_intent 只在当前内容明确查询历史记忆时填写 memory_query，普通内容留空；"
-        "它不表示想找的历史内容。"
-        f"memory_facets 表示这段内容以后能回答哪类问题，只能从 {' / '.join(MEMORY_FACETS)} 中选择；"
-        "没有长期检索价值时留空。"
-        f"about_roles 表示内容主要在陈述谁或什么，不表示谁参加了对话，只能从 {' / '.join(ABOUT_ROLES)} 中选择。"
-        "entity_anchors 只填明确出现或能够确定的准确名称和别名，优先考虑未来正常聊天里可能用于追问的名称；"
-        "不要猜测相关实体，也不要机械补太宽泛的上位词。"
-        "topic_terms 填有助于未来查询的动作、属性或主题短词，不要写整句或短句。"
-        f"retrieval_priority 表示未来重新找回的价值，只能是 {' / '.join(RETRIEVAL_PRIORITIES)}。"
+        "memory_metadata 标注宿主指定的本轮记忆目标，不描述回复；无关字段留空。"
+        "turn_intent：目标在查询历史时填 memory_query，否则留空。"
+        f"memory_facets：内容未来可回答的问题类型，选 {' / '.join(MEMORY_FACETS)}。"
+        f"about_roles：内容主要描述谁或什么（不是发言参与者），选 {' / '.join(ABOUT_ROLES)}。"
+        "entity_anchors：内容中已知的准确名称或别名；未知答案不填。"
+        "topic_terms：可用于查询的动作、关系、属性或主题短词。"
+        f"retrieval_priority：未来召回价值，选 {' / '.join(RETRIEVAL_PRIORITIES)}。"
         f"{mood_rule}"
-        "不确定时宁可留空，不要为了填字段编造标签。"
     )
 
 

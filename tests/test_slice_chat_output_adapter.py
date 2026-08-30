@@ -154,7 +154,7 @@ class ChatOutputPrompt(unittest.TestCase):
         self.assertIn("memory_facets", prompt)
         self.assertIn("about_roles", prompt)
         self.assertIn("entity_anchors", prompt)
-        self.assertIn("mood_tags 必须输出为空数组", prompt)
+        self.assertIn("mood_tags：输出空数组", prompt)
         self.assertIn("工具调用阶段不适用本 JSON 契约", prompt)
         self.assertIn("不是摆设", prompt)
         self.assertIn("可以继续补查", prompt)
@@ -173,8 +173,8 @@ class ChatOutputPrompt(unittest.TestCase):
         self.assertIn("宿主指定的本轮记忆标注目标", prompt)
         self.assertIn('include_explicit=true, kind_patterns=["material.*"]', prompt)
         self.assertNotIn("confidence", prompt)
-        self.assertIn("准确名称和别名", prompt)
-        self.assertIn("不要写整句", prompt)
+        self.assertIn("准确名称或别名", prompt)
+        self.assertIn("动作、关系、属性或主题短词", prompt)
         self.assertNotIn("speech_segments", prompt)
 
 
