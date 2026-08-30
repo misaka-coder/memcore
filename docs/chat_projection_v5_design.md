@@ -29,7 +29,7 @@ Private user message:
 ```yaml
 role: user
 content: |
-  time: 2026-08-30 20:56
+  time: 2026-08-30 20:56 周日
   text:
   小灵聪明
 ```
@@ -39,7 +39,7 @@ Assistant final:
 ```yaml
 role: assistant
 content: |
-  time: 2026-08-30 20:56
+  time: 2026-08-30 20:56 周日
   emotion: 得意
   speech:
   那可不，刚那一圈工具全验通了，链路都顺。
@@ -53,7 +53,7 @@ Attributed group input adds only facts that exist:
 ```yaml
 role: user
 content: |
-  time: 2026-08-30 20:56
+  time: 2026-08-30 20:56 周日
   actor: Olivia
   target: Akane
   mentions: [Akane]
@@ -82,7 +82,7 @@ facts:
 ```yaml
 role: assistant
 content: |
-  time: 2026-08-30 20:56
+  time: 2026-08-30 20:56 周日
   medium: voice
   delivery: interrupted
   delivered_units: [0]
@@ -172,9 +172,9 @@ The live request path must:
   generation.
 
 Episode-summary input reuses the same semantic chat renderer for chat entries.
-Its summary view retains the weekday beside the timestamp so relative dates can
-be resolved without lengthening ordinary provider history.  The summary model
-therefore receives the same time, actor, target, mention,
+The weekday is a compact suffix inside `time` for both ordinary history and
+summary input, so relative dates can be resolved without a second time field.
+The summary model therefore receives the same time, actor, target, mention,
 reply, forward, observed-mode, voice, emotion, and text/speech facts as the
 chat model.  Tool actions/results remain outside episode prose and continue
 through the operation-digest path; typed events and materials retain their

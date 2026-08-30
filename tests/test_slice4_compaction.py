@@ -629,7 +629,7 @@ class SummaryCycleViaFacade(unittest.TestCase):
 
         summary_requests = [req for req in llm.requests if req.task_type == TaskType.SUMMARY]
         self.assertEqual(len(summary_requests), 1)
-        self.assertIn("2026-04-10 周五", summary_requests[0].user_prompt)
+        self.assertIn("time: 2026-04-10 09:00 周五", summary_requests[0].user_prompt)
         self.assertIn("上周二", summary_requests[0].user_prompt)
 
     def test_summary_prompt_keeps_group_actor_attribution(self) -> None:

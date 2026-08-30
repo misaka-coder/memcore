@@ -454,7 +454,7 @@ class ContextSessionWrapperTests(unittest.TestCase):
 
         visible = asyncio.run(wrapped.get_items())
 
-        self.assertIn("time: 2023-11-15 06:13", str(visible[0]))
+        self.assertIn("time: 2023-11-15 06:13 周三", str(visible[0]))
         self.assertIn("text:\ndated", visible[0]["content"])
 
     def test_frozen_projection_renders_ordinary_chat_messages_with_time_anchors(self) -> None:
@@ -494,7 +494,7 @@ class ContextSessionWrapperTests(unittest.TestCase):
             projection = mem.build_context_projection(provider_profile=OPENAI_PROFILE)
             user_payload = projection.payloads[0]
             self.assertEqual(user_payload["role"], "user")
-            self.assertIn("time: 2023-11-15 06:13", str(user_payload["content"]))
+            self.assertIn("time: 2023-11-15 06:13 周三", str(user_payload["content"]))
             self.assertIn("text:\nhello world", str(user_payload["content"]))
             self.assertNotIn("User:", str(user_payload["content"]))
             self.assertNotIn("message.user", str(user_payload["content"]))
