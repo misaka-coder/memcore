@@ -469,8 +469,6 @@ class MemorySystem:
                 )
             elif provider_projection is not None:
                 raise TypeError("provider_projection must be a ProjectionMessageInput, dict, or None")
-            elif provider_profile:
-                raise SchemaError("turn_completion_projection_payload_required")
             if resolved_final_projection is not None and not resolved_final_projection.source_ids:
                 resolved_final_projection = replace(
                     resolved_final_projection,
@@ -1044,6 +1042,20 @@ class MemorySystem:
 
         count_text = getattr(self.token_counter, "count_text", None) if self.token_counter is not None else None
         return migrate_legacy_path_projections(
+            store=self.store,
+            adapter=self._projection_ledger.adapter,
+            namespace=self.namespace,
+            dry_run=bool(dry_run),
+            count_text=count_text if callable(count_text) else None,
+        )
+
+    def migrate_chat_projections_v5(self, *, dry_run: bool = False) -> dict[str, Any]:
+        """Explicitly upgrade frozen ordinary chat rows to semantic V5 wire."""
+
+        from .chat_projection_migration import migrate_chat_projections_v5
+
+        count_text = getattr(self.token_counter, "count_text", None) if self.token_counter is not None else None
+        return migrate_chat_projections_v5(
             store=self.store,
             adapter=self._projection_ledger.adapter,
             namespace=self.namespace,

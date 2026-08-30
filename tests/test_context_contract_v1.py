@@ -296,7 +296,7 @@ class ContextContractTests(unittest.TestCase):
             current_source_id="image-user",
         )
         blocks = surface.current_message["content"]
-        self.assertIn("User: describe it", blocks[0]["text"])
+        self.assertIn("text:\ndescribe it", blocks[0]["text"])
         self.assertEqual(blocks[1], {"type": "input_image", "image_url": "attachment://img-1"})
 
 
@@ -345,7 +345,7 @@ class ContextSessionWrapperTests(unittest.TestCase):
         self.assertEqual(wrapped.status.mode, "authoritative")
         self.assertEqual(len([item for item in items if item.get("role") == "user"]), 1)
         self.assertEqual(len([item for item in items if item.get("role") == "assistant"]), 1)
-        self.assertIn("User: hello", str(items[0].get("content")))
+        self.assertIn("text:\nhello", str(items[0].get("content")))
 
     def test_wrap_requires_memory_instead_of_silent_storage_only(self) -> None:
         with self.assertRaisesRegex(TypeError, "authoritative wrapping cannot be storage-only"):
@@ -375,7 +375,7 @@ class ContextSessionWrapperTests(unittest.TestCase):
 
         self.assertEqual(len(provider_items), 1)
         self.assertEqual(provider_items[0]["type"], "message")
-        self.assertIn("User: hello from runner", str(provider_items[0]["content"]))
+        self.assertIn("text:\nhello from runner", str(provider_items[0]["content"]))
         asyncio.run(wrapped.add_items([new_item, {"type": "message", "role": "assistant", "content": "hi"}]))
         persisted = asyncio.run(wrapped.get_items())
         self.assertEqual(len(persisted), 2)
@@ -454,14 +454,11 @@ class ContextSessionWrapperTests(unittest.TestCase):
 
         visible = asyncio.run(wrapped.get_items())
 
-        self.assertIn("[2023-11-15 06:13] User: dated", str(visible[0]))
+        self.assertIn("time: 2023-11-15 06:13", str(visible[0]))
+        self.assertIn("text:\ndated", visible[0]["content"])
 
     def test_frozen_projection_renders_ordinary_chat_messages_with_time_anchors(self) -> None:
-        """The ledger-frozen openai family must use the same ordinary chat
-        rendering as the live surface: `[YYYY-MM-DD HH:MM] User:/Assistant: …`.
-        A frozen history whose user rows render in the structured canonical
-        format would break hosts that read history_records directly from
-        context.build (thin adapters never re-render payloads)."""
+        """Frozen and live chat use the same stable V5 fact envelope."""
         store = SQLiteMemoryStore(":memory:")
         embedding = HashedEmbeddingProvider()
         mem = MemorySystem(
@@ -497,7 +494,9 @@ class ContextSessionWrapperTests(unittest.TestCase):
             projection = mem.build_context_projection(provider_profile=OPENAI_PROFILE)
             user_payload = projection.payloads[0]
             self.assertEqual(user_payload["role"], "user")
-            self.assertIn("[2023-11-15 06:13] User: hello world", str(user_payload["content"]))
+            self.assertIn("time: 2023-11-15 06:13", str(user_payload["content"]))
+            self.assertIn("text:\nhello world", str(user_payload["content"]))
+            self.assertNotIn("User:", str(user_payload["content"]))
             self.assertNotIn("message.user", str(user_payload["content"]))
         finally:
             mem.close()
@@ -515,6 +514,12 @@ class ContextSessionWrapperTests(unittest.TestCase):
                     payload={
                         "text": "【李四】你怎么看？",
                         "mentioned_actors": [{"actor_id": "qq:3", "display_name": "天为"}],
+                        "reply_reference": {
+                            "actor_id": "qq:4",
+                            "actor_display_name": "千里朱音",
+                            "message_id": "reply-1",
+                            "excerpt": "小灵聪明",
+                        },
                     },
                     actor=Actor(stable_id="qq:2", display_name="李四"),
                     target_actor=Actor(stable_id="assistant"),
@@ -528,12 +533,45 @@ class ContextSessionWrapperTests(unittest.TestCase):
         for profile in (OPENAI_PROFILE, OPENAI_RESPONSES_PROFILE, ANTHROPIC_PROFILE):
             with self.subTest(profile=profile):
                 projection = self.mem.build_context_projection(provider_profile=profile)
-                content = str(projection.payloads[0].get("content") or "")
-                self.assertIn("message.user", content)
+                projected_content = projection.payloads[0].get("content") or ""
+                content = (
+                    str(projected_content[0].get("text") or "")
+                    if isinstance(projected_content, list)
+                    else str(projected_content)
+                )
                 self.assertIn("actor: 李四 (id=qq:2)", content)
-                self.assertIn("target_actor: assistant", content)
-                self.assertIn('"actor_id":"qq:3"', content)
+                self.assertIn("target: assistant", content)
+                self.assertIn('mentions: ["天为 (id=qq:3)"]', content)
+                self.assertIn("reply_to:", content)
+                self.assertIn("actor: 千里朱音 (id=qq:4)", content)
+                self.assertIn("text: 小灵聪明", content)
+                self.assertIn("text:\n【李四】你怎么看？", content)
+                self.assertNotIn("message.user", content)
                 self.assertNotIn("User: 【李四】你怎么看？", content)
+
+    def test_observed_group_message_is_explicitly_distinguished_from_a_request(self) -> None:
+        self.mem.begin_turn(
+            stimuli=[
+                TimelineEntryInput(
+                    source_id="observed-user",
+                    kind="message.user.observed",
+                    origin=EntryOrigin.ENVIRONMENT,
+                    turn_role=TurnRole.STIMULUS,
+                    semantic_text="群友间的普通聊天",
+                    payload={"text": "群友间的普通聊天"},
+                    actor=Actor(stable_id="qq:5", display_name="Olivia"),
+                    timestamp=1_700_000_000,
+                    compatibility_role="user",
+                )
+            ],
+            turn_id="observed-turn",
+        )
+
+        projection = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)
+        content = str(projection.payloads[0]["content"])
+        self.assertIn("actor: Olivia (id=qq:5)", content)
+        self.assertIn("mode: observed", content)
+        self.assertIn("text:\n群友间的普通聊天", content)
 
     def test_pop_rebuilds_memcore_and_removes_the_popped_item_from_context(self) -> None:
         wrapped = MemCoreContextSession.wrap(_Session(), memory=self.mem)

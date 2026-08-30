@@ -22,6 +22,7 @@ from memcore import (
     NamespaceError,
     ProjectionMessageInput,
     ProjectionStatus,
+    PROJECTION_VERSION,
     RendererRegistry,
     SQLiteMemoryStore,
     SchemaError,
@@ -392,11 +393,13 @@ class ProviderAdapterTests(ProjectionBase):
         calls = payloads[1]["tool_calls"]
         self.assertEqual([item["id"] for item in calls], ["call-a", "call-b"])
         self.assertEqual([payloads[2]["tool_call_id"], payloads[3]["tool_call_id"]], ["call-b", "call-a"])
-        self.assertEqual(payloads[-1]["content"], '{"speech":"查完了"}')
+        self.assertIn("speech:\n查完了", payloads[-1]["content"])
+        self.assertNotIn("provider_output_raw", payloads[-1]["content"])
+        self.assertNotIn("tool_call", payloads[-1]["content"])
         repeated = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)
         self.assertEqual(projection.payloads, repeated.payloads)
 
-    def test_typed_assistant_final_keeps_speech_authoritative_and_nests_host_state(self) -> None:
+    def test_typed_assistant_final_keeps_only_model_relevant_voice_state(self) -> None:
         handle = self.mem.begin_turn(
             stimuli=[
                 TimelineEntryInput(
@@ -428,17 +431,119 @@ class ProviderAdapterTests(ProjectionBase):
 
         payloads = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE).payloads
 
-        self.assertIn("message.user.voice", payloads[0]["content"])
-        assistant_content = json.loads(payloads[1]["content"])
-        self.assertEqual(assistant_content["speech"], "好，我接着说。")
-        self.assertEqual(assistant_content["host_state"]["kind"], "message.assistant.voice")
-        self.assertEqual(assistant_content["host_state"]["data"]["delivery_status"], "interrupted")
-        self.assertEqual(assistant_content["host_state"]["data"]["interrupted_units"], [1])
+        self.assertIn("medium: voice", payloads[0]["content"])
+        self.assertIn("text:\n继续说。", payloads[0]["content"])
+        assistant_content = payloads[1]["content"]
+        self.assertIn("medium: voice", assistant_content)
+        self.assertIn("delivery: interrupted", assistant_content)
+        self.assertIn("delivered_units: [0]", assistant_content)
+        self.assertIn("interrupted_units: [1]", assistant_content)
+        self.assertIn("speech:\n好，我接着说。", assistant_content)
+        self.assertNotIn("voice_turn_id", assistant_content)
         self.assertNotIn("provider_output_raw", payloads[1]["content"])
 
         anthropic = self.mem.build_context_projection(provider_profile=ANTHROPIC_PROFILE).payloads
-        anthropic_content = json.loads(anthropic[1]["content"][0]["text"])
+        anthropic_content = anthropic[1]["content"][0]["text"]
         self.assertEqual(anthropic_content, assistant_content)
+
+    def test_assistant_json_is_audit_only_while_emotion_and_speech_are_projected(self) -> None:
+        handle = self.mem.begin_turn(
+            stimuli=[_stimulus("小灵聪明", source_id="v5-user")],
+            turn_id="v5-final-turn",
+            opened_at=1_700_000_000,
+        )
+        self.mem.complete_turn(
+            turn_id=handle.turn_id,
+            semantic_text="那可不，链路都顺。",
+            provider_output_raw=(
+                '{"tool_call":null,"status":"final","choices":[],"emotion":"得意",'
+                '"speech":"那可不，链路都顺。","state_request":null}'
+            ),
+            memory_annotation={},
+            annotation_status="accepted",
+            timestamp=1_700_000_001,
+            source_id="v5-assistant",
+            payload={"emotion": "得意"},
+        )
+
+        payloads = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE).payloads
+        assistant_content = payloads[-1]["content"]
+
+        self.assertEqual(payloads[-1]["role"], "assistant")
+        self.assertIn("time: 2023-11-15 06:13", assistant_content)
+        self.assertIn("emotion: 得意", assistant_content)
+        self.assertIn("speech:\n那可不，链路都顺。", assistant_content)
+        for obsolete in ("tool_call", "status", "choices", "state_request", "Assistant:"):
+            self.assertNotIn(obsolete, assistant_content)
+
+    def test_explicit_v5_migration_rewrites_frozen_chat_once_and_recovers_emotion(self) -> None:
+        handle = self.mem.begin_turn(
+            stimuli=[_stimulus("测试迁移", source_id="migration-user")],
+            turn_id="migration-turn",
+            opened_at=1_700_000_000,
+        )
+        self.store.save_turn_projections(
+            namespace=self.namespace,
+            turn_id=handle.turn_id,
+            projections=[
+                ProjectionMessageInput(
+                    provider_profile=OPENAI_PROFILE,
+                    payload={"role": "user", "content": "[2023-11-15 06:13] User: 测试迁移"},
+                    source_ids=("migration-user",),
+                    projection_index=0,
+                    projection_version=4,
+                )
+            ],
+        )
+        raw_final = (
+            '{"tool_call":null,"status":"final","choices":[],"emotion":"得意",'
+            '"speech":"迁移完成。","state_request":null}'
+        )
+        self.mem.complete_turn(
+            turn_id=handle.turn_id,
+            semantic_text="迁移完成。",
+            provider_output_raw=raw_final,
+            memory_annotation={},
+            annotation_status="accepted",
+            timestamp=1_700_000_001,
+            source_id="migration-final",
+            provider_profile=OPENAI_PROFILE,
+            provider_projection=ProjectionMessageInput(
+                provider_profile=OPENAI_PROFILE,
+                payload={"role": "assistant", "content": raw_final},
+                source_ids=("migration-final",),
+                projection_index=1,
+                projection_version=4,
+            ),
+        )
+        before = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)
+        self.assertEqual(before.payloads[-1]["content"], raw_final)
+        generation_before = before.projection_generation
+
+        dry_run = self.mem.migrate_chat_projections_v5(dry_run=True)
+        self.assertEqual(dry_run["affected_chat_rows"], 2)
+        self.assertEqual(self.mem.build_context_projection(provider_profile=OPENAI_PROFILE).payloads, before.payloads)
+
+        applied = self.mem.migrate_chat_projections_v5()
+        after = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)
+        self.assertEqual(applied["migrated"], 2)
+        self.assertEqual(after.projection_version, PROJECTION_VERSION)
+        self.assertEqual(after.projection_generation, generation_before + 1)
+        self.assertIn("text:\n测试迁移", after.payloads[0]["content"])
+        self.assertIn("emotion: 得意", after.payloads[-1]["content"])
+        self.assertIn("speech:\n迁移完成。", after.payloads[-1]["content"])
+        self.assertEqual(
+            self.store.get_entry(namespace=self.namespace, source_id="migration-final").payload["provider_output_raw"],
+            raw_final,
+        )
+
+        repeated = self.mem.migrate_chat_projections_v5()
+        self.assertEqual(repeated["migrated"], 0)
+        self.assertEqual(repeated["version_advanced_only"], 0)
+        self.assertEqual(
+            self.mem.build_context_projection(provider_profile=OPENAI_PROFILE).payloads,
+            after.payloads,
+        )
 
     def test_anthropic_parallel_tools_round_trip_without_openai_shape_reuse(self) -> None:
         self._build_tool_turn()

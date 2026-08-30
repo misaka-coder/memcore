@@ -2987,6 +2987,183 @@ class SQLiteMemoryStore(MemoryStore):
                     self._increment_projection_generation_locked(namespace)
         return report
 
+    def migrate_chat_projections(
+        self,
+        *,
+        namespace: Namespace,
+        target_version: int,
+        projection_builder: Callable[[str, list[TimelineEntry]], list[ProjectionMessageInput]],
+        settlement_builder: Callable[..., Any] | None = None,
+        chat_kinds: tuple[str, ...] = (),
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Upgrade only frozen rows backed by chat entries.
+
+        Raw timeline entries remain authoritative.  The operation is explicit,
+        atomic per namespace, and intentionally absent from projection reads.
+        """
+
+        target = int(target_version)
+        if target < 1:
+            raise ValueError("target_version must be positive")
+        resolved_chat_kinds = {str(item or "").strip() for item in chat_kinds if str(item or "").strip()}
+        report: dict[str, Any] = {
+            "status": "dry_run" if dry_run else "ok",
+            "target_projection_version": target,
+            "scanned_projection_rows": 0,
+            "affected_chat_rows": 0,
+            "migrated": 0,
+            "version_advanced_only": 0,
+            "preserved_without_raw_source": 0,
+            "preserved_shape_mismatch": 0,
+            "preserved_reprojection_failed": 0,
+            "settlements_affected": 0,
+            "settled_rebuilt": 0,
+            "settled_rebuilt_noop": 0,
+            "settled_rebuilt_fallback": 0,
+            "settled_rebuild_failed_dropped": 0,
+            "dry_run": bool(dry_run),
+        }
+        with self._lock:
+            with self._immediate_transaction():
+                scope_clause, scope_params = self._scope_clause(namespace, with_conversation=True)
+                rows = self._conn.execute(
+                    f"""
+                    SELECT * FROM prompt_projections
+                    WHERE {scope_clause} AND projection_version < ?
+                    ORDER BY turn_id, provider_profile, projection_index
+                    """,
+                    [*scope_params, target],
+                ).fetchall()
+                report["scanned_projection_rows"] = len(rows)
+                by_turn_profile: dict[tuple[str, str], list[sqlite3.Row]] = {}
+                for row in rows:
+                    key = (
+                        str(row["turn_id"] or "").strip(),
+                        str(row["provider_profile"] or "").strip(),
+                    )
+                    if all(key):
+                        by_turn_profile.setdefault(key, []).append(row)
+
+                changed_turn_profiles: set[tuple[str, str]] = set()
+                for (turn_id, profile), turn_rows in by_turn_profile.items():
+                    source_ids: list[str] = []
+                    seen_source_ids: set[str] = set()
+                    row_source_ids: dict[str, tuple[str, ...]] = {}
+                    for row in turn_rows:
+                        record = self._row_to_record(row, "prompt_projections")
+                        current_ids = tuple(str(item or "") for item in record.get("source_ids") or ())
+                        row_source_ids[str(row["projection_id"] or "")] = current_ids
+                        for source_id in current_ids:
+                            if source_id and source_id not in seen_source_ids:
+                                seen_source_ids.add(source_id)
+                                source_ids.append(source_id)
+
+                    entries: list[TimelineEntry] = []
+                    entries_by_source_id: dict[str, TimelineEntry] = {}
+                    for source_id in source_ids:
+                        entry = self.get_entry(namespace=namespace, source_id=source_id)
+                        if entry is not None:
+                            entries.append(entry)
+                            entries_by_source_id[source_id] = entry
+                    entries.sort(key=lambda item: int(item.seq_no))
+                    chat_source_ids = {
+                        entry.source_id for entry in entries if str(entry.kind or "") in resolved_chat_kinds
+                    }
+                    if not chat_source_ids:
+                        continue
+
+                    affected_rows = [
+                        row
+                        for row in turn_rows
+                        if any(
+                            source_id in chat_source_ids
+                            for source_id in row_source_ids.get(str(row["projection_id"] or ""), ())
+                        )
+                    ]
+                    report["affected_chat_rows"] += len(affected_rows)
+                    if any(source_id not in entries_by_source_id for source_id in source_ids):
+                        report["preserved_without_raw_source"] += len(affected_rows)
+                        continue
+                    try:
+                        generated = list(projection_builder(profile, entries))
+                    except Exception:
+                        report["preserved_reprojection_failed"] += len(affected_rows)
+                        continue
+                    generated_by_sources = {tuple(item.source_ids): item for item in generated}
+                    for row in affected_rows:
+                        projection_id = str(row["projection_id"] or "")
+                        current_ids = row_source_ids.get(projection_id, ())
+                        replacement = generated_by_sources.get(current_ids)
+                        if replacement is None:
+                            report["preserved_shape_mismatch"] += 1
+                            continue
+                        old_payload = json.loads(str(row["payload_json"] or "{}"))
+                        new_payload = dict(replacement.payload)
+                        new_status = replacement.projection_status
+                        if str(row["projection_status"] or "") == ProjectionStatus.REQUEST_FROZEN.value:
+                            new_status = merge_projection_status(new_status, ProjectionStatus.REQUEST_FROZEN)
+                        payload_changed = canonical_json_bytes(new_payload) != canonical_json_bytes(old_payload)
+                        if not dry_run:
+                            if payload_changed:
+                                self._conn.execute(
+                                    """
+                                    UPDATE prompt_projections
+                                    SET payload_json = ?, payload_hash = ?, projection_status = ?,
+                                        projection_version = ?
+                                    WHERE projection_id = ?
+                                    """,
+                                    (
+                                        _json_dumps(new_payload),
+                                        stable_projection_hash(new_payload),
+                                        str(new_status),
+                                        target,
+                                        projection_id,
+                                    ),
+                                )
+                            else:
+                                self._conn.execute(
+                                    "UPDATE prompt_projections SET projection_version = ? WHERE projection_id = ?",
+                                    (target, projection_id),
+                                )
+                        if payload_changed:
+                            report["migrated"] += 1
+                            changed_turn_profiles.add((turn_id, profile))
+                        else:
+                            report["version_advanced_only"] += 1
+
+                if changed_turn_profiles:
+                    placeholders = ",".join("(?, ?)" for _ in changed_turn_profiles)
+                    params = [value for pair in sorted(changed_turn_profiles) for value in pair]
+                    settlement_count = self._conn.execute(
+                        f"""
+                        SELECT COUNT(*) FROM turn_projection_settlement
+                        WHERE {scope_clause} AND (turn_id, provider_profile) IN ({placeholders})
+                        """,
+                        [*scope_params, *params],
+                    ).fetchone()
+                    report["settlements_affected"] = int(settlement_count[0] or 0)
+                    if not dry_run:
+                        self._migrate_stale_settlements_locked(
+                            namespace=namespace,
+                            settlement_builder=settlement_builder,
+                            changed_turn_profiles=changed_turn_profiles,
+                            markers=(),
+                            dry_run=False,
+                            report=report,
+                        )
+
+                if not dry_run and (
+                    report["migrated"]
+                    or report["version_advanced_only"]
+                    or report["settled_rebuilt"]
+                    or report["settled_rebuilt_noop"]
+                    or report["settled_rebuilt_fallback"]
+                    or report["settled_rebuild_failed_dropped"]
+                ):
+                    self._increment_projection_generation_locked(namespace)
+        return report
+
     def _migrate_stale_settlements_locked(
         self,
         *,

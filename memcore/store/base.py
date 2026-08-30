@@ -382,6 +382,19 @@ class MemoryStore(ABC):
         """Re-project legacy path-damage rows and rebuild stale settlements."""
         raise NotImplementedError
 
+    def migrate_chat_projections(
+        self,
+        *,
+        namespace: Namespace,
+        target_version: int,
+        projection_builder: Callable,
+        settlement_builder: Callable | None = None,
+        chat_kinds: tuple = (),
+        dry_run: bool = False,
+    ) -> dict:
+        """Explicitly upgrade frozen chat rows without touching request hot paths."""
+        raise NotImplementedError
+
     def list_projection_namespaces(self) -> list:
         """Distinct (tenant, user, domain, conversation) scopes with frozen projections."""
         raise NotImplementedError
