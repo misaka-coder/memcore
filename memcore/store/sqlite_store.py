@@ -610,19 +610,21 @@ class SQLiteMemoryStore(MemoryStore):
                     reason="turn_has_pending_actions",
                 )
 
-            final_source_id = self._normalize_relation_id(
-                completion.source_id or uuid.uuid4().hex,
-                field="source_id",
-            )
-            existing_final_id = self._conn.execute(
-                "SELECT source_id FROM messages WHERE source_id = ?", (final_source_id,)
-            ).fetchone()
-            if existing_final_id is not None:
-                return CompletionCommitResult(
-                    status="conflict",
-                    turn_id=completion.turn_id,
-                    reason="final_source_id_conflict",
+            final_source_id = ""
+            if completion.append_final:
+                final_source_id = self._normalize_relation_id(
+                    completion.source_id or uuid.uuid4().hex,
+                    field="source_id",
                 )
+                existing_final_id = self._conn.execute(
+                    "SELECT source_id FROM messages WHERE source_id = ?", (final_source_id,)
+                ).fetchone()
+                if existing_final_id is not None:
+                    return CompletionCommitResult(
+                        status="conflict",
+                        turn_id=completion.turn_id,
+                        reason="final_source_id_conflict",
+                    )
 
             updated_targets: list[TimelineEntry] = []
             target_visibilities: list[RetrievalVisibility] = []
@@ -662,47 +664,49 @@ class SQLiteMemoryStore(MemoryStore):
             else:
                 final_visibility = RetrievalVisibility.NEVER
 
-            final_payload = dict(completion.payload)
-            final_payload["provider_output_raw"] = completion.provider_output_raw
-            final_input = TimelineEntryInput(
-                source_id=final_source_id,
-                turn_id=completion.turn_id,
-                kind=completion.kind,
-                origin=EntryOrigin.ASSISTANT,
-                turn_role=TurnRole.FINAL,
-                semantic_text=completion.semantic_text,
-                timestamp=completion.timestamp,
-                payload=final_payload,
-                reply_to_source_id=target_ids[0] if len(target_ids) == 1 else "",
-                trace_metadata=completion.trace_metadata,
-                annotation_status=(
-                    AnnotationStatus.DERIVED_TURN_FINAL if any_accepted else AnnotationStatus.UNANNOTATED
-                ),
-                annotation_source="turn_completion" if any_accepted else "",
-                retrieval_policy=RetrievalPolicy.AUTO,
-                retrieval_visibility=final_visibility,
-                semanticize=True,
-                prompt_visible=True,
-                date_label=completion.date_label,
-                time_of_day=completion.time_of_day,
-                compatibility_role="assistant",
-            )
-            final_record = self._add_timeline_entry_locked(namespace=namespace, entry=final_input)
+            final_record = None
             final_projection: ProjectionMessage | None = None
-            if completion.final_projection is not None:
-                declared_source_ids = tuple(completion.final_projection.source_ids)
-                if declared_source_ids and declared_source_ids != (final_source_id,):
-                    raise SchemaError("turn_completion_final_projection_source_mismatch")
-                prepared_projection = replace(
-                    completion.final_projection,
-                    source_ids=(final_source_id,),
-                )
-                saved_projections = self._save_turn_projections_locked(
-                    namespace=namespace,
+            if completion.append_final:
+                final_payload = dict(completion.payload)
+                final_payload["provider_output_raw"] = completion.provider_output_raw
+                final_input = TimelineEntryInput(
+                    source_id=final_source_id,
                     turn_id=completion.turn_id,
-                    projections=[prepared_projection],
+                    kind=completion.kind,
+                    origin=EntryOrigin.ASSISTANT,
+                    turn_role=TurnRole.FINAL,
+                    semantic_text=completion.semantic_text,
+                    timestamp=completion.timestamp,
+                    payload=final_payload,
+                    reply_to_source_id=target_ids[0] if len(target_ids) == 1 else "",
+                    trace_metadata=completion.trace_metadata,
+                    annotation_status=(
+                        AnnotationStatus.DERIVED_TURN_FINAL if any_accepted else AnnotationStatus.UNANNOTATED
+                    ),
+                    annotation_source="turn_completion" if any_accepted else "",
+                    retrieval_policy=RetrievalPolicy.AUTO,
+                    retrieval_visibility=final_visibility,
+                    semanticize=True,
+                    prompt_visible=True,
+                    date_label=completion.date_label,
+                    time_of_day=completion.time_of_day,
+                    compatibility_role="assistant",
                 )
-                final_projection = saved_projections[0]
+                final_record = self._add_timeline_entry_locked(namespace=namespace, entry=final_input)
+                if completion.final_projection is not None:
+                    declared_source_ids = tuple(completion.final_projection.source_ids)
+                    if declared_source_ids and declared_source_ids != (final_source_id,):
+                        raise SchemaError("turn_completion_final_projection_source_mismatch")
+                    prepared_projection = replace(
+                        completion.final_projection,
+                        source_ids=(final_source_id,),
+                    )
+                    saved_projections = self._save_turn_projections_locked(
+                        namespace=namespace,
+                        turn_id=completion.turn_id,
+                        projections=[prepared_projection],
+                    )
+                    final_projection = saved_projections[0]
             self._conn.execute(
                 """
                 UPDATE turns
@@ -719,7 +723,7 @@ class SQLiteMemoryStore(MemoryStore):
             return CompletionCommitResult(
                 status="completed",
                 turn_id=completion.turn_id,
-                final_entry=TimelineEntry.from_record(final_record),
+                final_entry=TimelineEntry.from_record(final_record) if final_record is not None else None,
                 updated_targets=tuple(updated_targets),
                 final_projection=final_projection,
             )

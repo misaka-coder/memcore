@@ -4,6 +4,29 @@ This document is the authoritative public reference for writing turns, events,
 operations, metadata, and maintenance state through `MemorySystem`. Normal host
 integrations must not write directly to `MemoryStore` tables.
 
+## Successful completion without a new response
+
+After actions finish, a host can end a turn without asking the model for an
+additional response:
+
+```python
+completed = mem.complete_turn(
+    turn_id=handle.turn_id,
+    semantic_text="",
+    provider_output_raw="",
+    append_final=False,
+    provider_profile="openai_chat",
+)
+```
+
+This atomically commits target annotations and closes the turn. Pending actions
+still block completion. No assistant entry or placeholder projection is created;
+`final_entry` is `None`. Tool pairs stay readable, and terminal settlement and raw
+compaction use the normal lifecycle. Retrying a closed turn is idempotent.
+Nonempty response text or a provider projection conflicts with `append_final=False`.
+The default remains `True`; a real model-authored silent envelope is still real
+output and should be saved normally.
+
 ## Failure model
 
 MemCore uses two failure forms intentionally:

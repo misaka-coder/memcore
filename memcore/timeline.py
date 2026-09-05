@@ -558,6 +558,7 @@ class TurnCompletion:
     final_projection: ProjectionMessageInput | None = None
     date_label: str = ""
     time_of_day: str = ""
+    append_final: bool = True
 
     def __post_init__(self) -> None:
         turn_id = str(self.turn_id or "").strip()
@@ -570,7 +571,11 @@ class TurnCompletion:
         object.__setattr__(self, "source_id", source_id)
         semantic_text = str(self.semantic_text or "")
         provider_output_raw = str(self.provider_output_raw or "")
-        if not semantic_text.strip() and not provider_output_raw.strip():
+        if not isinstance(self.append_final, bool):
+            raise SchemaError("turn_completion_invalid_append_final")
+        if not self.append_final and (semantic_text or provider_output_raw or self.final_projection is not None):
+            raise SchemaError("turn_completion_unexpected_final")
+        if self.append_final and not semantic_text.strip() and not provider_output_raw.strip():
             raise SchemaError("turn_completion_empty_final")
         object.__setattr__(self, "semantic_text", semantic_text)
         object.__setattr__(self, "provider_output_raw", provider_output_raw)

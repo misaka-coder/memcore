@@ -409,8 +409,13 @@ class MemorySystem:
         trace_metadata: dict[str, Any] | None = None,
         provider_profile: str = "",
         provider_projection: ProjectionMessageInput | dict[str, Any] | None = None,
+        append_final: bool = True,
     ) -> CompletionCommitResult:
-        """Atomically commit final speech, target annotations, visibility, and turn close."""
+        """Commit annotations and turn close, optionally appending a real final response.
+
+        Set append_final=False when the host finishes after actions with no new
+        assistant output. Existing action/observation pairs remain unchanged.
+        """
 
         normalized_turn_id = str(turn_id or "").strip()
         if not normalized_turn_id:
@@ -450,7 +455,9 @@ class MemorySystem:
         completed_at = int(timestamp or time.time())
         resolved_source_id = str(source_id or "").strip()
         resolved_final_projection: ProjectionMessageInput | None = None
-        if handle.status is TurnStatus.OPEN:
+        if not append_final and provider_projection is not None:
+            raise SchemaError("turn_completion_unexpected_final")
+        if handle.status is TurnStatus.OPEN and append_final:
             resolved_source_id = resolved_source_id or uuid.uuid4().hex
             if isinstance(provider_projection, ProjectionMessageInput):
                 if (
@@ -490,6 +497,7 @@ class MemorySystem:
             final_projection=resolved_final_projection,
             date_label=timestamp_to_date_label(completed_at, self.timezone),
             time_of_day=infer_time_of_day(completed_at, self.timezone),
+            append_final=append_final,
         )
         try:
             result = self.store.commit_turn_completion(namespace=self.namespace, completion=completion)
@@ -501,7 +509,7 @@ class MemorySystem:
         self._settle_turn_after_completion(
             turn_id=normalized_turn_id,
             provider_profile=provider_profile,
-            terminal_source_id=str(getattr(refreshed.final_entry, "source_id", "") or resolved_source_id),
+            terminal_source_id=str(getattr(refreshed.final_entry, "source_id", "") or ""),
             settled_at=completed_at,
         )
         return refreshed
