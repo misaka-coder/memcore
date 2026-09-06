@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
-from typing import Any
+from typing import Any, Mapping
 
 from .text_utils import normalize_text
 from .time_anchor import (
@@ -19,6 +19,7 @@ from .time_anchor import (
     timestamp_to_date_weekday_label,
     timestamp_to_datetime_weekday_label,
 )
+from .timeline import TimelineEntry
 
 
 def _positive_ts(value: Any) -> int | None:
@@ -60,8 +61,7 @@ def _anchor_line(record: dict[str, Any], parts_text: list[str], time_range_label
 def _memory_open_hint(memory_id: str, *, down_label: str) -> str:
     encoded = json.dumps(str(memory_id), ensure_ascii=False)
     return (
-        f"expand: 需要{down_label}时调用 open_memory(memory_id={encoded}, view=\"sources\")；"
-        f"完整卡片用 view=\"content\"。"
+        f'expand: 需要{down_label}时调用 open_memory(memory_id={encoded}, view="sources")；完整卡片用 view="content"。'
     )
 
 
@@ -399,4 +399,118 @@ def render_raw_snippet(context_rows: list[dict[str, Any]], *, tz: str) -> str:
             content=normalize_text(row.get("content")),
             is_trace_event=_is_trace_event(row),
         )
+    return "\n".join(lines)
+
+
+def render_summary_chat_entry(entry: TimelineEntry, *, tz: str) -> str:
+    """Semantic chat transcript for compaction, independent of provider wire."""
+
+    payload = dict(entry.payload)
+    is_observed = str(entry.kind or "") == "message.user.observed"
+    is_voice = str(entry.kind or "").endswith(".voice")
+    has_relations = bool(
+        entry.target_actor is not None
+        or payload.get("mentioned_actors")
+        or payload.get("reply_reference")
+        or payload.get("forward_references")
+        or is_observed
+        or is_voice
+        or (entry.origin.value == "assistant" and payload.get("emotion"))
+    )
+    if not has_relations:
+        stamp = timestamp_to_datetime_weekday_label(entry.timestamp, tz) if entry.timestamp > 0 else ""
+        role = "assistant" if entry.origin.value == "assistant" else "user"
+        content = normalize_text(entry.semantic_text or payload.get("text"))
+        prefix = f"[{stamp}] " if stamp else ""
+        return f"{prefix}{role}: {content}".rstrip()
+
+    lines = ["【对话事件】"]
+    if entry.timestamp > 0:
+        lines.append(f"time: {timestamp_to_datetime_weekday_label(entry.timestamp, tz)}")
+    actor = entry.namespace.actor
+    if actor is not None:
+        actor_id = normalize_text(getattr(actor, "stable_id", ""))
+        actor_name = normalize_text(getattr(actor, "display_name", ""))
+        actor_value = (
+            f"{actor_name} (id={actor_id})"
+            if actor_name and actor_id and actor_name != actor_id
+            else actor_name or actor_id
+        )
+        if actor_value:
+            lines.append(f"actor: {actor_value}")
+    elif entry.origin.value == "assistant":
+        lines.append("actor: assistant")
+    if entry.target_actor is not None:
+        target_id = normalize_text(getattr(entry.target_actor, "stable_id", ""))
+        target_name = normalize_text(getattr(entry.target_actor, "display_name", ""))
+        target_value = (
+            f"{target_name} (id={target_id})"
+            if target_name and target_id and target_name != target_id
+            else target_name or target_id
+        )
+        if target_value:
+            lines.append(f"target: {target_value}")
+
+    mentions: list[str] = []
+    for mention in payload.get("mentioned_actors") or ():
+        if not isinstance(mention, Mapping):
+            continue
+        mention_id = normalize_text(mention.get("actor_id"))
+        mention_name = normalize_text(mention.get("display_name"))
+        value = (
+            f"{mention_name} (id={mention_id})"
+            if mention_name and mention_id and mention_name != mention_id
+            else mention_name or mention_id
+        )
+        if value and value not in mentions:
+            mentions.append(value)
+    if mentions:
+        lines.append("mentions: " + "; ".join(mentions))
+
+    reply = payload.get("reply_reference")
+    if isinstance(reply, Mapping):
+        reply_name = normalize_text(reply.get("actor_display_name"))
+        reply_actor_id = normalize_text(reply.get("actor_id"))
+        reply_actor = (
+            f"{reply_name} (id={reply_actor_id})"
+            if reply_name and reply_actor_id and reply_name != reply_actor_id
+            else reply_name or reply_actor_id
+        )
+        reply_text = normalize_text(reply.get("excerpt"))
+        reply_mentions: list[str] = []
+        for mention in reply.get("mentions") or ():
+            if not isinstance(mention, Mapping):
+                continue
+            mention_id = normalize_text(mention.get("actor_id"))
+            mention_name = normalize_text(mention.get("display_name"))
+            value = (
+                f"{mention_name} (id={mention_id})"
+                if mention_name and mention_id and mention_name != mention_id
+                else mention_name or mention_id
+            )
+            if value and value not in reply_mentions:
+                reply_mentions.append(value)
+        if reply_actor or reply_text or reply_mentions:
+            lines.append("reply_to:")
+            if reply_actor:
+                lines.append(f"  actor: {reply_actor}")
+            if reply_mentions:
+                lines.append("  mentions: " + "; ".join(reply_mentions))
+            if reply_text:
+                lines.append(f"  quoted_text: {reply_text}")
+
+    forwards = payload.get("forward_references")
+    if isinstance(forwards, (list, tuple)) and forwards:
+        lines.append("forwards: " + json.dumps(list(forwards), ensure_ascii=False, sort_keys=True, default=str))
+    if is_observed:
+        lines.append("mode: observed")
+    if is_voice:
+        lines.append("medium: voice")
+    emotion = normalize_text(payload.get("emotion")) if entry.origin.value == "assistant" else ""
+    if emotion:
+        lines.append(f"emotion: {emotion}")
+    content = normalize_text(entry.semantic_text or payload.get("text"))
+    lines.append("speech:" if entry.origin.value == "assistant" else "text:")
+    if content:
+        lines.extend(f"  {line}" for line in content.splitlines())
     return "\n".join(lines)

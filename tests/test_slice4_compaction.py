@@ -215,7 +215,7 @@ class SummaryCycleViaFacade(unittest.TestCase):
         )
 
         results = [first]
-        for _ in range(5):
+        for _ in range(12):
             current = mem.compact_due_sync()
             results.append(current)
             if current["summaries_created"] == 0:
@@ -224,10 +224,18 @@ class SummaryCycleViaFacade(unittest.TestCase):
         self.assertEqual(results[-1]["summaries_created"], 0)
         self.assertTrue(all(item["summaries_created"] <= 1 for item in results))
         remaining = mem.store.get_unsummarized_messages(namespace=mem.namespace)
-        self.assertEqual([message["source_id"] for message in remaining], ["m9"])
+        remaining_source_ids = [message["source_id"] for message in remaining]
         visible = mem.store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10)
         summarized_source_ids = {source_id for summary in visible for source_id in summary.get("source_ids", [])}
-        self.assertEqual(summarized_source_ids, {f"m{i}" for i in range(9)})
+        self.assertEqual(
+            summarized_source_ids | set(remaining_source_ids),
+            {f"m{i}" for i in range(10)},
+        )
+        self.assertFalse(summarized_source_ids & set(remaining_source_ids))
+        self.assertEqual(
+            remaining_source_ids,
+            [f"m{i}" for i in range(10 - len(remaining_source_ids), 10)],
+        )
 
     def test_tool_exchange_joins_one_turn_and_compacts_as_operation_partition(self) -> None:
         cfg = MemoryConfig(raw_token_trigger=1, episodic_compact_trigger_count=99)
@@ -651,11 +659,71 @@ class SummaryCycleViaFacade(unittest.TestCase):
         summary_requests = [req for req in llm.requests if req.task_type == TaskType.SUMMARY]
         self.assertEqual(len(summary_requests), 1)
         self.assertIn(
-            "user(张三;id=qq-1) -> assistant: 我下周三要复盘基金组合",
+            "actor: 张三 (id=qq-1)",
             summary_requests[0].user_prompt,
         )
+        self.assertIn("target: assistant", summary_requests[0].user_prompt)
+        self.assertIn("text:\n  我下周三要复盘基金组合", summary_requests[0].user_prompt)
         self.assertIn("事实、请求、计划或承诺与接收对象有关时必须保留接收方", summary_requests[0].system_prompt)
         self.assertIn("旁观到的群消息不得改写成对助手的请求、承诺或共同经历", summary_requests[0].system_prompt)
+
+    def test_summary_prompt_uses_chat_semantics_instead_of_assistant_provider_protocol(self) -> None:
+        cfg = MemoryConfig(raw_token_trigger=1, episodic_compact_trigger_count=99)
+        llm = CapturingLLM()
+        mem = MemorySystem(
+            llm=llm,
+            namespace=Namespace(user_id="group-1", conversation_id="c1"),
+            timezone="Asia/Shanghai",
+            config=cfg,
+            embedding=HashedEmbeddingProvider(),
+        )
+        mem.begin_turn(
+            turn_id="semantic-chat-turn",
+            opened_at=_ts(2026, 8, 31, 14, 20),
+            stimuli=[
+                TimelineEntryInput(
+                    source_id="semantic-chat-user",
+                    kind="message.user.observed",
+                    origin=EntryOrigin.USER,
+                    turn_role=TurnRole.STIMULUS,
+                    semantic_text="@Akane 帮我问问 @316 明天去不去",
+                    payload={
+                        "text": "@Akane 帮我问问 @316 明天去不去",
+                        "mentioned_actors": [
+                            {"actor_id": "assistant", "display_name": "Akane"},
+                            {"actor_id": "qq:316", "display_name": "316"},
+                        ],
+                        "reply_reference": {
+                            "actor_id": "qq:111",
+                            "actor_display_name": "千里朱音",
+                            "excerpt": "明天一起去吗",
+                            "mentions": [{"actor_id": "qq:316", "display_name": "316", "is_assistant": False}],
+                        },
+                    },
+                    timestamp=_ts(2026, 8, 31, 14, 20),
+                    actor=Actor(stable_id="qq:123", display_name="Olivia"),
+                    compatibility_role="user",
+                )
+            ],
+        )
+        raw_output = '{"emotion":"normal","reply_medium":"text","speech":"我去问问。"}'
+        mem.complete_turn(
+            turn_id="semantic-chat-turn",
+            semantic_text="我去问问。",
+            provider_output_raw=raw_output,
+            timestamp=_ts(2026, 8, 31, 14, 20) + 1,
+            source_id="semantic-chat-assistant",
+        )
+
+        mem.compact_due_sync()
+
+        summary_request = next(req for req in llm.requests if req.task_type == TaskType.SUMMARY)
+        self.assertIn("mentions: Akane (id=assistant); 316 (id=qq:316)", summary_request.user_prompt)
+        self.assertIn("quoted_text: 明天一起去吗", summary_request.user_prompt)
+        self.assertIn("  mentions: 316 (id=qq:316)", summary_request.user_prompt)
+        self.assertIn("mode: observed", summary_request.user_prompt)
+        self.assertIn("assistant: 我去问问。", summary_request.user_prompt)
+        self.assertNotIn(raw_output, summary_request.user_prompt)
 
 
 class SemanticAndReinforcement(unittest.TestCase):

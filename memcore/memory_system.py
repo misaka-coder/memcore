@@ -1059,6 +1059,20 @@ class MemorySystem:
             count_text=count_text if callable(count_text) else None,
         )
 
+    def migrate_chat_projections_v6(self, *, dry_run: bool = False) -> dict[str, Any]:
+        """Explicitly upgrade frozen chat rows to the V6 authorship boundary."""
+
+        from .chat_projection_migration import migrate_chat_projections_v6
+
+        count_text = getattr(self.token_counter, "count_text", None) if self.token_counter is not None else None
+        return migrate_chat_projections_v6(
+            store=self.store,
+            adapter=self._projection_ledger.adapter,
+            namespace=self.namespace,
+            dry_run=bool(dry_run),
+            count_text=count_text if callable(count_text) else None,
+        )
+
     def _freeze_turn_projection(
         self,
         *,

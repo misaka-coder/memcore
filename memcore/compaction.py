@@ -45,7 +45,7 @@ from .projection import (
     sanitize_projection_payload,
     stable_projection_hash,
 )
-from .rendering import render_raw_snippet
+from .rendering import render_raw_snippet, render_summary_chat_entry
 from .schema import RETRIEVAL_PRIORITIES, coerce_memory_metadata
 from .store.base import MemoryStore
 from .runtime import MemCoreRuntime
@@ -927,7 +927,16 @@ class Compaction:
         rendered: list[str] = []
         for record in batch:
             entry = TimelineEntry.from_record(record)
-            if entry.kind.startswith("message.") or entry.turn_role is TurnRole.FINAL:
+            if entry.kind in {
+                "message.user",
+                "message.user.observed",
+                "message.user.voice",
+                "message.assistant",
+                "message.assistant.voice",
+            }:
+                rendered.append(render_summary_chat_entry(entry, tz=self.timezone))
+                continue
+            if entry.turn_role is TurnRole.FINAL:
                 rendered.append(render_raw_snippet([record], tz=self.timezone))
                 continue
             # Typed event/skill/intermediate entries may keep their structured

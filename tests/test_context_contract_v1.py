@@ -296,7 +296,7 @@ class ContextContractTests(unittest.TestCase):
             current_source_id="image-user",
         )
         blocks = surface.current_message["content"]
-        self.assertIn("User: describe it", blocks[0]["text"])
+        self.assertIn("text:\n  describe it", blocks[0]["text"])
         self.assertEqual(blocks[1], {"type": "input_image", "image_url": "attachment://img-1"})
 
 
@@ -345,7 +345,8 @@ class ContextSessionWrapperTests(unittest.TestCase):
         self.assertEqual(wrapped.status.mode, "authoritative")
         self.assertEqual(len([item for item in items if item.get("role") == "user"]), 1)
         self.assertEqual(len([item for item in items if item.get("role") == "assistant"]), 1)
-        self.assertIn("User: hello", str(items[0].get("content")))
+        self.assertIn("text:\n  hello", str(items[0].get("content")))
+        self.assertEqual(items[1].get("content"), "hi")
 
     def test_wrap_requires_memory_instead_of_silent_storage_only(self) -> None:
         with self.assertRaisesRegex(TypeError, "authoritative wrapping cannot be storage-only"):
@@ -375,7 +376,7 @@ class ContextSessionWrapperTests(unittest.TestCase):
 
         self.assertEqual(len(provider_items), 1)
         self.assertEqual(provider_items[0]["type"], "message")
-        self.assertIn("User: hello from runner", str(provider_items[0]["content"]))
+        self.assertIn("text:\n  hello from runner", str(provider_items[0]["content"]))
         asyncio.run(wrapped.add_items([new_item, {"type": "message", "role": "assistant", "content": "hi"}]))
         persisted = asyncio.run(wrapped.get_items())
         self.assertEqual(len(persisted), 2)
@@ -454,14 +455,11 @@ class ContextSessionWrapperTests(unittest.TestCase):
 
         visible = asyncio.run(wrapped.get_items())
 
-        self.assertIn("[2023-11-15 06:13] User: dated", str(visible[0]))
+        self.assertIn("time: 2023-11-15 周三 06:13", str(visible[0]))
+        self.assertEqual(visible[1]["content"], "done")
 
     def test_frozen_projection_renders_ordinary_chat_messages_with_time_anchors(self) -> None:
-        """The ledger-frozen openai family must use the same ordinary chat
-        rendering as the live surface: `[YYYY-MM-DD HH:MM] User:/Assistant: …`.
-        A frozen history whose user rows render in the structured canonical
-        format would break hosts that read history_records directly from
-        context.build (thin adapters never re-render payloads)."""
+        """Frozen user facts stay semantic while assistant authorship stays exact."""
         store = SQLiteMemoryStore(":memory:")
         embedding = HashedEmbeddingProvider()
         mem = MemorySystem(
@@ -488,6 +486,12 @@ class ContextSessionWrapperTests(unittest.TestCase):
                 ],
                 turn_id="frozen-turn",
             )
+            mem.complete_turn(
+                turn_id="frozen-turn",
+                semantic_text="hello back",
+                provider_output_raw='{"emotion":"normal","speech":"hello back"}',
+                timestamp=1_700_000_001,
+            )
             # First build freezes the turn; the second must serve the frozen
             # payload — still in the ordinary chat format.
             mem.build_context_surface(
@@ -497,8 +501,13 @@ class ContextSessionWrapperTests(unittest.TestCase):
             projection = mem.build_context_projection(provider_profile=OPENAI_PROFILE)
             user_payload = projection.payloads[0]
             self.assertEqual(user_payload["role"], "user")
-            self.assertIn("[2023-11-15 06:13] User: hello world", str(user_payload["content"]))
+            self.assertIn("time: 2023-11-15 周三 06:13", str(user_payload["content"]))
+            self.assertIn("text:\n  hello world", str(user_payload["content"]))
             self.assertNotIn("message.user", str(user_payload["content"]))
+            self.assertEqual(
+                projection.payloads[1],
+                {"role": "assistant", "content": '{"emotion":"normal","speech":"hello back"}'},
+            )
         finally:
             mem.close()
             store.close()
@@ -529,10 +538,9 @@ class ContextSessionWrapperTests(unittest.TestCase):
             with self.subTest(profile=profile):
                 projection = self.mem.build_context_projection(provider_profile=profile)
                 content = str(projection.payloads[0].get("content") or "")
-                self.assertIn("message.user", content)
                 self.assertIn("actor: 李四 (id=qq:2)", content)
-                self.assertIn("target_actor: assistant", content)
-                self.assertIn('"actor_id":"qq:3"', content)
+                self.assertIn("target: assistant", content)
+                self.assertIn("- 天为 (id=qq:3)", content)
                 self.assertNotIn("User: 【李四】你怎么看？", content)
 
     def test_pop_rebuilds_memcore_and_removes_the_popped_item_from_context(self) -> None:
