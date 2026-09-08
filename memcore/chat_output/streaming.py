@@ -63,8 +63,13 @@ class StreamingSpeechParser:
             return self._emit_speech_delta("".join(self._raw_parts))
 
         events: list[dict[str, Any]] = []
+        speech_was_closed = self._json_speech.speech_closed
         for speech_delta in self._json_speech.feed(text):
             events.extend(self._emit_speech_delta(speech_delta))
+        if self.enable_sentence_segments and self._json_speech.speech_closed and not speech_was_closed:
+            # A closed string cannot extend the final punctuation cluster. Keep
+            # unpunctuated tails for finish(), including native-tool prefaces.
+            events.extend(self._pop_available_segments(flush=False, speech_closed=True))
         return events
 
     def finish(self) -> list[dict[str, Any]]:
@@ -120,7 +125,7 @@ class StreamingSpeechParser:
             return []
         return self._pop_available_segments(flush=True)
 
-    def _pop_available_segments(self, *, flush: bool) -> list[dict[str, Any]]:
+    def _pop_available_segments(self, *, flush: bool, speech_closed: bool = False) -> list[dict[str, Any]]:
         if self.max_segments is not None and self._segment_index >= max(0, int(self.max_segments)):
             self._segment_pending = "" if flush else self._segment_pending
             return []
@@ -130,6 +135,7 @@ class StreamingSpeechParser:
             min_chars=self.min_segment_chars,
             max_chars=self.max_segment_chars,
             flush=flush,
+            speech_closed=speech_closed,
         )
         self._segment_pending = remainder
 
@@ -152,6 +158,7 @@ class _TopLevelSpeechScanner:
         self._state = "seek_key"
         self._key_chars: list[str] = []
         self._last_key = ""
+        self.speech_closed = False
 
     def feed(self, text: str) -> list[str]:
         if self._state == "done":
@@ -191,6 +198,7 @@ class _TopLevelSpeechScanner:
                 self._pos = token.next_pos
                 if token.closed:
                     self._state = "done"
+                    self.speech_closed = True
                 else:
                     out.append(token.text)
         return ["".join(out)] if out else []
@@ -282,6 +290,12 @@ def _decode_escape_at(buffer: str, pos: int) -> tuple[str, int, bool]:
         return "u", pos + 2, False
 
     next_pos = pos + 6
+    if 0xD800 <= codepoint <= 0xDBFF:
+        # The low surrogate may start in the next provider chunk, even when
+        # this chunk ends exactly after the high surrogate or its next slash.
+        suffix = buffer[next_pos : next_pos + 2]
+        if suffix in ("", "\\"):
+            return "", pos, True
     if 0xD800 <= codepoint <= 0xDBFF and buffer[next_pos : next_pos + 2] == "\\u":
         if next_pos + 6 > len(buffer):
             return "", pos, True
@@ -301,6 +315,7 @@ def _split_stream_segments(
     min_chars: int,
     max_chars: int,
     flush: bool,
+    speech_closed: bool = False,
 ) -> tuple[list[str], str]:
     raw: list[str] = []
     start = 0
@@ -316,7 +331,7 @@ def _split_stream_segments(
             continue
         if _is_sentence_end(text, i):
             end = _consume_sentence_tail(text, i)
-            if end >= len(text) and not flush:
+            if end >= len(text) and not (flush or speech_closed):
                 break
             _append_raw(raw, text[start:end])
             start = end

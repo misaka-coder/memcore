@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "memcore"
-version = "0.1.0+chatv6.1"
+version = "0.1.0+chatv6.2"
 description = "Domain-agnostic layered memory core with unified timelines, layered compaction, and deterministic hybrid retrieval."
 readme = "README.md"
 requires-python = ">=3.10"

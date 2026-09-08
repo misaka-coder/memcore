@@ -179,6 +179,44 @@ class ChatOutputPrompt(unittest.TestCase):
 
 
 class StreamingOutputParser(unittest.TestCase):
+    def test_closed_speech_emits_final_sentence_before_metadata(self) -> None:
+        for chunks in (('{"speech":"第一句？！"',), ('{"speech":"第一句？', "！", '"')):
+            with self.subTest(chunks=chunks):
+                stream = StreamingSpeechParser(mode="memcore_json")
+                events = []
+                for chunk in chunks:
+                    events += stream.feed(chunk)
+                self.assertEqual([e["text"] for e in events if e["type"] == "speech_segment"], ["第一句？！"])
+                self.assertFalse(any(e["type"] in {"metadata_ready", "final"} for e in events))
+                events += stream.feed(',"memory_metadata":{"topic_terms":["测试"]}}')
+                events += stream.finish()
+                self.assertEqual([e["text"] for e in events if e["type"] == "speech_segment"], ["第一句？！"])
+                self.assertEqual(events[-1]["payload"]["memory_metadata"]["topic_terms"], ["测试"])
+
+    def test_closed_unpunctuated_tail_stays_pending_until_finish(self) -> None:
+        stream = StreamingSpeechParser(mode="memcore_json")
+        events = stream.feed('{"speech":"完整句。尚未说完"')
+        self.assertEqual([e["text"] for e in events if e["type"] == "speech_segment"], ["完整句。"])
+        events += stream.feed(',"memory_metadata":')
+        self.assertFalse(any(e["type"] == "metadata_ready" for e in events))
+        final_events = stream.finish()
+        self.assertEqual([e["text"] for e in final_events if e["type"] == "speech_segment"], ["尚未说完"])
+        self.assertEqual(final_events[-1]["payload"]["status"], "output_unparsed")
+        self.assertFalse(any(e["type"] == "metadata_ready" for e in final_events))
+
+    def test_surrogate_pair_is_intact_at_every_chunk_boundary(self) -> None:
+        raw = '{"speech":"\\uD83D\\uDE0A你好。","memory_metadata":{}}'
+        for split in range(1, len(raw)):
+            with self.subTest(split=split):
+                stream = StreamingSpeechParser(mode="memcore_json")
+                events = stream.feed(raw[:split]) + stream.feed(raw[split:]) + stream.finish()
+                chunks = [e["text"] for e in events if e["type"] == "speech_chunk"]
+                for chunk in chunks:
+                    chunk.encode("utf-8")
+                self.assertEqual("".join(chunks), "😊你好。")
+                self.assertEqual([e["text"] for e in events if e["type"] == "speech_segment"], ["😊你好。"])
+                self.assertEqual(events[-1]["payload"]["speech"], "😊你好。")
+
     def test_plain_stream_delays_punctuation_cluster_segment(self) -> None:
         stream = StreamingSpeechParser(mode="plain")
         events = stream.feed("哈啊？")
