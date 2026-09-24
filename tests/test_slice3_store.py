@@ -5,7 +5,10 @@
 
 from __future__ import annotations
 
+import sqlite3
+import tempfile
 import unittest
+from pathlib import Path
 
 from memcore import Namespace, NamespaceError, SQLiteMemoryStore
 from memcore.namespace import Actor
@@ -18,6 +21,19 @@ class StoreSliceBase(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.store.close()
+
+
+class SQLiteConfiguration(unittest.TestCase):
+    def test_file_backed_store_enables_wal(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "memcore.sqlite3"
+            store = SQLiteMemoryStore(str(db_path))
+            store.close()
+
+            with sqlite3.connect(db_path) as connection:
+                journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
+
+            self.assertEqual(str(journal_mode).lower(), "wal")
 
 
 class WriteAndIdempotency(StoreSliceBase):
