@@ -1,0 +1,150 @@
+{
+  "format": "long_horizon_actual_operation_projection_check_v1",
+  "status": "passed",
+  "scope": "Public provider-projection snapshot immediately after initial project turn, before the between-turn maintenance wait. Only the two deterministic v1 fixture observation payloads are measured, serialized as compact UTF-8 JSON; not the whole prompt or billed tokens.",
+  "rows": [
+    {
+      "run_id": "workshop__full__r1",
+      "condition": "full",
+      "probe_step": 2,
+      "nodes": [
+        {
+          "source_id": "tooltrace:7645e7d6f4a67d9e82341e760706a545:tool_result",
+          "document_id": "workshop_brief_v1",
+          "projection_status": "request_frozen",
+          "canonical_payload_utf8_bytes": 2696,
+          "full_native_result_delivered_in_open_turn": true
+        },
+        {
+          "source_id": "tooltrace:e77e83ef833560da039fccc37bc6f4ec:tool_result",
+          "document_id": "workshop_resources_v1",
+          "projection_status": "request_frozen",
+          "canonical_payload_utf8_bytes": 2839,
+          "full_native_result_delivered_in_open_turn": true
+        }
+      ],
+      "total_canonical_payload_utf8_bytes": 5535
+    },
+    {
+      "run_id": "workshop__card__r1",
+      "condition": "card",
+      "probe_step": 2,
+      "nodes": [
+        {
+          "source_id": "tooltrace:1b814fc0224f6be0846e901e97c8fdb9:tool_result",
+          "document_id": "workshop_brief_v1",
+          "projection_status": "settled",
+          "canonical_payload_utf8_bytes": 527,
+          "full_native_result_delivered_in_open_turn": true
+        },
+        {
+          "source_id": "tooltrace:defd09724225168ad21cd68874c22898:tool_result",
+          "document_id": "workshop_resources_v1",
+          "projection_status": "settled",
+          "canonical_payload_utf8_bytes": 528,
+          "full_native_result_delivered_in_open_turn": true
+        }
+      ],
+      "total_canonical_payload_utf8_bytes": 1055
+    },
+    {
+      "run_id": "migration__card__r1",
+      "condition": "card",
+      "probe_step": 2,
+      "nodes": [
+        {
+          "source_id": "tooltrace:e1e3afef85eef67134d976bcaa08c8d3:tool_result",
+          "document_id": "migration_brief_v1",
+          "projection_status": "settled",
+          "canonical_payload_utf8_bytes": 527,
+          "full_native_result_delivered_in_open_turn": true
+        },
+        {
+          "source_id": "tooltrace:570651bb2a8462b7fc9fea372d140b03:tool_result",
+          "document_id": "migration_resources_v1",
+          "projection_status": "settled",
+          "canonical_payload_utf8_bytes": 528,
+          "full_native_result_delivered_in_open_turn": true
+        }
+      ],
+      "total_canonical_payload_utf8_bytes": 1055
+    },
+    {
+      "run_id": "migration__full__r1",
+      "condition": "full",
+      "probe_step": 2,
+      "nodes": [
+        {
+          "source_id": "tooltrace:3bab7c3eac04726c759571990d96ed07:tool_result",
+          "document_id": "migration_brief_v1",
+          "projection_status": "request_frozen",
+          "canonical_payload_utf8_bytes": 2719,
+          "full_native_result_delivered_in_open_turn": true
+        },
+        {
+          "source_id": "tooltrace:8537f10e41be48298ca6770820b99895:tool_result",
+          "document_id": "migration_resources_v1",
+          "projection_status": "request_frozen",
+          "canonical_payload_utf8_bytes": 2837,
+          "full_native_result_delivered_in_open_turn": true
+        }
+      ],
+      "total_canonical_payload_utf8_bytes": 5556
+    },
+    {
+      "run_id": "workshop__card__r2",
+      "condition": "card",
+      "probe_step": 2,
+      "nodes": [
+        {
+          "source_id": "tooltrace:3c338ab60891b2614afd1b10c2adfb6f:tool_result",
+          "document_id": "workshop_brief_v1",
+          "projection_status": "settled",
+          "canonical_payload_utf8_bytes": 527,
+          "full_native_result_delivered_in_open_turn": true
+        },
+        {
+          "source_id": "tooltrace:dda79ea087705b1bbc855a9dfeb16383:tool_result",
+          "document_id": "workshop_resources_v1",
+          "projection_status": "settled",
+          "canonical_payload_utf8_bytes": 528,
+          "full_native_result_delivered_in_open_turn": true
+        }
+      ],
+      "total_canonical_payload_utf8_bytes": 1055
+    },
+    {
+      "run_id": "workshop__full__r2",
+      "condition": "full",
+      "probe_step": 2,
+      "nodes": [
+        {
+          "source_id": "tooltrace:38357a681caab2dcc413fca1e213c211:tool_result",
+          "document_id": "workshop_brief_v1",
+          "projection_status": "request_frozen",
+          "canonical_payload_utf8_bytes": 2696,
+          "full_native_result_delivered_in_open_turn": true
+        },
+        {
+          "source_id": "tooltrace:70e153b6f7b4a94577134b032617578d:tool_result",
+          "document_id": "workshop_resources_v1",
+          "projection_status": "request_frozen",
+          "canonical_payload_utf8_bytes": 2839,
+          "full_native_result_delivered_in_open_turn": true
+        }
+      ],
+      "total_canonical_payload_utf8_bytes": 5535
+    }
+  ],
+  "condition_mean_payload_utf8_bytes": {
+    "full": 5542,
+    "card": 1055
+  },
+  "card_payload_byte_reduction_ratio": 0.8096355106459762,
+  "all_open_turn_fixture_results_full": true,
+  "all_card_post_final_fixture_projections_settled": true,
+  "all_full_post_final_fixture_projections_full": true,
+  "planned_trajectories": 8,
+  "analyzed_completed_trajectories": 6,
+  "unanalysed_incomplete_or_unrun_trajectories": 2
+}

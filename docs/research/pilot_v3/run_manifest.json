@@ -1,0 +1,87 @@
+{
+  "format": "akane_empty_retrieval_fixed_history_contrast_v1",
+  "status": "prepared_not_run",
+  "created_at": "2026-09-06",
+  "scope": "Five old/new pairs on one fixed history and one replayed initial retrieve_memory choice; actual Engine continuation and original final validation. Not a test of autonomous tool choice or general retrieval quality.",
+  "conditioning": {
+    "run_id": "gallery_history__full__r1",
+    "probe_id": "g_probe_memory",
+    "report_sha256": "b266869b5455ae58ee44173871a2ec35e88bc4f58e1b54d88bab9f39171ddf99",
+    "initial_request_hash": "d90e2ebfe20d5f4cf998dd631a85599474b46339a3450b31edaef21ba8775cd4",
+    "initial_response_sha256": "a6c30ea16b0fa8976273124b3b08339ddfe0326413714a1a8efcd81d168cd67b",
+    "source": "pilot_v2 actual attempt02",
+    "capture_sha256": {
+      "request_092e2797d4394cbc8f2d7d4fbc2c2b59.json": "a8a8fc8a5774f07e18ccbb380ff92b1c266d2d2cff5bb25163d026867e846819",
+      "request_5988babce47e44e9b9b4eb2adb71c487.json": "e659104e6a6ce987e1af3e2546386522518de938f7ced235c56bc0c5936067b8",
+      "request_9e4a0b5e51d74d6aa017c721cb38ae4d.json": "fbad80da90df1cb12f4a2f78b77a3902979eb6b589ccfb123cf880ad48684119",
+      "request_ed99fefae74e44d58820f999f99254cf.json": "6f7016a12e93a8400551783df6a51a4bf601250365571c6a36b1337e17056438",
+      "request_6bfb0e9494744e7eb880d1dc31bc5371.json": "417e36a96a17ef39ed6b59809416743e0d8304dcc482613f9acc1fd1fcd704d1",
+      "request_843ec8216c104cddb45d9b06d4372ba7.json": "6fdbc900b8de2dce3553a6fb490120d9b55d2dd9a6eac4dc639f246efa7b60c6",
+      "request_26f2e9b4fbd64991b7de4216a2fe92e6.json": "54f9d8ac1a33bab06bc7cbf134f3e65bc2da239d2c0415569d8dabfb3264d196",
+      "request_d392cd60931a4677a02beff385878ab9.json": "78a5648c0bb20c9de6a1eef4d2886427199d4b7fb0dd19d7f855abcf81731b42",
+      "request_cefa52aaa2a5450581bd41e7be6960ce.json": "e4f3b73d854df35ed9278f7aeca7c569e614bb719aa2e09fbac0e28e8b96e1aa"
+    }
+  },
+  "stage_id": "9cd1db823a2345e3b555e6dc20c0463f",
+  "budget_ceiling_cny": 50,
+  "only_intervention": "retrieval_engine.EMPTY_RETRIEVAL_FOLLOWUP_GUIDANCE constant; old value recovered byte-exactly from original empty tool receipt; new value from current host source",
+  "common_operation_policy": "full_until_raw_compaction",
+  "repetitions_per_condition": 5,
+  "input_time_policy": "Preserve original input timestamps; first paid SDK request must match the frozen reference after replacing only the bound empty-guidance tail. Reject all other differences before HTTP.",
+  "automatic_sdk_retries": 0,
+  "model_generation": "actual host deepseek-v4-flash, nonthinking, temperature 0.8, max_tokens 2048",
+  "expected_sample_count": 10,
+  "outcome_rule": "Manual scoring of host-accepted and persisted speech: notebook identity and Thursday evening must both be recalled without denying the visible arrangement; report contradictions, tool use, format repair and all failures separately. No keyword-only scoring.",
+  "runs": [
+    {
+      "pair": 1,
+      "condition": "old",
+      "run_id": "empty_receipt__old__r1"
+    },
+    {
+      "pair": 1,
+      "condition": "new",
+      "run_id": "empty_receipt__new__r1"
+    },
+    {
+      "pair": 2,
+      "condition": "new",
+      "run_id": "empty_receipt__new__r2"
+    },
+    {
+      "pair": 2,
+      "condition": "old",
+      "run_id": "empty_receipt__old__r2"
+    },
+    {
+      "pair": 3,
+      "condition": "old",
+      "run_id": "empty_receipt__old__r3"
+    },
+    {
+      "pair": 3,
+      "condition": "new",
+      "run_id": "empty_receipt__new__r3"
+    },
+    {
+      "pair": 4,
+      "condition": "new",
+      "run_id": "empty_receipt__new__r4"
+    },
+    {
+      "pair": 4,
+      "condition": "old",
+      "run_id": "empty_receipt__old__r4"
+    },
+    {
+      "pair": 5,
+      "condition": "old",
+      "run_id": "empty_receipt__old__r5"
+    },
+    {
+      "pair": 5,
+      "condition": "new",
+      "run_id": "empty_receipt__new__r5"
+    }
+  ]
+}

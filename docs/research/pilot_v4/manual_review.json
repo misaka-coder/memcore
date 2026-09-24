@@ -1,0 +1,247 @@
+{
+  "format": "long_horizon_semantic_review_v1",
+  "reviewer": "research_assistant",
+  "method": "Semantic review against the withheld answer key plus original delivered tool and public lifecycle evidence. Requested answer facts, evidence claims and final commit are scored separately. Not a blinded external human rating.",
+  "probes": [
+    {
+      "run_id": "workshop__full__r1",
+      "step_number": 13,
+      "answer_requirement_pass": true,
+      "evidence_claims_supported": true,
+      "review_note": "Correct current owner and both unresolved items, explicitly not completed. Empty retrieval and an unavailable fixture query were followed by relevant episode content and the timeline, which support the answer.",
+      "communication_defect": false
+    },
+    {
+      "run_id": "workshop__full__r1",
+      "step_number": 14,
+      "answer_requirement_pass": true,
+      "evidence_claims_supported": true,
+      "review_note": "Correct replacement folder and time, with the old arrangement explicitly cancelled. Retrieval returned the old episode, but the preceding delivered timeline includes the latest original user instruction and the answer follows it.",
+      "communication_defect": false
+    },
+    {
+      "run_id": "workshop__full__r1",
+      "step_number": 22,
+      "answer_requirement_pass": true,
+      "evidence_claims_supported": true,
+      "review_note": "Both v1 values are correct and were absent from the initial request. Timeline navigation followed by direct content reads delivered both original fixture bodies.",
+      "communication_defect": false
+    },
+    {
+      "run_id": "workshop__full__r1",
+      "step_number": 23,
+      "answer_requirement_pass": true,
+      "evidence_claims_supported": true,
+      "review_note": "Explicitly cites the original resource document that omits the hourly parking fee; no invented amount. That document was delivered in the preceding turn.",
+      "communication_defect": false
+    },
+    {
+      "run_id": "workshop__full__r1",
+      "step_number": 24,
+      "answer_requirement_pass": true,
+      "evidence_claims_supported": true,
+      "review_note": "Correct latest owner, quantity, total, personal item/time and both unresolved tasks. Explicitly distinguishes the checked synthetic plan from real execution.",
+      "communication_defect": false
+    },
+    {
+      "run_id": "workshop__card__r1",
+      "step_number": 13,
+      "answer_requirement_pass": true,
+      "evidence_claims_supported": true,
+      "review_note": "Correct current owner and both unresolved items, supported by the initial visible memory. Two actual plan checks also passed. Four final candidates ended with a transient final-format failure and no public completion, so commit fails separately.",
+      "communication_defect": false
+    },
+    {
+      "run_id": "workshop__card__r1",
+      "step_number": 14,
+      "answer_requirement_pass": true,
+      "evidence_claims_supported": true,
+      "review_note": "Correct latest folder and time, explicitly cancelled the old arrangement. Both current and old facts are present in the initial visible memory. Extra project recap is verbose but factually supported.",
+      "communication_defect": false
+    },
+    {
+      "run_id": "workshop__card__r1",
+      "step_number": 22,
+      "answer_requirement_pass": true,
+      "evidence_claims_supported": true,
+      "review_note": "Both old-version values are correct and absent from the initial request. After summary navigation lacked operation details, the tools timeline delivered the original v1 resource text. The accepted terminal plaintext response contains unsolicited English host-format commentary.",
+      "communication_defect": true
+    },
+    {
+      "run_id": "workshop__card__r1",
+      "step_number": 23,
+      "answer_requirement_pass": true,
+      "evidence_claims_supported": true,
+      "review_note": "Correct explicit omission of the hourly parking fee, supported by the final full timeline body. Several earlier narrower reads were unhelpful. The accepted response leaks English formatting commentary.",
+      "communication_defect": true
+    },
+    {
+      "run_id": "workshop__card__r1",
+      "step_number": 24,
+      "answer_requirement_pass": true,
+      "evidence_claims_supported": true,
+      "review_note": "All requested handover facts and unresolved tasks are correct, and synthetic checking is distinguished from real execution. The accepted response includes a long unsolicited English process preface before the five-item Chinese answer.",
+      "communication_defect": true
+    },
+    {
+      "run_id": "migration__card__r1",
+      "step_number": 13,
+      "answer_requirement_pass": true,
+      "evidence_claims_supported": true,
+      "review_note": "Correct current owner and both unresolved items. Empty exact-kind retrieval was followed by a timeline read, with the summary also visible. All final attempts violated the protocol; the last fallback emitted textual tool markup. No public final completion occurred.",
+      "communication_defect": false
+    },
+    {
+      "run_id": "migration__card__r1",
+      "step_number": 14,
+      "answer_requirement_pass": true,
+      "evidence_claims_supported": true,
+      "review_note": "Correct latest orange record card and Wednesday noon, with the old USB arrangement explicitly cancelled; supported by the current visible memory.",
+      "communication_defect": false
+    },
+    {
+      "run_id": "migration__card__r1",
+      "step_number": 22,
+      "answer_requirement_pass": true,
+      "evidence_claims_supported": true,
+      "review_note": "Correct v1 verification code and historical batch, absent from the initial request. Timeline navigation and two content reads delivered the original v1 documents. No replacement with v2 values.",
+      "communication_defect": false
+    },
+    {
+      "run_id": "migration__card__r1",
+      "step_number": 23,
+      "answer_requirement_pass": true,
+      "evidence_claims_supported": true,
+      "review_note": "Correctly states the original v1 resource explicitly omits the monthly external object-storage fee. The final timeline result delivers that evidence; no amount is invented.",
+      "communication_defect": false
+    },
+    {
+      "run_id": "migration__card__r1",
+      "step_number": 24,
+      "answer_requirement_pass": true,
+      "evidence_claims_supported": true,
+      "review_note": "All current owner, quantity, total, latest personal arrangement and unresolved-task facts are correct. The four-item handover explicitly separates synthetic validation from real execution.",
+      "communication_defect": false
+    },
+    {
+      "run_id": "migration__full__r1",
+      "step_number": 13,
+      "answer_requirement_pass": true,
+      "evidence_claims_supported": true,
+      "review_note": "Correct current owner and both unresolved tasks, explicitly still uncompleted. Both retrievals returned empty, and the final answer correctly uses the already-visible summary instead of denying its evidence.",
+      "communication_defect": false
+    },
+    {
+      "run_id": "migration__full__r1",
+      "step_number": 14,
+      "answer_requirement_pass": true,
+      "evidence_claims_supported": true,
+      "review_note": "Correct latest orange record card and Wednesday noon. The answer explicitly attributes the arrangement to the user and says the old arrangement was cancelled.",
+      "communication_defect": false
+    },
+    {
+      "run_id": "migration__full__r1",
+      "step_number": 22,
+      "answer_requirement_pass": true,
+      "evidence_claims_supported": true,
+      "review_note": "Both initial-version values are correct and were absent from the initial request. Unavailable old fixture lookup was followed by timeline navigation and a batch content read that delivered the original v1 resource.",
+      "communication_defect": false
+    },
+    {
+      "run_id": "migration__full__r1",
+      "step_number": 23,
+      "answer_requirement_pass": true,
+      "evidence_claims_supported": true,
+      "review_note": "Correctly reports the explicitly omitted object-storage monthly fee, using the original resource delivered in the preceding turn; no invented figure.",
+      "communication_defect": false
+    },
+    {
+      "run_id": "migration__full__r1",
+      "step_number": 24,
+      "answer_requirement_pass": true,
+      "evidence_claims_supported": true,
+      "review_note": "Correct current handover facts and unresolved tasks, with synthetic checking explicitly distinguished from actual business execution.",
+      "communication_defect": false
+    },
+    {
+      "run_id": "workshop__card__r2",
+      "step_number": 13,
+      "answer_requirement_pass": true,
+      "evidence_claims_supported": true,
+      "review_note": "Correct current owner and both unresolved tasks. The attempted final-plan check was not_found, but draft_v1/v2 checks passed and the opened episode supplied the actual task facts. The answer correctly treats v2 as current.",
+      "communication_defect": false
+    },
+    {
+      "run_id": "workshop__card__r2",
+      "step_number": 14,
+      "answer_requirement_pass": true,
+      "evidence_claims_supported": true,
+      "review_note": "Correct latest green folder and Saturday afternoon, with the old arrangement explicitly cancelled; supported by visible conversation/summary evidence.",
+      "communication_defect": false
+    },
+    {
+      "run_id": "workshop__card__r2",
+      "step_number": 22,
+      "answer_requirement_pass": true,
+      "evidence_claims_supported": false,
+      "review_note": "Both requested v1 values are correct and delivered by original content reads, with neither initially visible. However, the response falsely says v2 does not provide those fields: actual v2 resources provide XT-936 and the south pickup desk. Requested facts pass, evidence claims fail. Unsolicited English process preface is separate.",
+      "communication_defect": true
+    },
+    {
+      "run_id": "workshop__card__r2",
+      "step_number": 23,
+      "answer_requirement_pass": true,
+      "evidence_claims_supported": true,
+      "review_note": "Correctly quotes the explicit omission of the parking fee in the original v1 resource. Actual final timeline read supports it. The answer has an unsolicited English process preface.",
+      "communication_defect": true
+    },
+    {
+      "run_id": "workshop__card__r2",
+      "step_number": 24,
+      "answer_requirement_pass": true,
+      "evidence_claims_supported": true,
+      "review_note": "Correct current owner, quantity, total, personal item/time and both unresolved tasks. The four-part handover distinguishes checked synthetic plans from actual execution.",
+      "communication_defect": false
+    },
+    {
+      "run_id": "workshop__full__r2",
+      "step_number": 13,
+      "answer_requirement_pass": true,
+      "evidence_claims_supported": true,
+      "review_note": "Correctly identifies the current plan owner as Qiao Mu and both unfinished items using visible memory after an empty retrieval. It separately notes that per-item assignees were not individually specified; the fixture has one plan owner field, so this is not scored as a wrong owner.",
+      "communication_defect": false
+    },
+    {
+      "run_id": "workshop__full__r2",
+      "step_number": 14,
+      "answer_requirement_pass": true,
+      "evidence_claims_supported": true,
+      "review_note": "Correct latest folder and Saturday-afternoon arrangement, explicitly replacing the earlier version and keeping it separate from project tasks.",
+      "communication_defect": false
+    },
+    {
+      "run_id": "workshop__full__r2",
+      "step_number": 22,
+      "answer_requirement_pass": true,
+      "evidence_claims_supported": true,
+      "review_note": "Both old-version values are correct. They were already present in the initial request after the preceding task-continuation history read; another full timeline read also delivered them. This is history continuity, not a clean hidden-at-probe recall case.",
+      "communication_defect": false
+    },
+    {
+      "run_id": "workshop__full__r2",
+      "step_number": 23,
+      "answer_requirement_pass": true,
+      "evidence_claims_supported": true,
+      "review_note": "Correct explicit omission of the parking fee, supported by the delivered original v1 timeline content; no invented number.",
+      "communication_defect": false
+    },
+    {
+      "run_id": "workshop__full__r2",
+      "step_number": 24,
+      "answer_requirement_pass": true,
+      "evidence_claims_supported": true,
+      "review_note": "All requested facts and the synthetic-versus-real boundary are correct. The extra closing demand that the user personally handle booking/payment/notifications is unnecessary in this fictional handover and is flagged only as a communication issue.",
+      "communication_defect": true
+    }
+  ]
+}

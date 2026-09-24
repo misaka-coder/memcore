@@ -1,0 +1,177 @@
+{
+  "format": "retained_interrupted_long_horizon_attempt_v1",
+  "attempt": "actual-01",
+  "status": "incomplete",
+  "planned_trajectories": 8,
+  "planned_user_turns": 192,
+  "accepted_user_turns": 20,
+  "actual_model_http_requests": 45,
+  "budget_before": {
+    "stage_id": "9cd1db823a2345e3b555e6dc20c0463f",
+    "limit_cny": "50",
+    "usage_cost_at_reserved_rates_cny": "0.6018894",
+    "reserved_cny": "0",
+    "committed_cny": "0.6018894",
+    "remaining_cny": "49.3981106",
+    "pending_count": 0,
+    "settled_requests": 144
+  },
+  "budget_after": {
+    "stage_id": "9cd1db823a2345e3b555e6dc20c0463f",
+    "limit_cny": "50",
+    "usage_cost_at_reserved_rates_cny": "1.2035478",
+    "reserved_cny": "0",
+    "committed_cny": "1.2035478",
+    "remaining_cny": "48.7964522",
+    "pending_count": 0,
+    "settled_requests": 189
+  },
+  "source_fingerprint": "f2d5b5eb2ff36831ec6aba1ab0e06acca477a988e15d61445a9f27a4af2f23e8",
+  "runs": [
+    {
+      "run_id": "workshop__full__r1",
+      "scenario_id": "workshop",
+      "condition": "full",
+      "repetition": 1,
+      "status": "interrupted",
+      "phases": {
+        "before_restart": {
+          "status": "passed",
+          "process_exit_code": 0,
+          "report": "trajectories/workshop__full__r1/phases/before_restart/report.json",
+          "error": null
+        },
+        "after_restart": {
+          "status": "interrupted",
+          "process_exit_code": 1,
+          "report": "trajectories/workshop__full__r1/phases/after_restart/report.json",
+          "error": "long_phase_host_close_failed"
+        }
+      },
+      "error": "long_phase_host_close_failed"
+    },
+    {
+      "run_id": "workshop__card__r1",
+      "scenario_id": "workshop",
+      "condition": "card",
+      "repetition": 1,
+      "status": "not_run",
+      "phases": {},
+      "error": "earlier_infrastructure_interruption"
+    },
+    {
+      "run_id": "migration__card__r1",
+      "scenario_id": "migration",
+      "condition": "card",
+      "repetition": 1,
+      "status": "not_run",
+      "phases": {},
+      "error": "earlier_infrastructure_interruption"
+    },
+    {
+      "run_id": "migration__full__r1",
+      "scenario_id": "migration",
+      "condition": "full",
+      "repetition": 1,
+      "status": "not_run",
+      "phases": {},
+      "error": "earlier_infrastructure_interruption"
+    },
+    {
+      "run_id": "workshop__card__r2",
+      "scenario_id": "workshop",
+      "condition": "card",
+      "repetition": 2,
+      "status": "not_run",
+      "phases": {},
+      "error": "earlier_infrastructure_interruption"
+    },
+    {
+      "run_id": "workshop__full__r2",
+      "scenario_id": "workshop",
+      "condition": "full",
+      "repetition": 2,
+      "status": "not_run",
+      "phases": {},
+      "error": "earlier_infrastructure_interruption"
+    },
+    {
+      "run_id": "migration__full__r2",
+      "scenario_id": "migration",
+      "condition": "full",
+      "repetition": 2,
+      "status": "not_run",
+      "phases": {},
+      "error": "earlier_infrastructure_interruption"
+    },
+    {
+      "run_id": "migration__card__r2",
+      "scenario_id": "migration",
+      "condition": "card",
+      "repetition": 2,
+      "status": "not_run",
+      "phases": {},
+      "error": "earlier_infrastructure_interruption"
+    }
+  ],
+  "completed_probes": [
+    {
+      "step_id": "workshop_13",
+      "speech": "主人，我按时间线把整件事重新核了一遍，现在跟你说明白。\n\n**星港读书营最新的 draft_v2 状态：**\n\n- **负责人：乔木**\n- **待确认事项有两项：**\n  1. **投影线确认** —— 尚未实际完成\n  2. **名单复核** —— 尚未实际完成\n\n这两项从 v2 更新时就是\"待确认\"状态，之后主人你只改了个人安排（便签盒改成绿色文件夹），并明确说\"项目的待确认事项没有因此完成\"。所以到目前这一刻，**两项都没有任何已完成的操作记录**，仍然挂着。\n\n我这边能确认的是：draft_v2 已保存并通过检查，draft_v1 保留未覆盖。但待确认项是否有人去跟进、是否实际办妥，目前没有任何工具结果或后续对话证明它们已完成——我不会把没办的事说成办了。\n\n所以当前该保留的就是这两项待确认：**投影线确认、名单复核**，负责人乔木。如果你需要我进一步做什么来推进或核销其中某项，告诉我。",
+      "tool_calls": [
+        {
+          "name": "retrieve_memory",
+          "arguments": {
+            "query": "星港读书营方案的待确认事项和负责人",
+            "about_roles": [
+              "third_party"
+            ],
+            "memory_facets": [
+              "state",
+              "plan"
+            ],
+            "entity_anchors": [
+              "星港读书营"
+            ]
+          }
+        },
+        {
+          "name": "lookup_fixture",
+          "arguments": {
+            "query_key": "星港读书营 workshop_brief_v2 workshop_resources_v2 待确认事项 负责人"
+          }
+        },
+        {
+          "name": "read_memory_timeline",
+          "arguments": {
+            "time_range": {
+              "start_at": "2026-09-06 15:34",
+              "end_at": "2026-09-06 15:35"
+            },
+            "projection": "conversation"
+          }
+        }
+      ]
+    },
+    {
+      "step_id": "workshop_14",
+      "speech": "从刚才的时间线看，主人你最新的个人安排是**周六午后提醒带绿色文件夹**，原先周五傍晚带米白色便签盒那个已经取消了。\n\n所以最近一次明确修改后：**物品=绿色文件夹，时段=周六午后**。别搞混。",
+      "tool_calls": []
+    }
+  ],
+  "observed_restart_failure": {
+    "status": "interrupted",
+    "error": "long_phase_host_close_failed",
+    "host_close": {
+      "status": "degraded",
+      "reason": "writer_shutdown_incomplete",
+      "failures": [
+        "memcore_close_deferred"
+      ]
+    },
+    "user_turns": 0,
+    "model_calls": 0
+  },
+  "diagnosis": "The startup observer used a 120-second wait. The failed worker had high GPU use during reindex warmup at the original host batch size 64; shutdown reported deferred memory close. The finally block overwrote the first exception, so its exact code was not retained. A separate production-embedding preflight at configured batch size 1 restored all 80 records and identical saved context in about 10.4 seconds. This supports a resource/observer-timeout diagnosis; no GPU OOM exception was captured.",
+  "correction": "Keep this entire attempt and its costs; use configured EMBEDDING_REINDEX_BATCH_SIZE=1 for every trajectory in the new complete comparison, allow a 600-second startup wait, and preserve both primary and shutdown errors. Do not merge this incomplete attempt into the new planned 40-probe score."
+}

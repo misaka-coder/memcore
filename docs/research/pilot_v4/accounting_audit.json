@@ -1,0 +1,111 @@
+{
+  "format": "long_horizon_read_only_accounting_audit_v2",
+  "status": "passed_with_one_retained_uncertain_reservation",
+  "reviewer": "executing_research_assistant_not_independent_external_reviewer",
+  "scope": "All three long-horizon attempts, including interrupted attempts and the unchanged prior stage balance. Audit success does not settle the anomalous usage.",
+  "attempts": [
+    {
+      "attempt": "actual-01",
+      "status": "incomplete",
+      "paid_requests": 45,
+      "settled_requests": 45,
+      "unsettled_dispatched_requests": 0,
+      "blocked_before_http": 0,
+      "source_files_verified": 391,
+      "source_fingerprint": "f2d5b5eb2ff36831ec6aba1ab0e06acca477a988e15d61445a9f27a4af2f23e8",
+      "offline_gate": 7,
+      "settled_peak_usage_cost_cny": "0.6016584",
+      "settled_time_band_estimate_cny": "0.3008292",
+      "settled_token_totals": {
+        "prompt_tokens": 466438,
+        "completion_tokens": 8626,
+        "prompt_cache_hit_tokens": 301824,
+        "prompt_cache_miss_tokens": 164614,
+        "total_tokens": 475064
+      },
+      "invoice_cost_cny": null
+    },
+    {
+      "attempt": "actual-02",
+      "status": "incomplete",
+      "paid_requests": 405,
+      "settled_requests": 405,
+      "unsettled_dispatched_requests": 0,
+      "blocked_before_http": 1,
+      "source_files_verified": 392,
+      "source_fingerprint": "ebcdd79d82820e959defb62b6c3be44c23b7ed51a124bc287fc2e7742c45bd17",
+      "offline_gate": 9,
+      "settled_peak_usage_cost_cny": "5.2183950",
+      "settled_time_band_estimate_cny": "2.6091975",
+      "settled_token_totals": {
+        "prompt_tokens": 4367527,
+        "completion_tokens": 80438,
+        "prompt_cache_hit_tokens": 2968320,
+        "prompt_cache_miss_tokens": 1399207,
+        "total_tokens": 4447965
+      },
+      "invoice_cost_cny": null
+    },
+    {
+      "attempt": "actual-03",
+      "status": "incomplete",
+      "paid_requests": 390,
+      "settled_requests": 389,
+      "unsettled_dispatched_requests": 1,
+      "blocked_before_http": 1,
+      "source_files_verified": 392,
+      "source_fingerprint": "ef19b1ef3a04844807c031b079f67674e9fefb35c6ad472949cc07f4645e4b92",
+      "offline_gate": 11,
+      "settled_peak_usage_cost_cny": "5.4790776",
+      "settled_time_band_estimate_cny": "2.7395388",
+      "settled_token_totals": {
+        "prompt_tokens": 4573910,
+        "completion_tokens": 86266,
+        "prompt_cache_hit_tokens": 3110016,
+        "prompt_cache_miss_tokens": 1463894,
+        "total_tokens": 4660176
+      },
+      "invoice_cost_cny": null
+    }
+  ],
+  "total_long_horizon_paid_requests": 840,
+  "total_long_horizon_settled_requests": 839,
+  "total_long_horizon_settled_peak_usage_cny": "11.2991310",
+  "total_long_horizon_settled_time_band_estimate_cny": "5.6495655",
+  "prior_stage_peak_usage_cny": "0.6018894",
+  "final_stage": {
+    "stage_id": "9cd1db823a2345e3b555e6dc20c0463f",
+    "limit_cny": "50",
+    "usage_cost_at_reserved_rates_cny": "11.9010204",
+    "reserved_cny": "3.16416",
+    "committed_cny": "15.0651804",
+    "remaining_cny": "34.9348196",
+    "pending_count": 1,
+    "settled_requests": 983
+  },
+  "read_only_ledger_rows": 984,
+  "unsettled": [
+    {
+      "attempt": "actual-03",
+      "request_id": "87e22ded83cb4beb99ea23b45f6e511c",
+      "ledger_status": "uncertain",
+      "reason": "usage_tokens_exceed_reservation",
+      "reserved_cny": "3.16416",
+      "request_max_tokens": 2048,
+      "reported_completion_tokens": 2049,
+      "raw_usage_implied_peak_cost_not_accepted_or_settled_cny": "0.0194762",
+      "raw_usage_implied_cost_below_financial_reservation": true,
+      "finish_reason": "length",
+      "request_sha256": "309eeb75517ad5bab4f8e83018ab026d89987dbbb87bd9e305c58a24543778fc",
+      "response_sha256": null,
+      "parsed_response_sha256": "770fb169ae02c869aeff1a017dea7d5f0cc598f8fa25cc62afa8d6ad9150aa7e",
+      "response_evidence_limit": "Parsed response and usage retained; raw response bytes/hash were not saved before settlement validation raised. No raw bytes are reconstructed or claimed."
+    }
+  ],
+  "no_replay_charges": true,
+  "frozen_sources_verified": true,
+  "request_wire_hashes_verified": 840,
+  "available_response_wire_hashes_verified": 839,
+  "missing_raw_response_evidence": 1,
+  "invoice_cost_cny": null
+}

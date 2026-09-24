@@ -1,0 +1,170 @@
+{
+  "format": "akane_memcore_pilot_run_manifest_v1",
+  "status": "prepared_not_run",
+  "created_at": "2026-09-05",
+  "purpose": "Phase 0: four-run plumbing pilot, not publication evidence. No model call has been made by preparing this manifest.",
+  "scenarios_file": "scenarios.json",
+  "evaluator_only_file": "answer_key.json",
+  "condition_definitions": {
+    "full": {
+      "operation_projection_policy": "full_until_raw_compaction"
+    },
+    "card": {
+      "operation_projection_policy": "compact_after_terminal"
+    }
+  },
+  "fixed_controls": {
+    "timezone": "Asia/Shanghai",
+    "prompt_layout": "identical_across_conditions",
+    "tool_schema": "identical_across_conditions",
+    "memory_read_tools": "same_public_specs_and_dispatch",
+    "compaction": "do_not_call_raw_or_semantic_maintenance_in_phase_0",
+    "fixture_lookup": "Enforce each step's availability allowlist. After version update, old fixture cannot be re-fetched from lookup_fixture in either condition; original record remains readable through MemCore.",
+    "source_id_mapping": "record_real_runtime_ids_for_each_fixture_and_user_step",
+    "probe_policy": "fork_same_post_gap_snapshot_for_each_probe; do_not_feed_previous_probe_answers_to_next_probe",
+    "model_gold_access": "forbidden",
+    "model_fixture_file_access": "only_through_selected_lookup_fixture_result",
+    "model_tool_allowlist": "Only lookup_fixture for the current scenario and the specified public memory read tools; no filesystem, shell, network or general tool discovery access. Verify the final provider tool schema before each request.",
+    "provider_cache_control": "Record actual execution order and gaps. Shared provider prefix caches may warm across conditions; phase-0 paid cost is descriptive bookkeeping, not evidence that either policy saves money. Later cost experiments require counterbalanced/repeated order or verified cache isolation.",
+    "namespace_isolation": "Separate hard namespace and store/index per scenario, condition and probe branch. Copy only the corresponding post-gap history and keep logical evidence mapping.",
+    "care": {
+      "enabled": false,
+      "integration_hook": "actual PromptProfileRegistry.get(DESKTOP_PET, care_enabled=False) + PromptBuilder; isolated prompt export, Engine is not started",
+      "persona": "fixed_identical",
+      "disable_live_client_state": true,
+      "disable_autonomous_push": true,
+      "random_actions": "not_exposed",
+      "time": "scripted_timestamps_not_wall_clock_elapsed"
+    }
+  },
+  "unresolved_before_live_run": {
+    "credential_binding": "provider preflight reads existing DEEPSEEK_API_KEY process environment only; never captured in artifacts",
+    "runner_implementation": "autonomous live scenario runner implemented; offline tests cover native batch wire, public-API branch replay, explicit errors and all probe denominators; paid scenario execution pending",
+    "embedding": "local BAAI/bge-m3 1024-dimensional CUDA provider verified offline; live CLI repeats health check before paid dispatch; no hashed fallback",
+    "akane_host_adapter": "actual DESKTOP_PET PromptProfile care_enabled=False and PromptBuilder exported all 16 steps in isolated process, checked stable by rebuilding each; only prompt contract reused, Akane Engine not exercised",
+    "paid_budget_ledger": "implemented: persistent shared stage identity, 50 CNY ceiling, one inflight reservation, strict usage settlement and no automatic retries",
+    "provider_transport_and_token_accounting": "2026-09-06 two-request paid provider preflight passed with valid usage; actual autonomous scenario requests and Akane host path still unverified",
+    "thinking_mode_compatibility": "nonthinking native tool message roundtrip verified in two-request preflight; thinking mode and scenario wire remain unverified",
+    "actual_tariff_and_budget_meter": "official rates checked 2026-09-06; peak reservations and request-time tariff estimates kept separate from unverified invoice cost",
+    "stop_protocol": "stop and record budget/context/tool-limit failure; never silently truncate old history",
+    "code_revision_and_dirty_state": "provider preflight requires verified frozen Python/synthetic JSON copy; runtime dependencies are not yet fully pinned"
+  },
+  "run_results_template": {
+    "actual_model": null,
+    "actual_provider": null,
+    "actual_config": null,
+    "transport_verified": null,
+    "total_input_tokens": null,
+    "total_output_tokens": null,
+    "cache_read_input_tokens": null,
+    "cache_write_input_tokens": null,
+    "cache_miss_input_tokens": null,
+    "peak_prompt_tokens": null,
+    "first_token_latency_ms": null,
+    "total_latency_ms": null,
+    "total_cost": null,
+    "cost_currency": null,
+    "task_scores": null,
+    "probe_scores": null,
+    "source_id_map": null,
+    "raw_provider_usage": null,
+    "failure_reason": null
+  },
+  "runs": [
+    {
+      "run_id": "gallery_history__full__r1",
+      "scenario_id": "gallery_history",
+      "condition": "full",
+      "repeat": 1,
+      "status": "not_run",
+      "result": null
+    },
+    {
+      "run_id": "gallery_history__card__r1",
+      "scenario_id": "gallery_history",
+      "condition": "card",
+      "repeat": 1,
+      "status": "not_run",
+      "result": null
+    },
+    {
+      "run_id": "notifier_history__full__r1",
+      "scenario_id": "notifier_history",
+      "condition": "full",
+      "repeat": 1,
+      "status": "not_run",
+      "result": null
+    },
+    {
+      "run_id": "notifier_history__card__r1",
+      "scenario_id": "notifier_history",
+      "condition": "card",
+      "repeat": 1,
+      "status": "not_run",
+      "result": null
+    }
+  ],
+  "authorized_planning": {
+    "provider": "DeepSeek official API",
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-v4-flash",
+    "budget_user_range": [
+      50,
+      100
+    ],
+    "first_stage_spend_ceiling": 50,
+    "budget_scope": "Global total for the entire first stage, including all scenarios, conditions, probe branches, paid preflight calls and retries. Count each actual API request once; never count shared setup again for each branch.",
+    "currency": "CNY",
+    "currency_assumption": "User replied in Chinese with 50-100; first-stage planning uses RMB. Provider preflight has now made two paid requests, accounted in the shared ledger.",
+    "service_model_version_observed": "DeepSeek-V4-Flash-0731",
+    "source_checked_at": "2026-09-05",
+    "pricing_source": "https://api-docs.deepseek.com/zh-cn/quick_start/pricing/",
+    "notes": "Record actual service model/version and live tariff at run time; documentation snapshot is not an immutable version pin."
+  },
+  "proposed_generation_settings": {
+    "thinking": {
+      "type": "disabled"
+    },
+    "temperature": 0,
+    "top_p": 1,
+    "max_output_tokens": 2048,
+    "note": "Phase-0 simplicity choice, identical in both groups. This is not an evaluation of thinking mode; enabling it later requires provider-correct reasoning_content replay."
+  },
+  "proposed_runner_limits": {
+    "research_context_budget_tokens": 32768,
+    "output_reservation_tokens": 2048,
+    "max_tool_calls_per_turn": 6,
+    "max_transport_retries": 1,
+    "max_paid_spend_cny": 50,
+    "max_inflight_requests": 1,
+    "note": "These values describe a proposed research runner; they do not alter global Akane configuration. Enforce projected worst-case request spend before dispatch, including retries; record any unavailable token or cost field as null."
+  },
+  "provider_preflight_summary": {
+    "checked_at": "2026-09-06",
+    "status": "passed",
+    "request_count": 2,
+    "requested_and_returned_model": "deepseek-v4-flash",
+    "prompt_tokens": 2111,
+    "completion_tokens": 101,
+    "tariff_estimated_cost_cny": "0.003621",
+    "usage_cost_at_reserved_rates_cny": "0.007242",
+    "pending_reservations": 0,
+    "invoice_cost_cny": null,
+    "akane_runtime_verified": false,
+    "memory_retrieval_verified": false,
+    "summary_file": "provider_preflight_result.md"
+  },
+  "verified_preflight_artifacts": {
+    "akane_prompt_bundle_hash": "fbcb91a66d823b34625cd76c233dd8e4821c1e032c909e32a8f60f9fa4865775",
+    "actual_builder_calls": 32,
+    "actual_builder_steps": 16,
+    "embedding_model": "BAAI/bge-m3",
+    "embedding_dimension": 1024,
+    "embedding_device": "cuda",
+    "embedding_similar_cosine": 0.880459,
+    "embedding_unrelated_cosine": 0.414591,
+    "embedding_network_attempts": 0,
+    "embedding_probe_scope": "small_synthetic_health_check_not_retrieval_benchmark",
+    "actual_paid_scenario_results": null
+  }
+}

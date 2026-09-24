@@ -1,0 +1,52 @@
+{
+  "format": "akane_actual_host_retest_manifest_v2",
+  "status": "prepared_not_run",
+  "created_at": "2026-09-06",
+  "scope": "Four controlled runs using actual AkaneMemoryEngine.process_turn with twelve independent probes; exploratory pilot, not publication evidence.",
+  "condition_definitions": {
+    "full": {"operation_projection_policy": "full_until_raw_compaction"},
+    "card": {"operation_projection_policy": "compact_after_terminal"}
+  },
+  "fixed_controls": {
+    "engine": "actual AkaneMemoryEngine.process_turn and authoritative _run_turn_core",
+    "care_enabled": false,
+    "persona": "original bundled desktop-pet persona and output template",
+    "final_output": "actual host validation, JSON repair and recovery; no two-field research override",
+    "native_schema": "actual Akane capability registry and capcore OpenAI schema conversion, preserving optional arguments",
+    "native_memory_tools": ["retrieve_memory", "browse_memory", "open_memory", "read_memory_timeline"],
+    "fixture_tool": "lookup_fixture with current step allowlist only",
+    "tool_round_hard_limit": 0,
+    "timestamp_policy": "Use live input timestamps so the host's actual wall-clock assistant writes stay chronological; preserve source input timestamps on replay. Original scenario timestamps remain provenance only.",
+    "gap_policy": "Same intervening conversation turns; no simulated one-day elapsed-time claim",
+    "compaction_policy": "Keep actual background due-check scheduling; configure a high raw token trigger and audit actual compaction and summary requests",
+    "branch_policy": "Independent physical stores and indexes, same synthetic logical namespace; restore setup via original SDK response replay without paid calls; verify evidence after explicit generated-ID and wall-clock-time mapping",
+    "probe_leakage": "Each probe starts from its own replay of the same post-gap setup; earlier probe responses never reach a later probe",
+    "model_gold_access": "forbidden",
+    "fixture_access": "selected authorized fixture result only",
+    "request_capture": "Capture SDK HTTP JSON after true host request construction, without credentials or headers",
+    "fee_claim": "Usage-based tariff estimates and conservative budget accounting; no verified invoice cost",
+    "cache_claim": "Actual execution order and cache usage recorded; no causal cost-saving claim from four sequential runs"
+  },
+  "generation_settings": {
+    "model": "deepseek-v4-flash",
+    "thinking": {"type": "disabled"},
+    "temperature": "preserve actual host request, including normal 0.8 and original recovery settings",
+    "max_output_tokens": 2048,
+    "sdk_automatic_retries": 0,
+    "host_format_recovery": "original engine behavior; every actual HTTP request separately counted"
+  },
+  "external_limits": {
+    "input_budget_tokens": 30720,
+    "output_reservation_tokens": 2048,
+    "stage_budget_cny": 50,
+    "stage_id": "9cd1db823a2345e3b555e6dc20c0463f",
+    "budget_scope": "Existing first-stage total including prior preflight, restricted pilot, retest, all failures and recovery requests",
+    "stop_classification": "Budget/context/transport interruptions are separate from host/model task failures; no artificial six-call cap"
+  },
+  "runs": [
+    {"run_id": "gallery_history__full__r1", "scenario_id": "gallery_history", "condition": "full"},
+    {"run_id": "gallery_history__card__r1", "scenario_id": "gallery_history", "condition": "card"},
+    {"run_id": "notifier_history__full__r1", "scenario_id": "notifier_history", "condition": "full"},
+    {"run_id": "notifier_history__card__r1", "scenario_id": "notifier_history", "condition": "card"}
+  ]
+}

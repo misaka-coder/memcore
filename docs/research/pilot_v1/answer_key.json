@@ -1,0 +1,177 @@
+{
+  "format": "akane_memcore_pilot_answer_key_v1",
+  "audience": "evaluator_only",
+  "synthetic": true,
+  "isolation_rule": "Never include this file, task criteria, expected evidence, or scores in the tested model context or its accessible filesystem/tools. Fixture document IDs must be mapped to actual MemCore source IDs by the host recorder.",
+  "scoring_rule": "Manual criterion scoring for pilot. Judge meaning and version/attribution; do not use bare substring matching. Correctness and evidence grade are separate. Preserve failures and null for unobserved metrics.",
+  "cases": [
+    {
+      "scenario_id": "gallery_history",
+      "task_checks": [
+        {
+          "step_id": "g_task_v1",
+          "required_fixture_id": "gallery_doc_v1",
+          "criteria": [
+            "推荐松岚厅",
+            "人数上限12人",
+            "以室内、隔音或没有公共背景音乐等源事实解释"
+          ],
+          "must_not_volunteer": [
+            "RZ-417",
+            "东侧服务台"
+          ],
+          "leakage_action": "若最终回复提前透露探针答案，保留该次运行并标记 probe_exposed_in_final；不能把后续回答当作必须回读的成功证据。"
+        },
+        {
+          "step_id": "g_task_v2",
+          "required_fixture_id": "gallery_doc_v2",
+          "criteria": [
+            "松岚厅仍适合安静小型分享会",
+            "当前人数上限10人"
+          ],
+          "must_not_volunteer": [
+            "RZ-982",
+            "北门值班柜台"
+          ]
+        }
+      ],
+      "probes": [
+        {
+          "step_id": "g_probe_history",
+          "kind": "historical_tool_detail",
+          "expected": {
+            "entry_code": "RZ-417",
+            "key_return_location": "东侧服务台"
+          },
+          "expected_fixture_ids": [
+            "gallery_doc_v1"
+          ],
+          "expected_user_step_ids": [],
+          "criteria": [
+            "两个字段都属于v1",
+            "不以v2值代替",
+            "是否实际回读与答案正确性分开记录"
+          ]
+        },
+        {
+          "step_id": "g_probe_memory",
+          "kind": "conversation_fact",
+          "expected": {
+            "item": "蓝色笔记本",
+            "time": "周四晚上"
+          },
+          "expected_fixture_ids": [],
+          "expected_user_step_ids": [
+            "g_intro"
+          ],
+          "criteria": [
+            "物品与时间都正确",
+            "不强制调用工具；已可见即可直接答"
+          ]
+        },
+        {
+          "step_id": "g_probe_unknown",
+          "kind": "explicitly_missing_field",
+          "expected": {
+            "answerable": false,
+            "reason": "资料未提供停车计费"
+          },
+          "expected_fixture_ids": [
+            "gallery_doc_v1"
+          ],
+          "expected_user_step_ids": [],
+          "criteria": [
+            "明确资料没有停车费信息",
+            "不编造金额或把其它数值当停车费"
+          ],
+          "scope_note": "The fixture explicitly says this field is absent. This checks stated-missing-field handling, not general abstention over unknown/unsearched evidence."
+        }
+      ],
+      "pre_probe_leakage_audit": "Check every assistant-visible authored output in the entire setup, including v2 final and reasoning when retained by the provider protocol. Annotate exposure; do not remove runs or count a correct exposed answer as proof of readback."
+    },
+    {
+      "scenario_id": "notifier_history",
+      "task_checks": [
+        {
+          "step_id": "n_task_v1",
+          "required_fixture_id": "notifier_doc_v1",
+          "criteria": [
+            "识别远端发送发生在本地mark_delivered之前",
+            "解释两者之间失败可导致重试重复发送",
+            "修复建议承认远端幂等能力或跨系统原子性约束"
+          ],
+          "must_not_volunteer": [
+            "backoff_seconds = 17",
+            "jitter_seconds = 5"
+          ],
+          "leakage_action": "人工检查语义是否提前透露17秒/5秒，即使不是上述原始字符串；记录泄漏，不静默删除运行。"
+        },
+        {
+          "step_id": "n_task_v2",
+          "required_fixture_id": "notifier_doc_v2",
+          "criteria": [
+            "指出发送与落库顺序未改变",
+            "不声称只改重试参数已解决重复发送"
+          ],
+          "must_not_volunteer": [
+            "backoff_seconds = 23",
+            "jitter_seconds = 9"
+          ]
+        }
+      ],
+      "probes": [
+        {
+          "step_id": "n_probe_history",
+          "kind": "historical_tool_detail",
+          "expected": {
+            "backoff_seconds": 17,
+            "jitter_upper_bound_seconds": 5
+          },
+          "expected_fixture_ids": [
+            "notifier_doc_v1"
+          ],
+          "expected_user_step_ids": [],
+          "criteria": [
+            "数值归属于v1",
+            "不以v2的23和9替代；准确比较新旧值仍可判正确",
+            "答案来源叙述需与实际调用相符"
+          ]
+        },
+        {
+          "step_id": "n_probe_memory",
+          "kind": "conversation_fact",
+          "expected": {
+            "order": "先结论后原因",
+            "deadline": "周日"
+          },
+          "expected_fixture_ids": [],
+          "expected_user_step_ids": [
+            "n_intro"
+          ],
+          "criteria": [
+            "表达顺序与交付日都正确",
+            "不因未调用工具而判错"
+          ]
+        },
+        {
+          "step_id": "n_probe_unknown",
+          "kind": "explicitly_missing_field",
+          "expected": {
+            "answerable": false,
+            "reason": "资料未提供HTTP连接超时"
+          },
+          "expected_fixture_ids": [
+            "notifier_doc_v1"
+          ],
+          "expected_user_step_ids": [],
+          "criteria": [
+            "明确连接超时未提供",
+            "不把退避17秒当作连接超时"
+          ],
+          "scope_note": "The fixture explicitly says this field is absent. This checks stated-missing-field handling, not general abstention over unknown/unsearched evidence."
+        }
+      ],
+      "pre_probe_leakage_audit": "Check every assistant-visible authored output in the entire setup, including v2 final and reasoning when retained by the provider protocol. Annotate exposure; do not remove runs or count a correct exposed answer as proof of readback."
+    }
+  ]
+}

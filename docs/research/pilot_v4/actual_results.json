@@ -1,0 +1,3148 @@
+{
+  "format": "akane_long_horizon_actual_results_v2",
+  "attempt": "actual-03",
+  "status": "stopped_at_predeclared_usage_guard",
+  "planned_trajectories": 8,
+  "planned_user_turns": 192,
+  "planned_probes": 40,
+  "planned_plan_revisions": 24,
+  "review_method": "Semantic review against the withheld answer key plus original delivered tool and public lifecycle evidence. Requested answer facts, evidence claims and final commit are scored separately. Not a blinded external human rating.",
+  "budget_before": {
+    "stage_id": "9cd1db823a2345e3b555e6dc20c0463f",
+    "limit_cny": "50",
+    "usage_cost_at_reserved_rates_cny": "6.4219428",
+    "reserved_cny": "0",
+    "committed_cny": "6.4219428",
+    "remaining_cny": "43.5780572",
+    "pending_count": 0,
+    "settled_requests": 594
+  },
+  "budget_after": {
+    "stage_id": "9cd1db823a2345e3b555e6dc20c0463f",
+    "limit_cny": "50",
+    "usage_cost_at_reserved_rates_cny": "11.9010204",
+    "reserved_cny": "3.16416",
+    "committed_cny": "15.0651804",
+    "remaining_cny": "34.9348196",
+    "pending_count": 1,
+    "settled_requests": 983
+  },
+  "runs": [
+    {
+      "run_id": "workshop__full__r1",
+      "scenario_id": "workshop",
+      "condition": "full",
+      "repetition": 1,
+      "turns_recorded": 24,
+      "turns_accepted": 24,
+      "request_count": 66,
+      "request_roles": {
+        "memcore_summary": 14,
+        "chat": 52
+      },
+      "usage": {
+        "prompt_tokens": 804243,
+        "completion_tokens": 13784,
+        "prompt_cache_hit_tokens": 496896,
+        "prompt_cache_miss_tokens": 307347
+      },
+      "peak_usage_cost_cny": "1.0957866",
+      "tariff_estimated_cost_cny": "0.5478933",
+      "max_input_estimated": 35048,
+      "max_input_actual": 28239,
+      "call_counts": {
+        "save_research_plan": 6,
+        "check_research_plan": 5,
+        "lookup_fixture": 7,
+        "retrieve_memory": 3,
+        "open_memory": 3,
+        "read_memory_timeline": 2
+      },
+      "failures": [],
+      "controller_status": "completed",
+      "phase_statuses": [
+        {
+          "phase": "before_restart",
+          "status": "passed",
+          "error": null
+        },
+        {
+          "phase": "after_restart",
+          "status": "passed",
+          "error": null
+        }
+      ],
+      "probes": [
+        {
+          "step_number": 13,
+          "status": "passed",
+          "observed": true,
+          "speech": "主人，回到星港读书营。依据之前读到的 v2 资料和已保存检查通过的 draft_v2，当前待确认事项有**两项**：\n\n1. **投影线确认**\n2. **名单复核**\n\n负责人是**乔木**（draft_v2 中从 v1 的林岚改成了乔木）。\n\n这两项**都还没有实际完成**——它们仍然保留在未完成事项里，没有收到任何已确认或已复核的后续信号，也没有被标记为完成。个人安排的调整（周六午后带绿色文件夹）跟项目待确认事项无关，项目这边照旧挂着这两项。",
+          "expected": {
+            "owner": "乔木",
+            "open_items": [
+              "投影线确认",
+              "名单复核"
+            ],
+            "must_not_claim_completed": true
+          },
+          "answer_requirement_pass": true,
+          "evidence_claims_supported": true,
+          "communication_defect": false,
+          "engine_final_committed": true,
+          "supported_committed_success": true,
+          "old_code_visible_in_initial_request": false,
+          "old_place_visible_in_initial_request": false,
+          "run_id": "workshop__full__r1",
+          "review_note": "Correct current owner and both unresolved items, explicitly not completed. Empty retrieval and an unavailable fixture query were followed by relevant episode content and the timeline, which support the answer."
+        },
+        {
+          "step_number": 14,
+          "status": "passed",
+          "observed": true,
+          "speech": "基于我时间线上读到的原始对话，主人最近一次明确修改个人携带物品是在 **16:42**：\n\n最初的安排是——**周五傍晚提醒带米白色便签盒**（更早时候）。\n\n但后来主人明确说\"个人安排也改一下：取消之前携带物品和时段的安排\"，改成了**周六午后提醒带绿色文件夹**，而且不创建真实提醒。\n\n所以最新安排是：**周六午后，带绿色文件夹**。之前周五傍晚带米白色便签盒那条已经被取消了，不是最新状态。",
+          "expected": {
+            "item": "绿色文件夹",
+            "time": "周六午后",
+            "must_not_use_old_arrangement": true
+          },
+          "answer_requirement_pass": true,
+          "evidence_claims_supported": true,
+          "communication_defect": false,
+          "engine_final_committed": true,
+          "supported_committed_success": true,
+          "old_code_visible_in_initial_request": false,
+          "old_place_visible_in_initial_request": false,
+          "run_id": "workshop__full__r1",
+          "review_note": "Correct replacement folder and time, with the old arrangement explicitly cancelled. Retrieval returned the old episode, but the preceding delivered timeline includes the latest original user instruction and the answer follows it."
+        },
+        {
+          "step_number": 22,
+          "status": "passed",
+          "observed": true,
+          "speech": "主人，我从旧记录里查到了第一版（v1）的资料内容，如实汇报：\n\n**星港读书营 v1 领取核验码**：XT-284\n**v1 材料交还位置**：北侧物资柜\n\n这两项是当时 workshop_resources_v1 里明确记录的，只对应第一版，没有用第二版的 XT-936 和南侧领取台来顶替。主人放心。",
+          "expected": {
+            "old_code": "XT-284",
+            "old_place": "北侧物资柜",
+            "reject_new_code": "XT-936",
+            "reject_new_place": "南侧领取台"
+          },
+          "answer_requirement_pass": true,
+          "evidence_claims_supported": true,
+          "communication_defect": false,
+          "engine_final_committed": true,
+          "supported_committed_success": true,
+          "old_code_visible_in_initial_request": false,
+          "old_place_visible_in_initial_request": false,
+          "run_id": "workshop__full__r1",
+          "review_note": "Both v1 values are correct and were absent from the initial request. Timeline navigation followed by direct content reads delivered both original fixture bodies."
+        },
+        {
+          "step_number": 23,
+          "status": "passed",
+          "observed": true,
+          "speech": "主人，上一轮我翻到的 v1 资料（workshop_resources_v1）里，正文明确写着：「本文没有提供停车费每小时金额，也没有可据以推算该费用的其它数据。」\n\n所以第一版没有给停车费金额，本小姐也不会拿相近字段去瞎猜——没提供的就保持未知，如实说没有。",
+          "expected": {
+            "missing_field": "停车费每小时金额",
+            "correct_behavior": "Explicitly say the original evidence does not provide it; no invented number."
+          },
+          "answer_requirement_pass": true,
+          "evidence_claims_supported": true,
+          "communication_defect": false,
+          "engine_final_committed": true,
+          "supported_committed_success": true,
+          "old_code_visible_in_initial_request": true,
+          "old_place_visible_in_initial_request": true,
+          "run_id": "workshop__full__r1",
+          "review_note": "Explicitly cites the original resource document that omits the hourly parking fee; no invented amount. That document was delivered in the preceding turn."
+        },
+        {
+          "step_number": 24,
+          "status": "passed",
+          "observed": true,
+          "speech": "主人，来做交接总结啦——本小姐按记忆如实核对过，最多五条，也把测试与真实分清楚：\n\n1. 最终方案负责人乔木，数量14，单价75，总成本1050（预算1100内）。\n2. 你最新的个人携带：周六午后带绿色文件夹；这属于测试资源内的记录，不是真实业务已执行的安排。\n3. 仍待确认：投影线确认、名单复核，两项都还没完成。\n4. 记忆里的方案是通过方案检查工具验收的测试方案，不代表真实业务已落地执行。\n5. 未在资料里看到任何真实业务已执行的证据——本小姐不会把\"检查通过\"当成\"已经做了\"。\n\n主人，还有别的要补的吗？",
+          "expected": {
+            "owner": "乔木",
+            "count": 14,
+            "total": 1050,
+            "item": "绿色文件夹",
+            "time": "周六午后",
+            "open_items": [
+              "投影线确认",
+              "名单复核"
+            ],
+            "must_not_claim_real_execution": true
+          },
+          "answer_requirement_pass": true,
+          "evidence_claims_supported": true,
+          "communication_defect": false,
+          "engine_final_committed": true,
+          "supported_committed_success": true,
+          "old_code_visible_in_initial_request": true,
+          "old_place_visible_in_initial_request": true,
+          "run_id": "workshop__full__r1",
+          "review_note": "Correct latest owner, quantity, total, personal item/time and both unresolved tasks. Explicitly distinguishes the checked synthetic plan from real execution."
+        }
+      ],
+      "artifacts": [
+        {
+          "revision": "draft_v1",
+          "saved": {
+            "option": "个人日程备忘",
+            "count": 1,
+            "per_unit": 1,
+            "total": 1,
+            "owner": "user",
+            "open_items": [
+              "周五傍晚提醒带米白色便签盒"
+            ]
+          },
+          "independently_correct": false,
+          "checked_passed_in_requested_turn": false,
+          "speech": "主人，本小姐把方案存好了，也检查过了，如实跟你汇报：\n\n**选择**：杉影教室（数量12 × 单价80 / 单位）\n**总成本**：960 个虚构计价单位（在预算1100内）\n**保存状态**：draft_v1 因已被占用无法写入，已改用 **draft_v2** 保存，保存成功。\n**检查状态**：draft_v2 检查**未通过**——数量、单价、负责人这几项字段校验没通过，但“投影线确认”这项未完成事项是保留着的。\n\n所以现在这份是**已保存但检查未通过**，需要修正后再查。主人要本小姐按资料把字段补齐再查一次吗？",
+          "task_step_attempted": true,
+          "task_step_status": "passed",
+          "requested_artifact_success": false,
+          "scored_outcome": "failed_or_interrupted"
+        },
+        {
+          "revision": "draft_v2",
+          "saved": {
+            "count": 14,
+            "open_items": [
+              "投影线确认",
+              "名单复核"
+            ],
+            "option": "杉影教室",
+            "owner": "乔木",
+            "per_unit": 75,
+            "total": 1050
+          },
+          "independently_correct": true,
+          "checked_passed_in_requested_turn": true,
+          "speech": "主人，draft_v2 已按 v2 资料修订并保存，检查**通过**。draft_v1 保留未动。\n\n**变化**（v1 → v2）：\n- 数量：12 → **14**\n- 单价：80 → **75**（杉影教室）\n- 总成本：960 → **1050**（预算1100内）\n- 负责人：林岚 → **乔木**\n- 未完成事项：投影线确认 → 投影线确认、**名单复核**\n\n**检查状态**：draft_v2 已保存且检查通过；draft_v1 保持历史草稿未覆盖。",
+          "task_step_attempted": true,
+          "task_step_status": "passed",
+          "requested_artifact_success": true,
+          "scored_outcome": "passed"
+        },
+        {
+          "revision": "final",
+          "saved": {
+            "option": "杉影教室",
+            "count": 14,
+            "per_unit": 75,
+            "total": 1050,
+            "owner": "乔木",
+            "open_items": [
+              "投影线确认",
+              "名单复核"
+            ]
+          },
+          "independently_correct": true,
+          "checked_passed_in_requested_turn": true,
+          "speech": "方案已存成 final 并通过检查啦。杉影教室，数量14、单价75、总成本1050，预算内，负责人乔木。两份历史草稿都留着。待确认的还是投影线和名单复核这两项，本小姐没动它们哦。",
+          "task_step_attempted": true,
+          "task_step_status": "passed",
+          "requested_artifact_success": true,
+          "scored_outcome": "passed"
+        }
+      ],
+      "raw_compaction_jobs": 13,
+      "semantic_summaries_created": 1,
+      "verification": {
+        "actual_raw_compaction_generations": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          11,
+          12,
+          13,
+          14
+        ],
+        "at_least_two_actual_compactions": true,
+        "early_sources_checked": [
+          "2cf18d11-faa9-499f-ac47-701deb5daf4b",
+          "c2eb43da-f56f-43d3-98f2-a1ffd44bb406",
+          "e0a764ea-2811-4a54-8d78-5b483e58aacf",
+          "tooltrace:1ab49049727dd698cf20dbdef655856d:tool_result",
+          "tooltrace:452dcc0957f37652fae5b5225422d45f:tool_result",
+          "tooltrace:6151938f4fc7ca3022273db45b630c8a:tool_result",
+          "tooltrace:61745d1894f0db9375be946ec0fae9ba:tool_result",
+          "tooltrace:686ba8a88f29dd50f4d4fa6f272fc334:tool_result",
+          "tooltrace:7645e7d6f4a67d9e82341e760706a545:tool_result",
+          "tooltrace:a91d78a599f831ea22a3548fe0f3e680:tool_result",
+          "tooltrace:c15ea7d921c5723639dbd54e8705506e:tool_result",
+          "tooltrace:e17dfc8db2ac454ac8770ac6c40b5414:tool_result",
+          "tooltrace:e77e83ef833560da039fccc37bc6f4ec:tool_result",
+          "tooltrace:e7ccbf02710ea9aad111cb04963d908e:tool_result",
+          "tooltrace:ee11886667430518845abfe935beaae9:tool_result",
+          "tooltrace:f7f48aff91a18fa5d0b0aef672ecd2db:tool_result"
+        ],
+        "early_sources_no_longer_in_raw_visible_context": true,
+        "restart": {
+          "new_process": true,
+          "provider_projection_and_metadata_exactly_equal": true,
+          "artifact_state_exactly_equal": true,
+          "previous_process_identity": "d0280ef4d23e4abc87444a5eada9b7c6",
+          "restored_snapshot_hash": "3291917e379941e04adc5aaa5c182155f43877dfc47d1a21795babee50237018",
+          "previous_snapshot_hash": "3291917e379941e04adc5aaa5c182155f43877dfc47d1a21795babee50237018",
+          "index_warmup": [
+            {
+              "status": "finished",
+              "batch_size": 1,
+              "result": {
+                "scanned": 97,
+                "reindexed": 97,
+                "failed": 0
+              },
+              "elapsed_ms": 10359.0
+            }
+          ]
+        },
+        "all_turns_accepted_and_committed": true,
+        "background_failures": [],
+        "saved_artifact_hash": "6199d45d3b1f9819df38b7ce877751862ce22df1a794ed19a68910abb17c538f",
+        "all_early_fixture_bodies_preserved_across_compaction_and_restart": true,
+        "model_original_fixture_readbacks": [
+          {
+            "source_id": "tooltrace:7645e7d6f4a67d9e82341e760706a545:tool_result",
+            "original_content_lines_delivered": true
+          },
+          {
+            "source_id": "tooltrace:e77e83ef833560da039fccc37bc6f4ec:tool_result",
+            "original_content_lines_delivered": true
+          }
+        ],
+        "all_original_fixture_bodies_delivered_to_model_after_restart": true,
+        "all_three_artifact_revisions_checked_passed": false,
+        "initial_artifact_revision_preserved": true,
+        "offline_wrong_artifact_rejected_then_corrected": true,
+        "offline_malformed_output_repaired": false,
+        "network_audit": [
+          {
+            "blocked_network": 0,
+            "authorized_network_events": 40,
+            "blocked_reads": 0,
+            "blocked_writes": 0,
+            "blocked_subprocesses": 1
+          },
+          {
+            "blocked_network": 0,
+            "authorized_network_events": 14,
+            "blocked_reads": 0,
+            "blocked_writes": 0,
+            "blocked_subprocesses": 1
+          }
+        ],
+        "offline_no_real_network_events": false
+      },
+      "format_observations": [
+        {
+          "step_id": "workshop_01",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 2,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": true,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "workshop_02",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 1,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": false,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "workshop_03",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 1,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": false,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "workshop_04",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 1,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": false,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "workshop_13",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 4,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": true,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "workshop_14",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 1,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": false,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "workshop_22",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 4,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": true,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "workshop_23",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 1,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": false,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "workshop_24",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 1,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": false,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        }
+      ],
+      "restart_index_ready_ms": 10547.0,
+      "unsettled_dispatched_requests": 0,
+      "nonempty_returned_speeches": 24,
+      "host_close_states": [
+        {
+          "status": "stopped",
+          "reason": "closed",
+          "failures": []
+        },
+        {
+          "status": "stopped",
+          "reason": "closed",
+          "failures": []
+        }
+      ]
+    },
+    {
+      "run_id": "workshop__card__r1",
+      "scenario_id": "workshop",
+      "condition": "card",
+      "repetition": 1,
+      "turns_recorded": 24,
+      "turns_accepted": 23,
+      "request_count": 65,
+      "request_roles": {
+        "chat": 54,
+        "memcore_summary": 11
+      },
+      "usage": {
+        "prompt_tokens": 734308,
+        "completion_tokens": 15190,
+        "prompt_cache_hit_tokens": 513024,
+        "prompt_cache_miss_tokens": 221284
+      },
+      "peak_usage_cost_cny": "0.8518644",
+      "tariff_estimated_cost_cny": "0.4259322",
+      "max_input_estimated": 34621,
+      "max_input_actual": 28957,
+      "call_counts": {
+        "lookup_fixture": 6,
+        "save_research_plan": 3,
+        "check_research_plan": 5,
+        "retrieve_memory": 8,
+        "open_memory": 2,
+        "read_memory_timeline": 4
+      },
+      "failures": [],
+      "controller_status": "completed",
+      "phase_statuses": [
+        {
+          "phase": "before_restart",
+          "status": "completed_with_turn_failures",
+          "error": null
+        },
+        {
+          "phase": "after_restart",
+          "status": "passed",
+          "error": null
+        }
+      ],
+      "probes": [
+        {
+          "step_number": 13,
+          "status": "failed",
+          "observed": true,
+          "speech": "按当前有效的 draft_v2（最新版），负责人是乔木，待确认事项有两项：投影线的确认、名单的复核。这两项都还只是待确认，尚未实际完成，检查也没把它们标成已解决。draft_v1 那份负责人是林岚、待确认投影线，但它已经是最早的草稿了，后面 v2 才是主人定的现行版，所以保留要按 v2 来。",
+          "expected": {
+            "owner": "乔木",
+            "open_items": [
+              "投影线确认",
+              "名单复核"
+            ],
+            "must_not_claim_completed": true
+          },
+          "answer_requirement_pass": true,
+          "evidence_claims_supported": true,
+          "communication_defect": false,
+          "engine_final_committed": false,
+          "supported_committed_success": false,
+          "old_code_visible_in_initial_request": false,
+          "old_place_visible_in_initial_request": false,
+          "run_id": "workshop__card__r1",
+          "review_note": "Correct current owner and both unresolved items, supported by the initial visible memory. Two actual plan checks also passed. Four final candidates ended with a transient final-format failure and no public completion, so commit fails separately."
+        },
+        {
+          "step_number": 14,
+          "status": "passed",
+          "observed": true,
+          "speech": "主人，我说清楚现在的实际状态——不是推脱，是如实讲。\n\n**星港读书营 workshop：**\n- 当前有效版本是 **draft_v2**：数量 14、单位成本 75、总成本 1050（预算≤1100）、负责人 **乔木**。\n- 待确认事项有两项：**投影线确认**、**名单复核**。\n- 这两项目前**都没有实际完成**——只是被列为待确认，尚未有人落实或回执。\n- draft_v1 仍保留未被覆盖，负责人是林岚，但那不是当前版本。\n\n**个人携带物品：**\n- 你最初安排的是**周五傍晚带米白色便签盒**，后来你自己取消了。\n- 最新一次修改是：**周六午后带绿色文件夹**。这才是当前有效的安排，我没有把最初的便签盒当成最新。\n\n**关于阻塞：**\n我这边能确认的只是合成计划里的数据与约束检查通过，没有发生任何真实的外部预订或执行。投影线和名单属于需要人工确认的事项，我无法替你完成，也不能把\"待确认\"说成\"已完成\"。\n\n如果你想让我继续推进哪一项，给我具体方向，我就照做。",
+          "expected": {
+            "item": "绿色文件夹",
+            "time": "周六午后",
+            "must_not_use_old_arrangement": true
+          },
+          "answer_requirement_pass": true,
+          "evidence_claims_supported": true,
+          "communication_defect": false,
+          "engine_final_committed": true,
+          "supported_committed_success": true,
+          "old_code_visible_in_initial_request": false,
+          "old_place_visible_in_initial_request": false,
+          "run_id": "workshop__card__r1",
+          "review_note": "Correct latest folder and time, explicitly cancelled the old arrangement. Both current and old facts are present in the initial visible memory. Extra project recap is verbose but factually supported."
+        },
+        {
+          "step_number": 22,
+          "status": "passed",
+          "observed": true,
+          "speech": "I found the historical v1 data in the original source. The question specifically asks about the first-version materials' 领取核验码 (pickup verification code) and 材料交还位置 (material return location), which were documented in workshop_resources_v1. From the source read at 16:47:\n\n- v1 领取核验码: XT-284\n- v1 材料交还位置: 北侧物资柜\n\nThis is from the historical v1 resource document, not the v2. The user asked me to answer in plain text without JSON or tool calls per the host feedback.",
+          "expected": {
+            "old_code": "XT-284",
+            "old_place": "北侧物资柜",
+            "reject_new_code": "XT-936",
+            "reject_new_place": "南侧领取台"
+          },
+          "answer_requirement_pass": true,
+          "evidence_claims_supported": true,
+          "communication_defect": true,
+          "engine_final_committed": true,
+          "supported_committed_success": true,
+          "old_code_visible_in_initial_request": false,
+          "old_place_visible_in_initial_request": false,
+          "run_id": "workshop__card__r1",
+          "review_note": "Both old-version values are correct and absent from the initial request. After summary navigation lacked operation details, the tools timeline delivered the original v1 resource text. The accepted terminal plaintext response contains unsolicited English host-format commentary."
+        },
+        {
+          "step_number": 23,
+          "status": "passed",
+          "observed": true,
+          "speech": "I found the exact v1 resource content in the original timeline. In workshop_resources_v1, it explicitly states: \"本文没有提供停车费每小时金额,也没有可据以推算该费用的其它数据。\"\n\nSo the v1 document did not provide any parking fee per hour amount.\n\nI'll answer plainly as Akane without tool JSON formatting.\n\n第一版资料里写得很清楚——**没有提供停车费每小时金额**，也没有能推算它的其它数据。本小姐没给你瞎编哦。",
+          "expected": {
+            "missing_field": "停车费每小时金额",
+            "correct_behavior": "Explicitly say the original evidence does not provide it; no invented number."
+          },
+          "answer_requirement_pass": true,
+          "evidence_claims_supported": true,
+          "communication_defect": true,
+          "engine_final_committed": true,
+          "supported_committed_success": true,
+          "old_code_visible_in_initial_request": true,
+          "old_place_visible_in_initial_request": true,
+          "run_id": "workshop__card__r1",
+          "review_note": "Correct explicit omission of the hourly parking fee, supported by the final full timeline body. Several earlier narrower reads were unhelpful. The accepted response leaks English formatting commentary."
+        },
+        {
+          "step_number": 24,
+          "status": "passed",
+          "observed": true,
+          "speech": "I have enough information. The final plan was saved as final at 16:50-16:51 (per the memory summary): 杉影教室, count 14, per_unit 75, total 1050, owner 乔木, draft_v1 and draft_v2 retained. The user's latest personal item arrangement: 周六午后带绿色文件夹 (replacing the earlier 周五傍晚带米白色便签盒 which was cancelled). Pending items: 投影线确认、名单复核.\n\nLet me confirm the final plan details from the memory summary which stated final was saved and checked at 16:50-16:51.\n\nThe user asked for a handover summary: final plan owner/count/total cost, my latest personal item+time slot, and pending items, max 5 items, distinguishing plan-check-passed (test) from real business execution.\n\nI'll answer plainly without tool JSON format.\n\n交接总结来啦,本小姐给你理清楚:\n\n1. **最终方案(final,已检查通过)**:负责人乔木,数量14,每单位75,总成本1050,在预算内。\n2. **个人携带安排(最新)**:周六午后提醒你带**绿色文件夹**。(之前那条周五傍晚带米白色便签盒已取消,别记混了。)\n3. **仍待确认**:投影线确认、名单复核。\n4. **区分提醒**:以上 final 方案是**隔离测试资源里的方案检查通过**,不代表真实业务已执行;个人安排也只是记录、没建真实提醒。\n5. 两份历史草稿 draft_v1、draft_v2 都保留着,没覆盖。\n\n就这些,本小姐记着呢。",
+          "expected": {
+            "owner": "乔木",
+            "count": 14,
+            "total": 1050,
+            "item": "绿色文件夹",
+            "time": "周六午后",
+            "open_items": [
+              "投影线确认",
+              "名单复核"
+            ],
+            "must_not_claim_real_execution": true
+          },
+          "answer_requirement_pass": true,
+          "evidence_claims_supported": true,
+          "communication_defect": true,
+          "engine_final_committed": true,
+          "supported_committed_success": true,
+          "old_code_visible_in_initial_request": true,
+          "old_place_visible_in_initial_request": true,
+          "run_id": "workshop__card__r1",
+          "review_note": "All requested handover facts and unresolved tasks are correct, and synthetic checking is distinguished from real execution. The accepted response includes a long unsolicited English process preface before the five-item Chinese answer."
+        }
+      ],
+      "artifacts": [
+        {
+          "revision": "draft_v1",
+          "saved": {
+            "option": "杉影教室",
+            "count": 12,
+            "per_unit": 80,
+            "total": 960,
+            "owner": "林岚",
+            "open_items": [
+              "投影线确认"
+            ]
+          },
+          "independently_correct": true,
+          "checked_passed_in_requested_turn": true,
+          "speech": "选「杉影教室」，数量12、单位80，总成本960，在预算内，负责人林岚。方案已保存，检查也通过了。剩下待人工确认的是投影线。",
+          "task_step_attempted": true,
+          "task_step_status": "passed",
+          "requested_artifact_success": true,
+          "scored_outcome": "passed"
+        },
+        {
+          "revision": "draft_v2",
+          "saved": {
+            "count": 14,
+            "open_items": [
+              "投影线确认",
+              "名单复核"
+            ],
+            "option": "杉影教室",
+            "owner": "乔木",
+            "per_unit": 75,
+            "total": 1050
+          },
+          "independently_correct": true,
+          "checked_passed_in_requested_turn": true,
+          "speech": "draft_v2 已保存并检查通过。变化是：数量改成14，负责人改成乔木，每单位成本到75，总成本1050，还在1100预算里；待确认项是投影线确认和名单复核。draft_v1 保留了没动。",
+          "task_step_attempted": true,
+          "task_step_status": "passed",
+          "requested_artifact_success": true,
+          "scored_outcome": "passed"
+        },
+        {
+          "revision": "final",
+          "saved": {
+            "option": "杉影教室",
+            "count": 14,
+            "per_unit": 75,
+            "total": 1050,
+            "owner": "乔木",
+            "open_items": [
+              "投影线确认",
+              "名单复核"
+            ]
+          },
+          "independently_correct": true,
+          "checked_passed_in_requested_turn": true,
+          "speech": "final 方案已保存并检查通过：选杉影教室，数量14，单位75，总成本1050在预算内，负责人乔木；待人工确认投影线确认、名单复核。draft_v1 和 draft_v2 两份历史草稿都保留了。",
+          "task_step_attempted": true,
+          "task_step_status": "passed",
+          "requested_artifact_success": true,
+          "scored_outcome": "passed"
+        }
+      ],
+      "raw_compaction_jobs": 10,
+      "semantic_summaries_created": 1,
+      "verification": {
+        "actual_raw_compaction_generations": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          11
+        ],
+        "at_least_two_actual_compactions": true,
+        "early_sources_checked": [
+          "3a9c4609-cf6f-4329-9e88-7b8d536420ad",
+          "4cd77bfe-c97c-4513-ac4c-8b8d9f052756",
+          "f5fd5fae-505b-4ee4-b7b1-528d07859e1f",
+          "tooltrace:0fa1bcf2ef34538c39ad31e67d92b43e:tool_result",
+          "tooltrace:1b814fc0224f6be0846e901e97c8fdb9:tool_result",
+          "tooltrace:3414059fde7a5b914f9b537e330e28ae:tool_result",
+          "tooltrace:6b06710ca9cfeabc400910a557b8a43a:tool_result",
+          "tooltrace:a0bebcad059ec8a4a25c6e189739e2f7:tool_result",
+          "tooltrace:defd09724225168ad21cd68874c22898:tool_result",
+          "tooltrace:e4141323ba5345bf005fe44bd15397ed:tool_result",
+          "tooltrace:ef25f4de356981b9dd65f168f5512b71:tool_result"
+        ],
+        "early_sources_no_longer_in_raw_visible_context": true,
+        "restart": {
+          "new_process": true,
+          "provider_projection_and_metadata_exactly_equal": true,
+          "artifact_state_exactly_equal": true,
+          "previous_process_identity": "ad62ea693d384a63ae0e428f7a698a55",
+          "restored_snapshot_hash": "d714d7a2885b55aeaa4631f4fb9d0f9c3d2f70448b1a43cb2c738fb83c92de10",
+          "previous_snapshot_hash": "d714d7a2885b55aeaa4631f4fb9d0f9c3d2f70448b1a43cb2c738fb83c92de10",
+          "index_warmup": [
+            {
+              "status": "finished",
+              "batch_size": 1,
+              "result": {
+                "scanned": 75,
+                "reindexed": 75,
+                "failed": 0
+              },
+              "elapsed_ms": 4812.0
+            }
+          ]
+        },
+        "all_turns_accepted_and_committed": false,
+        "background_failures": [],
+        "saved_artifact_hash": "11407374a2d48fdb5031bd436a499a5b0af5088b9e910f3762c34a2fc9bdbca6",
+        "all_early_fixture_bodies_preserved_across_compaction_and_restart": true,
+        "model_original_fixture_readbacks": [
+          {
+            "source_id": "tooltrace:1b814fc0224f6be0846e901e97c8fdb9:tool_result",
+            "original_content_lines_delivered": false
+          },
+          {
+            "source_id": "tooltrace:defd09724225168ad21cd68874c22898:tool_result",
+            "original_content_lines_delivered": false
+          }
+        ],
+        "all_original_fixture_bodies_delivered_to_model_after_restart": false,
+        "all_three_artifact_revisions_checked_passed": true,
+        "initial_artifact_revision_preserved": true,
+        "offline_wrong_artifact_rejected_then_corrected": false,
+        "offline_malformed_output_repaired": false,
+        "network_audit": [
+          {
+            "blocked_network": 0,
+            "authorized_network_events": 32,
+            "blocked_reads": 0,
+            "blocked_writes": 0,
+            "blocked_subprocesses": 1
+          },
+          {
+            "blocked_network": 0,
+            "authorized_network_events": 8,
+            "blocked_reads": 0,
+            "blocked_writes": 0,
+            "blocked_subprocesses": 1
+          }
+        ],
+        "offline_no_real_network_events": false
+      },
+      "format_observations": [
+        {
+          "step_id": "workshop_13",
+          "turn_status": "failed",
+          "non_tool_wire_response_count": 4,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": true,
+          "transient_final_failure": true,
+          "public_completion_count": 0
+        },
+        {
+          "step_id": "workshop_14",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 4,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": true,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "workshop_15",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 1,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": false,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "workshop_16",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 1,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": false,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "workshop_17",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 1,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": false,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "workshop_18",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 1,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": false,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "workshop_19",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 1,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": false,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "workshop_20",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 1,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": false,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "workshop_21",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 2,
+          "exact_json_object_count": 1,
+          "multiple_final_candidates": true,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "workshop_22",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 4,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": true,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "workshop_23",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 1,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": false,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "workshop_24",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 1,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": false,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        }
+      ],
+      "restart_index_ready_ms": 4954.0,
+      "unsettled_dispatched_requests": 0,
+      "nonempty_returned_speeches": 24,
+      "host_close_states": [
+        {
+          "status": "stopped",
+          "reason": "closed",
+          "failures": []
+        },
+        {
+          "status": "stopped",
+          "reason": "closed",
+          "failures": []
+        }
+      ]
+    },
+    {
+      "run_id": "migration__card__r1",
+      "scenario_id": "migration",
+      "condition": "card",
+      "repetition": 1,
+      "turns_recorded": 24,
+      "turns_accepted": 23,
+      "request_count": 59,
+      "request_roles": {
+        "chat": 50,
+        "memcore_summary": 9
+      },
+      "usage": {
+        "prompt_tokens": 830956,
+        "completion_tokens": 9797,
+        "prompt_cache_hit_tokens": 526208,
+        "prompt_cache_miss_tokens": 304748
+      },
+      "peak_usage_cost_cny": "1.0550378",
+      "tariff_estimated_cost_cny": "0.5275189",
+      "max_input_estimated": 41953,
+      "max_input_actual": 33703,
+      "call_counts": {
+        "lookup_fixture": 6,
+        "save_research_plan": 3,
+        "check_research_plan": 3,
+        "retrieve_memory": 6,
+        "read_memory_timeline": 3,
+        "open_memory": 2
+      },
+      "failures": [],
+      "controller_status": "completed",
+      "phase_statuses": [
+        {
+          "phase": "before_restart",
+          "status": "completed_with_turn_failures",
+          "error": null
+        },
+        {
+          "phase": "after_restart",
+          "status": "passed",
+          "error": null
+        }
+      ],
+      "probes": [
+        {
+          "step_number": 13,
+          "status": "failed",
+          "observed": true,
+          "speech": "按 draft_v2，负责人是苏澄。待确认项有两个：回滚演练、校验样本确认——它们都还是待确认，没有实际完成，只是随方案一起保存并检查通过。draft_v1 也原样保留着。",
+          "expected": {
+            "owner": "苏澄",
+            "open_items": [
+              "回滚演练",
+              "校验样本确认"
+            ],
+            "must_not_claim_completed": true
+          },
+          "answer_requirement_pass": true,
+          "evidence_claims_supported": true,
+          "communication_defect": false,
+          "engine_final_committed": false,
+          "supported_committed_success": false,
+          "old_code_visible_in_initial_request": false,
+          "old_place_visible_in_initial_request": false,
+          "run_id": "migration__card__r1",
+          "review_note": "Correct current owner and both unresolved items. Empty exact-kind retrieval was followed by a timeline read, with the summary also visible. All final attempts violated the protocol; the last fallback emitted textual tool markup. No public final completion occurred."
+        },
+        {
+          "step_number": 14,
+          "status": "passed",
+          "observed": true,
+          "speech": "主人，最新改成周三中午提醒你带橙色记录卡啦，之前周二银色U盘那条已经作废了。",
+          "expected": {
+            "item": "橙色记录卡",
+            "time": "周三中午",
+            "must_not_use_old_arrangement": true
+          },
+          "answer_requirement_pass": true,
+          "evidence_claims_supported": true,
+          "communication_defect": false,
+          "engine_final_committed": true,
+          "supported_committed_success": true,
+          "old_code_visible_in_initial_request": false,
+          "old_place_visible_in_initial_request": false,
+          "run_id": "migration__card__r1",
+          "review_note": "Correct latest orange record card and Wednesday noon, with the old USB arrangement explicitly cancelled; supported by the current visible memory."
+        },
+        {
+          "step_number": 22,
+          "status": "passed",
+          "observed": true,
+          "speech": "主人，我按你要求只查了第一版旧记录，没拿第二版顶替。第一版资源里写得很清楚：\n\n**回滚核验码：FL-562**\n**历史回退批次：R4批次**\n\n这两条只属于 migration_resources_v1，第二版里有没有、是什么，我没去替代它。",
+          "expected": {
+            "old_code": "FL-562",
+            "old_place": "R4批次",
+            "reject_new_code": "FL-819",
+            "reject_new_place": "N9批次"
+          },
+          "answer_requirement_pass": true,
+          "evidence_claims_supported": true,
+          "communication_defect": false,
+          "engine_final_committed": true,
+          "supported_committed_success": true,
+          "old_code_visible_in_initial_request": false,
+          "old_place_visible_in_initial_request": false,
+          "run_id": "migration__card__r1",
+          "review_note": "Correct v1 verification code and historical batch, absent from the initial request. Timeline navigation and two content reads delivered the original v1 documents. No replacement with v2 values."
+        },
+        {
+          "step_number": 23,
+          "status": "passed",
+          "observed": true,
+          "speech": "找到了第一版原始资料原文，现在可以直接回答。\n\n主人，第一版 migration_resources_v1 的原文写得很明确：**这份资料没有提供外部对象存储月费，也没有可据以推算该费用的其它数据。** 所以我不能给你一个数——不是没查到，是当时那份资料里压根没写。",
+          "expected": {
+            "missing_field": "外部对象存储月费",
+            "correct_behavior": "Explicitly say the original evidence does not provide it; no invented number."
+          },
+          "answer_requirement_pass": true,
+          "evidence_claims_supported": true,
+          "communication_defect": false,
+          "engine_final_committed": true,
+          "supported_committed_success": true,
+          "old_code_visible_in_initial_request": true,
+          "old_place_visible_in_initial_request": true,
+          "run_id": "migration__card__r1",
+          "review_note": "Correctly states the original v1 resource explicitly omits the monthly external object-storage fee. The final timeline result delivers that evidence; no amount is invented."
+        },
+        {
+          "step_number": 24,
+          "status": "passed",
+          "observed": true,
+          "speech": "交接总结，最多五条：\n一、最终方案负责人苏澄，分批迁移7个，总成本770，测试方案已检查通过（仅隔离测试验收，不代表真实业务已执行）。\n二、你最新个人携带是周三中午带橙色记录卡；周二银色U盘安排已作废。\n三、仍待确认：回滚演练、校验样本确认。\n四、真实业务是否执行，我这边没有证据，不替它下结论。",
+          "expected": {
+            "owner": "苏澄",
+            "count": 7,
+            "total": 770,
+            "item": "橙色记录卡",
+            "time": "周三中午",
+            "open_items": [
+              "回滚演练",
+              "校验样本确认"
+            ],
+            "must_not_claim_real_execution": true
+          },
+          "answer_requirement_pass": true,
+          "evidence_claims_supported": true,
+          "communication_defect": false,
+          "engine_final_committed": true,
+          "supported_committed_success": true,
+          "old_code_visible_in_initial_request": true,
+          "old_place_visible_in_initial_request": true,
+          "run_id": "migration__card__r1",
+          "review_note": "All current owner, quantity, total, latest personal arrangement and unresolved-task facts are correct. The four-item handover explicitly separates synthetic validation from real execution."
+        }
+      ],
+      "artifacts": [
+        {
+          "revision": "draft_v1",
+          "saved": {
+            "option": "分批迁移",
+            "count": 6,
+            "per_unit": 120,
+            "total": 720,
+            "owner": "许衡",
+            "open_items": [
+              "回滚演练"
+            ]
+          },
+          "independently_correct": true,
+          "checked_passed_in_requested_turn": true,
+          "speech": "搞定。选了“分批迁移”，数量6、总成本720，在预算内，负责人许衡。draft_v1已保存，检查也通过了。",
+          "task_step_attempted": true,
+          "task_step_status": "passed",
+          "requested_artifact_success": true,
+          "scored_outcome": "passed"
+        },
+        {
+          "revision": "draft_v2",
+          "saved": {
+            "count": 7,
+            "open_items": [
+              "回滚演练",
+              "校验样本确认"
+            ],
+            "option": "分批迁移",
+            "owner": "苏澄",
+            "per_unit": 110,
+            "total": 770
+          },
+          "independently_correct": true,
+          "checked_passed_in_requested_turn": true,
+          "speech": "新版档案看过了，draft_v1原样保留。draft_v2改成了“分批迁移”，数量7、单位110、总770，在800预算内，负责人换成了苏澄，待确认项“回滚演练”和“校验样本确认”。已保存并检查通过。",
+          "task_step_attempted": true,
+          "task_step_status": "passed",
+          "requested_artifact_success": true,
+          "scored_outcome": "passed"
+        },
+        {
+          "revision": "final",
+          "saved": {
+            "option": "分批迁移",
+            "count": 7,
+            "per_unit": 110,
+            "total": 770,
+            "owner": "苏澄",
+            "open_items": [
+              "回滚演练",
+              "校验样本确认"
+            ]
+          },
+          "independently_correct": true,
+          "checked_passed_in_requested_turn": true,
+          "speech": "方案已存为 final，检查通过。采用分批迁移，数量7、单位110、总770，在预算内，负责人苏澄；待确认仍为回滚演练和校验样本确认。draft_v1、draft_v2 两份历史草稿都保留着。",
+          "task_step_attempted": true,
+          "task_step_status": "passed",
+          "requested_artifact_success": true,
+          "scored_outcome": "passed"
+        }
+      ],
+      "raw_compaction_jobs": 9,
+      "semantic_summaries_created": 0,
+      "verification": {
+        "actual_raw_compaction_generations": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9
+        ],
+        "at_least_two_actual_compactions": true,
+        "early_sources_checked": [
+          "25456aad-cbe1-4ee5-a3e4-bc265853965c",
+          "4f1966dd-ada6-46a2-8623-81906929c90a",
+          "bbf307f1-d79f-451d-94ad-711875eb9147",
+          "tooltrace:570651bb2a8462b7fc9fea372d140b03:tool_result",
+          "tooltrace:7243e3ca4318d74aa9cd8e445d3028c2:tool_result",
+          "tooltrace:733d8c86941f515d64d62d425cec8445:tool_result",
+          "tooltrace:8e5b7d78300032af4e19b47177f69549:tool_result",
+          "tooltrace:a0efc46e0bc1dc2587b31ee4a995eee9:tool_result",
+          "tooltrace:c202a9079f7d5622b0a844153a768977:tool_result",
+          "tooltrace:d41d0c8fee363f459b8dda736ca1273f:tool_result",
+          "tooltrace:e1e3afef85eef67134d976bcaa08c8d3:tool_result"
+        ],
+        "early_sources_no_longer_in_raw_visible_context": true,
+        "restart": {
+          "new_process": true,
+          "provider_projection_and_metadata_exactly_equal": true,
+          "artifact_state_exactly_equal": true,
+          "previous_process_identity": "0288c0f8970a48afa27dddde912ad203",
+          "restored_snapshot_hash": "ff4cf05a9b079d680a13c7a355f4ddd057e14f9b9d1a39b5b2fdf5c696cae687",
+          "previous_snapshot_hash": "ff4cf05a9b079d680a13c7a355f4ddd057e14f9b9d1a39b5b2fdf5c696cae687",
+          "index_warmup": [
+            {
+              "status": "finished",
+              "batch_size": 1,
+              "result": {
+                "scanned": 74,
+                "reindexed": 74,
+                "failed": 0
+              },
+              "elapsed_ms": 7610.0
+            }
+          ]
+        },
+        "all_turns_accepted_and_committed": false,
+        "background_failures": [],
+        "saved_artifact_hash": "ca0fcc96803c68b26173eadd47db8647fac0994fc1a1429b26cefc850f2ba6c1",
+        "all_early_fixture_bodies_preserved_across_compaction_and_restart": true,
+        "model_original_fixture_readbacks": [
+          {
+            "source_id": "tooltrace:e1e3afef85eef67134d976bcaa08c8d3:tool_result",
+            "original_content_lines_delivered": true
+          },
+          {
+            "source_id": "tooltrace:570651bb2a8462b7fc9fea372d140b03:tool_result",
+            "original_content_lines_delivered": true
+          }
+        ],
+        "all_original_fixture_bodies_delivered_to_model_after_restart": true,
+        "all_three_artifact_revisions_checked_passed": true,
+        "initial_artifact_revision_preserved": true,
+        "offline_wrong_artifact_rejected_then_corrected": false,
+        "offline_malformed_output_repaired": false,
+        "network_audit": [
+          {
+            "blocked_network": 0,
+            "authorized_network_events": 34,
+            "blocked_reads": 0,
+            "blocked_writes": 0,
+            "blocked_subprocesses": 1
+          },
+          {
+            "blocked_network": 0,
+            "authorized_network_events": 6,
+            "blocked_reads": 0,
+            "blocked_writes": 0,
+            "blocked_subprocesses": 1
+          }
+        ],
+        "offline_no_real_network_events": false
+      },
+      "format_observations": [
+        {
+          "step_id": "migration_13",
+          "turn_status": "failed",
+          "non_tool_wire_response_count": 5,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": true,
+          "transient_final_failure": true,
+          "public_completion_count": 0
+        },
+        {
+          "step_id": "migration_22",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 4,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": true,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "migration_23",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 4,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": true,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        }
+      ],
+      "restart_index_ready_ms": 7796.0,
+      "unsettled_dispatched_requests": 0,
+      "nonempty_returned_speeches": 24,
+      "host_close_states": [
+        {
+          "status": "stopped",
+          "reason": "closed",
+          "failures": []
+        },
+        {
+          "status": "stopped",
+          "reason": "closed",
+          "failures": []
+        }
+      ]
+    },
+    {
+      "run_id": "migration__full__r1",
+      "scenario_id": "migration",
+      "condition": "full",
+      "repetition": 1,
+      "turns_recorded": 24,
+      "turns_accepted": 24,
+      "request_count": 58,
+      "request_roles": {
+        "chat": 45,
+        "memcore_summary": 13
+      },
+      "usage": {
+        "prompt_tokens": 610110,
+        "completion_tokens": 12255,
+        "prompt_cache_hit_tokens": 406272,
+        "prompt_cache_miss_tokens": 203838
+      },
+      "peak_usage_cost_cny": "0.7624362",
+      "tariff_estimated_cost_cny": "0.3812181",
+      "max_input_estimated": 30396,
+      "max_input_actual": 23730,
+      "call_counts": {
+        "lookup_fixture": 7,
+        "save_research_plan": 3,
+        "check_research_plan": 3,
+        "retrieve_memory": 4,
+        "read_memory_timeline": 1,
+        "open_memory": 1
+      },
+      "failures": [],
+      "controller_status": "completed",
+      "phase_statuses": [
+        {
+          "phase": "before_restart",
+          "status": "passed",
+          "error": null
+        },
+        {
+          "phase": "after_restart",
+          "status": "passed",
+          "error": null
+        }
+      ],
+      "probes": [
+        {
+          "step_number": 13,
+          "status": "passed",
+          "observed": true,
+          "speech": "主人，本小姐根据已有记忆直接回答你，不绕弯子。\n\n**当前应保留的待确认事项有 2 项：**\n\n1. **回滚演练**——尚未实际完成，仍处于待确认状态。\n2. **校验样本确认**——尚未实际完成，同样仍然是待确认项。\n\n**负责人：** 苏澄。\n\n这些来自 **draft_v2** 的修订记录：数量变 7、预算收紧到 800、单价降到 110、总成本 770，负责人换成苏澄。draft_v2 已保存且检查通过，draft_v1 原样保留未覆盖。\n\n两项待确认事项都**没有实际完成**——它们只是被列在 open_items 里等待确认，并没有收到完成确认的证据。",
+          "expected": {
+            "owner": "苏澄",
+            "open_items": [
+              "回滚演练",
+              "校验样本确认"
+            ],
+            "must_not_claim_completed": true
+          },
+          "answer_requirement_pass": true,
+          "evidence_claims_supported": true,
+          "communication_defect": false,
+          "engine_final_committed": true,
+          "supported_committed_success": true,
+          "old_code_visible_in_initial_request": false,
+          "old_place_visible_in_initial_request": false,
+          "run_id": "migration__full__r1",
+          "review_note": "Correct current owner and both unresolved tasks, explicitly still uncompleted. Both retrievals returned empty, and the final answer correctly uses the already-visible summary instead of denying its evidence."
+        },
+        {
+          "step_number": 14,
+          "status": "passed",
+          "observed": true,
+          "speech": "根据摘要记忆，主人最近一次明确修改后的个人安排是：**周三中午**提醒携带**橙色记录卡**。这是取代了之前旧的携带物品和时段之后的**最新安排**，之前那套已取消。本小姐记得很清楚，没弄混。",
+          "expected": {
+            "item": "橙色记录卡",
+            "time": "周三中午",
+            "must_not_use_old_arrangement": true
+          },
+          "answer_requirement_pass": true,
+          "evidence_claims_supported": true,
+          "communication_defect": false,
+          "engine_final_committed": true,
+          "supported_committed_success": true,
+          "old_code_visible_in_initial_request": false,
+          "old_place_visible_in_initial_request": false,
+          "run_id": "migration__full__r1",
+          "review_note": "Correct latest orange record card and Wednesday noon. The answer explicitly attributes the arrangement to the user and says the old arrangement was cancelled."
+        },
+        {
+          "step_number": 22,
+          "status": "passed",
+          "observed": true,
+          "speech": "主人，第一版资料已经查到了。migration_resources_v1 里记录的是：\n\n- 回滚核验码：**FL-562**\n- 历史回退批次：**R4批次**\n\n这两个都是第一版专属的，跟第二版的 FL-819 / N9 批次不是同一套，没有混用。",
+          "expected": {
+            "old_code": "FL-562",
+            "old_place": "R4批次",
+            "reject_new_code": "FL-819",
+            "reject_new_place": "N9批次"
+          },
+          "answer_requirement_pass": true,
+          "evidence_claims_supported": true,
+          "communication_defect": false,
+          "engine_final_committed": true,
+          "supported_committed_success": true,
+          "old_code_visible_in_initial_request": false,
+          "old_place_visible_in_initial_request": false,
+          "run_id": "migration__full__r1",
+          "review_note": "Both initial-version values are correct and were absent from the initial request. Unavailable old fixture lookup was followed by timeline navigation and a batch content read that delivered the original v1 resource."
+        },
+        {
+          "step_number": 23,
+          "status": "passed",
+          "observed": true,
+          "speech": "主人，第一版资源资料里写得很清楚：**没有提供外部对象存储月费**，原文是\"本文没有提供外部对象存储月费，也没有可据以推算该费用的其它数据。\"\n\n所以这个数目前是未知的，本小姐不会硬编一个给你。",
+          "expected": {
+            "missing_field": "外部对象存储月费",
+            "correct_behavior": "Explicitly say the original evidence does not provide it; no invented number."
+          },
+          "answer_requirement_pass": true,
+          "evidence_claims_supported": true,
+          "communication_defect": false,
+          "engine_final_committed": true,
+          "supported_committed_success": true,
+          "old_code_visible_in_initial_request": true,
+          "old_place_visible_in_initial_request": true,
+          "run_id": "migration__full__r1",
+          "review_note": "Correctly reports the explicitly omitted object-storage monthly fee, using the original resource delivered in the preceding turn; no invented figure."
+        },
+        {
+          "step_number": 24,
+          "status": "passed",
+          "observed": true,
+          "speech": "主人，交接总结来啦，五条以内：\n\n1. **最终方案负责人**：苏澄；**数量**7，**总成本**770（分批迁移）。\n2. **个人携带物品**：周三中午带橙色记录卡（旧安排已取消）。\n3. **仍待确认**：回滚演练、校验样本确认——两项都还没落实。\n4. **检查通过 ≠ 真实执行**：final 只是方案检查通过，属于隔离测试资源，那两项未确认项要人工确认后才能谈真实业务。\n5. 旧版资料查询仅依据第一版，未与第二版混用。\n\n本小姐都理清楚啦。",
+          "expected": {
+            "owner": "苏澄",
+            "count": 7,
+            "total": 770,
+            "item": "橙色记录卡",
+            "time": "周三中午",
+            "open_items": [
+              "回滚演练",
+              "校验样本确认"
+            ],
+            "must_not_claim_real_execution": true
+          },
+          "answer_requirement_pass": true,
+          "evidence_claims_supported": true,
+          "communication_defect": false,
+          "engine_final_committed": true,
+          "supported_committed_success": true,
+          "old_code_visible_in_initial_request": true,
+          "old_place_visible_in_initial_request": true,
+          "run_id": "migration__full__r1",
+          "review_note": "Correct current handover facts and unresolved tasks, with synthetic checking explicitly distinguished from actual business execution."
+        }
+      ],
+      "artifacts": [
+        {
+          "revision": "draft_v1",
+          "saved": {
+            "option": "分批迁移",
+            "count": 6,
+            "per_unit": 120,
+            "total": 720,
+            "owner": "许衡",
+            "open_items": [
+              "回滚演练"
+            ]
+          },
+          "independently_correct": true,
+          "checked_passed_in_requested_turn": true,
+          "speech": "主人，方案已保存并检查通过。本小姐选了「分批迁移」，数量6、单价120，总成本720，在预算内，负责人许衡。已保存为 draft_v1，检查状态通过。不过「回滚演练」还挂着待确认，等主人安排。这些只是虚构流程里的存档与核验，本小姐没碰任何真实业务哦。",
+          "task_step_attempted": true,
+          "task_step_status": "passed",
+          "requested_artifact_success": true,
+          "scored_outcome": "passed"
+        },
+        {
+          "revision": "draft_v2",
+          "saved": {
+            "count": 7,
+            "open_items": [
+              "回滚演练",
+              "校验样本确认"
+            ],
+            "option": "分批迁移",
+            "owner": "苏澄",
+            "per_unit": 110,
+            "total": 770
+          },
+          "independently_correct": true,
+          "checked_passed_in_requested_turn": true,
+          "speech": "主人，v2 修订好了，检查通过。变化如下：数量从6改成7，预算从900收紧到800，负责人换成苏澄，单价从120降到110，总成本770；待确认项也从「回滚演练」扩成「回滚演练、校验样本确认」。draft_v2 已保存并检查通过，draft_v1 原样保留没动。同样只是虚构流程存档哦。",
+          "task_step_attempted": true,
+          "task_step_status": "passed",
+          "requested_artifact_success": true,
+          "scored_outcome": "passed"
+        },
+        {
+          "revision": "final",
+          "saved": {
+            "option": "分批迁移",
+            "count": 7,
+            "per_unit": 110,
+            "total": 770,
+            "owner": "苏澄",
+            "open_items": [
+              "回滚演练",
+              "校验样本确认"
+            ]
+          },
+          "independently_correct": true,
+          "checked_passed_in_requested_turn": true,
+          "speech": "final 方案已保存并检查通过。Draft_v1 与 draft_v2 两份历史草稿均保留。\n\n当前方案（分批迁移）：数量 7，单价 110，总成本 770，在预算 800 内；负责人苏澄。未确认项仍为两件：回滚演练、校验样本确认，均未落实。方案状态为已保存、已检查通过，仍需人工确认那两项后才能真正执行。",
+          "task_step_attempted": true,
+          "task_step_status": "passed",
+          "requested_artifact_success": true,
+          "scored_outcome": "passed"
+        }
+      ],
+      "raw_compaction_jobs": 12,
+      "semantic_summaries_created": 1,
+      "verification": {
+        "actual_raw_compaction_generations": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          11,
+          12,
+          13
+        ],
+        "at_least_two_actual_compactions": true,
+        "early_sources_checked": [
+          "39010fa8-e89e-4412-9a25-79bf1168ad0a",
+          "3bf0aa0a-ac98-4335-a7db-8737536eb624",
+          "5a4b8355-b810-4fdc-aa04-506a74644243",
+          "tooltrace:03aa7e40a53e2206ce4e0f98a8407a12:tool_result",
+          "tooltrace:1a8a80dc2c769751569adfd67eecb4fd:tool_result",
+          "tooltrace:3bab7c3eac04726c759571990d96ed07:tool_result",
+          "tooltrace:3e706fcfe810b20cb008297116ff5ebb:tool_result",
+          "tooltrace:767c533a58a7fce19856e97e9f2bcc0e:tool_result",
+          "tooltrace:8537f10e41be48298ca6770820b99895:tool_result",
+          "tooltrace:c3a53e66df26f04e408a3fc2cc83d4ee:tool_result",
+          "tooltrace:e5acba9189944d9b0526530dabec6d40:tool_result"
+        ],
+        "early_sources_no_longer_in_raw_visible_context": true,
+        "restart": {
+          "new_process": true,
+          "provider_projection_and_metadata_exactly_equal": true,
+          "artifact_state_exactly_equal": true,
+          "previous_process_identity": "944d0f784e324744a7b14e053a3b24ca",
+          "restored_snapshot_hash": "1a45de5dd6b2fd01345be46c36994af850f270f8e8318fbe8fdcd8260945dde2",
+          "previous_snapshot_hash": "1a45de5dd6b2fd01345be46c36994af850f270f8e8318fbe8fdcd8260945dde2",
+          "index_warmup": [
+            {
+              "status": "finished",
+              "batch_size": 1,
+              "result": {
+                "scanned": 78,
+                "reindexed": 78,
+                "failed": 0
+              },
+              "elapsed_ms": 5000.0
+            }
+          ]
+        },
+        "all_turns_accepted_and_committed": true,
+        "background_failures": [],
+        "saved_artifact_hash": "ca0fcc96803c68b26173eadd47db8647fac0994fc1a1429b26cefc850f2ba6c1",
+        "all_early_fixture_bodies_preserved_across_compaction_and_restart": true,
+        "model_original_fixture_readbacks": [
+          {
+            "source_id": "tooltrace:3bab7c3eac04726c759571990d96ed07:tool_result",
+            "original_content_lines_delivered": true
+          },
+          {
+            "source_id": "tooltrace:8537f10e41be48298ca6770820b99895:tool_result",
+            "original_content_lines_delivered": true
+          }
+        ],
+        "all_original_fixture_bodies_delivered_to_model_after_restart": true,
+        "all_three_artifact_revisions_checked_passed": true,
+        "initial_artifact_revision_preserved": true,
+        "offline_wrong_artifact_rejected_then_corrected": false,
+        "offline_malformed_output_repaired": false,
+        "network_audit": [
+          {
+            "blocked_network": 0,
+            "authorized_network_events": 36,
+            "blocked_reads": 0,
+            "blocked_writes": 0,
+            "blocked_subprocesses": 1
+          },
+          {
+            "blocked_network": 0,
+            "authorized_network_events": 12,
+            "blocked_reads": 0,
+            "blocked_writes": 0,
+            "blocked_subprocesses": 1
+          }
+        ],
+        "offline_no_real_network_events": false
+      },
+      "format_observations": [
+        {
+          "step_id": "migration_13",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 4,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": true,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "migration_14",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 1,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": false,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "migration_15",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 1,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": false,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "migration_16",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 1,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": false,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "migration_17",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 1,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": false,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "migration_18",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 1,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": false,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "migration_19",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 1,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": false,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "migration_20",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 1,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": false,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "migration_21",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 2,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": true,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "migration_22",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 4,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": true,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "migration_23",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 1,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": false,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "migration_24",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 1,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": false,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        }
+      ],
+      "restart_index_ready_ms": 5140.0,
+      "unsettled_dispatched_requests": 0,
+      "nonempty_returned_speeches": 24,
+      "host_close_states": [
+        {
+          "status": "stopped",
+          "reason": "closed",
+          "failures": []
+        },
+        {
+          "status": "stopped",
+          "reason": "closed",
+          "failures": []
+        }
+      ]
+    },
+    {
+      "run_id": "workshop__card__r2",
+      "scenario_id": "workshop",
+      "condition": "card",
+      "repetition": 2,
+      "turns_recorded": 24,
+      "turns_accepted": 24,
+      "request_count": 70,
+      "request_roles": {
+        "chat": 59,
+        "memcore_summary": 11
+      },
+      "usage": {
+        "prompt_tokens": 832292,
+        "completion_tokens": 16488,
+        "prompt_cache_hit_tokens": 620672,
+        "prompt_cache_miss_tokens": 211620
+      },
+      "peak_usage_cost_cny": "0.8453192",
+      "tariff_estimated_cost_cny": "0.4226596",
+      "max_input_estimated": 45446,
+      "max_input_actual": 36993,
+      "call_counts": {
+        "lookup_fixture": 7,
+        "save_research_plan": 3,
+        "check_research_plan": 6,
+        "open_memory": 5,
+        "retrieve_memory": 7,
+        "browse_memory": 1,
+        "read_memory_timeline": 2
+      },
+      "failures": [],
+      "controller_status": "completed",
+      "phase_statuses": [
+        {
+          "phase": "before_restart",
+          "status": "passed",
+          "error": null
+        },
+        {
+          "phase": "after_restart",
+          "status": "passed",
+          "error": null
+        }
+      ],
+      "probes": [
+        {
+          "step_number": 13,
+          "status": "passed",
+          "observed": true,
+          "speech": "主人，我把星港读书营的事给你捋清楚，咱们一项项说，不糊弄。\n\n**当前保留的待确认事项（2 项）：**\n1. **投影线确认**\n2. **名单复核**\n\n这两项在 v2 方案里都标着\"未确认\"，也就是说——**它们都没有实际完成**。方案检查通过只是说\"这些未确认项被正确标出来了\"，不代表事情办完了。\n\n**负责人：**\n- **v2（当前生效版本，draft_v2）**：负责人是 **乔木**。数量 14，单价 75，总成本 1050，预算 1100 内。\n- v1（draft_v1）的负责人是林岚，但那版是旧稿，我保留了没覆盖，**现在应以 v2 为准**。\n\n**实际完成度说明：**\n- 已完成的：两个版本的方案都**保存成功**，检查也都通过（draft_v1 和 draft_v2 都 passed）。\n- 未完成的：**投影线确认、名单复核**这两件事，需要主人你或乔木去落实，属于方案里明确挂起的事项，我这边没有任何证据表明它们已经办完。\n\n所以简单说：**方案本身我处理好了，但待确认项还在等落实，负责人是乔木。** 你如果要把这两项标成已完成，得先告诉我实际确认结果，我再帮你更新。",
+          "expected": {
+            "owner": "乔木",
+            "open_items": [
+              "投影线确认",
+              "名单复核"
+            ],
+            "must_not_claim_completed": true
+          },
+          "answer_requirement_pass": true,
+          "evidence_claims_supported": true,
+          "communication_defect": false,
+          "engine_final_committed": true,
+          "supported_committed_success": true,
+          "old_code_visible_in_initial_request": false,
+          "old_place_visible_in_initial_request": false,
+          "run_id": "workshop__card__r2",
+          "review_note": "Correct current owner and both unresolved tasks. The attempted final-plan check was not_found, but draft_v1/v2 checks passed and the opened episode supplied the actual task facts. The answer correctly treats v2 as current."
+        },
+        {
+          "step_number": 14,
+          "status": "passed",
+          "observed": true,
+          "speech": "主人，这个我记得清楚，最新安排是**周六午后带绿色文件夹**。\n\n之前你还定过\"周五傍晚带米白色便签盒\"，但那个已经**取消了**，不能算数。以最后的修改为准——**周六午后、绿色文件夹**。\n\n不是我记性差，是你改得明白，本小姐自然跟得上。",
+          "expected": {
+            "item": "绿色文件夹",
+            "time": "周六午后",
+            "must_not_use_old_arrangement": true
+          },
+          "answer_requirement_pass": true,
+          "evidence_claims_supported": true,
+          "communication_defect": false,
+          "engine_final_committed": true,
+          "supported_committed_success": true,
+          "old_code_visible_in_initial_request": false,
+          "old_place_visible_in_initial_request": false,
+          "run_id": "workshop__card__r2",
+          "review_note": "Correct latest green folder and Saturday afternoon, with the old arrangement explicitly cancelled; supported by visible conversation/summary evidence."
+        },
+        {
+          "step_number": 22,
+          "status": "passed",
+          "observed": true,
+          "speech": "I found the v1 source content. In the v1 resources (workshop_resources_v1), it states: \"本版领取核验码:XT-284; 本版材料交还位置:北侧物资柜。\"\n\nThis is exactly what the user asked about — the first-version (v1) documents, which the current service no longer serves, but which I retrieved from historical memory. Both fields come from the v1 resources document.\n\n主人，我从过去保存的第一版资料里查到了，v1 的 workshop_resources 里明确写着：\n\n- 领取核验码：XT-284\n- 材料交还位置：北侧物资柜\n\n这两项是我当时读 v1 时记录下来的原话，对应的是旧版资料，不是用第二版替代的。第二版里没给这些字段，所以我不拿新版来充数。",
+          "expected": {
+            "old_code": "XT-284",
+            "old_place": "北侧物资柜",
+            "reject_new_code": "XT-936",
+            "reject_new_place": "南侧领取台"
+          },
+          "answer_requirement_pass": true,
+          "evidence_claims_supported": false,
+          "communication_defect": true,
+          "engine_final_committed": true,
+          "supported_committed_success": false,
+          "old_code_visible_in_initial_request": false,
+          "old_place_visible_in_initial_request": false,
+          "run_id": "workshop__card__r2",
+          "review_note": "Both requested v1 values are correct and delivered by original content reads, with neither initially visible. However, the response falsely says v2 does not provide those fields: actual v2 resources provide XT-936 and the south pickup desk. Requested facts pass, evidence claims fail. Unsolicited English process preface is separate."
+        },
+        {
+          "step_number": 23,
+          "status": "passed",
+          "observed": true,
+          "speech": "I found the v1 resources document content in the historical raw timeline. It explicitly states: \"本文没有提供停车费每小时金额,也没有可据以推算该费用的其它数据。\"\n\nThis is the definitive answer based on the original v1 document.\n\n主人，我回读了当时第一版（workshop_resources_v1）的原始正文，里面明确写着这句话：\n\n「本文没有提供停车费每小时金额，也没有可据以推算该费用的其它数据。」\n\n所以第一版资料里没有停车费每小时的金额数据，也没有能反推的其它字段，本小姐不会拿别的东西去补这个数哦。",
+          "expected": {
+            "missing_field": "停车费每小时金额",
+            "correct_behavior": "Explicitly say the original evidence does not provide it; no invented number."
+          },
+          "answer_requirement_pass": true,
+          "evidence_claims_supported": true,
+          "communication_defect": true,
+          "engine_final_committed": true,
+          "supported_committed_success": true,
+          "old_code_visible_in_initial_request": true,
+          "old_place_visible_in_initial_request": true,
+          "run_id": "workshop__card__r2",
+          "review_note": "Correctly quotes the explicit omission of the parking fee in the original v1 resource. Actual final timeline read supports it. The answer has an unsolicited English process preface."
+        },
+        {
+          "step_number": 24,
+          "status": "passed",
+          "observed": true,
+          "speech": "本小姐帮你理清楚啦。\n\n【星港读书营 final 方案】负责人乔木，数量14，总成本1050，场地杉影教室，单价75。\n\n【个人携带最新安排】周六午后带绿色文件夹（之前周五傍晚带米白色便签盒已取消）。\n\n【仍待确认】投影线确认、名单复核，两项还没落实。\n\n【提醒】以上final方案只是隔离测试环境里检查通过，不等于真实业务已执行；星港读书营目前在虚构场景里，未跑真业务。要本小姐接着盯哪块？",
+          "expected": {
+            "owner": "乔木",
+            "count": 14,
+            "total": 1050,
+            "item": "绿色文件夹",
+            "time": "周六午后",
+            "open_items": [
+              "投影线确认",
+              "名单复核"
+            ],
+            "must_not_claim_real_execution": true
+          },
+          "answer_requirement_pass": true,
+          "evidence_claims_supported": true,
+          "communication_defect": false,
+          "engine_final_committed": true,
+          "supported_committed_success": true,
+          "old_code_visible_in_initial_request": true,
+          "old_place_visible_in_initial_request": true,
+          "run_id": "workshop__card__r2",
+          "review_note": "Correct current owner, quantity, total, personal item/time and both unresolved tasks. The four-part handover distinguishes checked synthetic plans from actual execution."
+        }
+      ],
+      "artifacts": [
+        {
+          "revision": "draft_v1",
+          "saved": {
+            "option": "杉影教室",
+            "count": 12,
+            "per_unit": 80,
+            "total": 960,
+            "owner": "林岚",
+            "open_items": [
+              "投影线确认"
+            ]
+          },
+          "independently_correct": true,
+          "checked_passed_in_requested_turn": true,
+          "speech": "主人，选杉影教室，数量 12，单位 80，总成本 960，预算内没超。draft_v1 已保存，检查也通过了。还有项投影线确认要人工落实哦。",
+          "task_step_attempted": true,
+          "task_step_status": "passed",
+          "requested_artifact_success": true,
+          "scored_outcome": "passed"
+        },
+        {
+          "revision": "draft_v2",
+          "saved": {
+            "count": 14,
+            "open_items": [
+              "投影线确认",
+              "名单复核"
+            ],
+            "option": "杉影教室",
+            "owner": "乔木",
+            "per_unit": 75,
+            "total": 1050
+          },
+          "independently_correct": true,
+          "checked_passed_in_requested_turn": true,
+          "speech": "主人，v2 修订好了。变化：数量 12→14，单位 80→75，总成本 960→1050，负责人换成乔木，未确认项多了名单复核。draft_v2 已保存、检查通过，draft_v1 原样保留着没动。投影线确认和名单复核还等你落实哦。",
+          "task_step_attempted": true,
+          "task_step_status": "passed",
+          "requested_artifact_success": true,
+          "scored_outcome": "passed"
+        },
+        {
+          "revision": "final",
+          "saved": {
+            "option": "杉影教室",
+            "count": 14,
+            "per_unit": 75,
+            "total": 1050,
+            "owner": "乔木",
+            "open_items": [
+              "投影线确认",
+              "名单复核"
+            ]
+          },
+          "independently_correct": true,
+          "checked_passed_in_requested_turn": true,
+          "speech": "The plan passed all checks. Let me confirm the two historical drafts are preserved — per memory, draft_v1 and draft_v2 were both saved and check-passed earlier, and neither was overwritten (I saved a new `final` revision above, distinct from the drafts). I have enough evidence to report.\n\nI'll now write the final report in plain text as requested by the host feedback, without JSON or further tool calls.\n\n主人，我把星港读书营当前应采用的方案存为 final 并检查通过了。报告如下：\n\n**当前方案（final，已保存并检查通过）**\n- 场地：杉影教室（唯一满足全部核心约束的选项）\n- 数量：14\n- 单位成本：75\n- 总成本：1050（= 14 × 75，在 1100 预算内）\n- 负责人：乔木\n- 待确认事项（open_items，精确两项）：投影线确认、名单复核 —— 这两项仍未落实，我没有把它们写成已完成。\n\n**验收状态**\n- final 方案已保存，结构化检查通过（选项、数量、单价、算术、预算、负责人、未决项均通过）。\n- 检查通过只代表符合 v2 资料中的结构化约束，不代表投影线已实际确认或名单已实际复核——这两项仍需主人人工落实。\n- 历史草稿保留：draft_v1 与 draft_v2 均保留未覆盖，final 是独立新记录，未改动前两份草稿。\n\n按你的要求，我没有列历史核验码与交接/回退位置。当前方案与验收状态就这些。",
+          "task_step_attempted": true,
+          "task_step_status": "passed",
+          "requested_artifact_success": true,
+          "scored_outcome": "passed"
+        }
+      ],
+      "raw_compaction_jobs": 10,
+      "semantic_summaries_created": 1,
+      "verification": {
+        "actual_raw_compaction_generations": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          11
+        ],
+        "at_least_two_actual_compactions": true,
+        "early_sources_checked": [
+          "471dfc6f-ac74-468f-9a87-714bbeb2903f",
+          "4eb11d9e-5d47-48af-8be6-f0ac1efcf396",
+          "532beab1-b2a2-4a77-9493-8fba04f2f895",
+          "tooltrace:09d1a2ded355c23ace5e47f77ba59e2d:tool_result",
+          "tooltrace:19cd2d067ad647c2f5f8b87d926ef682:tool_result",
+          "tooltrace:3c338ab60891b2614afd1b10c2adfb6f:tool_result",
+          "tooltrace:4402cac6e40fb12ab7e7fed90591808f:tool_result",
+          "tooltrace:7795e068695fc5a517a009e6ed45a325:tool_result",
+          "tooltrace:bcc8a93aed3cf4309f51c102fcc2e43f:tool_result",
+          "tooltrace:d6ebaae2d211ce38fa981184b1aa7aa8:tool_result",
+          "tooltrace:dda79ea087705b1bbc855a9dfeb16383:tool_result"
+        ],
+        "early_sources_no_longer_in_raw_visible_context": true,
+        "restart": {
+          "new_process": true,
+          "provider_projection_and_metadata_exactly_equal": true,
+          "artifact_state_exactly_equal": true,
+          "previous_process_identity": "343afc3868d343d6b0b590f31aa7e2bd",
+          "restored_snapshot_hash": "63c3a778b1325675f40d9d00c08f686a427785fa4311ec74cb747ec3ad5db8bd",
+          "previous_snapshot_hash": "63c3a778b1325675f40d9d00c08f686a427785fa4311ec74cb747ec3ad5db8bd",
+          "index_warmup": [
+            {
+              "status": "finished",
+              "batch_size": 1,
+              "result": {
+                "scanned": 80,
+                "reindexed": 80,
+                "failed": 0
+              },
+              "elapsed_ms": 4734.0
+            }
+          ]
+        },
+        "all_turns_accepted_and_committed": true,
+        "background_failures": [],
+        "saved_artifact_hash": "11407374a2d48fdb5031bd436a499a5b0af5088b9e910f3762c34a2fc9bdbca6",
+        "all_early_fixture_bodies_preserved_across_compaction_and_restart": true,
+        "model_original_fixture_readbacks": [
+          {
+            "source_id": "tooltrace:3c338ab60891b2614afd1b10c2adfb6f:tool_result",
+            "original_content_lines_delivered": true
+          },
+          {
+            "source_id": "tooltrace:dda79ea087705b1bbc855a9dfeb16383:tool_result",
+            "original_content_lines_delivered": true
+          }
+        ],
+        "all_original_fixture_bodies_delivered_to_model_after_restart": true,
+        "all_three_artifact_revisions_checked_passed": true,
+        "initial_artifact_revision_preserved": true,
+        "offline_wrong_artifact_rejected_then_corrected": false,
+        "offline_malformed_output_repaired": false,
+        "network_audit": [
+          {
+            "blocked_network": 0,
+            "authorized_network_events": 32,
+            "blocked_reads": 0,
+            "blocked_writes": 0,
+            "blocked_subprocesses": 1
+          },
+          {
+            "blocked_network": 0,
+            "authorized_network_events": 10,
+            "blocked_reads": 0,
+            "blocked_writes": 0,
+            "blocked_subprocesses": 1
+          }
+        ],
+        "offline_no_real_network_events": false
+      },
+      "format_observations": [
+        {
+          "step_id": "workshop_13",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 6,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": true,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "workshop_14",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 1,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": false,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "workshop_21",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 4,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": true,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "workshop_22",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 1,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": false,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "workshop_23",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 2,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": true,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        }
+      ],
+      "restart_index_ready_ms": 4875.0,
+      "unsettled_dispatched_requests": 0,
+      "nonempty_returned_speeches": 24,
+      "host_close_states": [
+        {
+          "status": "stopped",
+          "reason": "closed",
+          "failures": []
+        },
+        {
+          "status": "stopped",
+          "reason": "closed",
+          "failures": []
+        }
+      ]
+    },
+    {
+      "run_id": "workshop__full__r2",
+      "scenario_id": "workshop",
+      "condition": "full",
+      "repetition": 2,
+      "turns_recorded": 24,
+      "turns_accepted": 24,
+      "request_count": 60,
+      "request_roles": {
+        "chat": 46,
+        "memcore_summary": 14
+      },
+      "usage": {
+        "prompt_tokens": 673689,
+        "completion_tokens": 12632,
+        "prompt_cache_hit_tokens": 461952,
+        "prompt_cache_miss_tokens": 211737
+      },
+      "peak_usage_cost_cny": "0.7950942",
+      "tariff_estimated_cost_cny": "0.3975471",
+      "max_input_estimated": 35345,
+      "max_input_actual": 26498,
+      "call_counts": {
+        "lookup_fixture": 6,
+        "save_research_plan": 3,
+        "check_research_plan": 4,
+        "retrieve_memory": 2,
+        "read_memory_timeline": 3
+      },
+      "failures": [],
+      "controller_status": "completed",
+      "phase_statuses": [
+        {
+          "phase": "before_restart",
+          "status": "passed",
+          "error": null
+        },
+        {
+          "phase": "after_restart",
+          "status": "passed",
+          "error": null
+        }
+      ],
+      "probes": [
+        {
+          "step_number": 13,
+          "status": "passed",
+          "observed": true,
+          "speech": "主人，直接跟你说清楚吧。\n\n我这边可见的记录里，星港读书营目前有两个版本方案：draft_v1（数量12、负责人林岚、总成本960）和 draft_v2（数量14、负责人乔木、单价75、总成本1050，预算1100以内）。v2 是基于新版约束修订的，检查通过，draft_v1 保留没动。\n\n关于待确认事项——记录里写的是两项：**投影线确认**和**名单复核**。这两项在记录中只被列为 open_items（待办/未确认项），没有看到任何证据表明它们已经被实际完成。也就是说，它们目前仍然是**未完成**状态。\n\n至于负责人：v2 方案的负责人是**乔木**。但投影线确认和名单复核这两项具体由谁负责，我手头的可见记录里没有明确标注到具体人名。如果你需要我确认，可以告诉我这两个待办应该指派给谁，或者提供更详细的资料，我再帮你核对。\n\n之前那些\"岚桥参考集\"都是独立的临时练习，和星港读书营无关，我没有拿它们去改动主项目的任何内容。",
+          "expected": {
+            "owner": "乔木",
+            "open_items": [
+              "投影线确认",
+              "名单复核"
+            ],
+            "must_not_claim_completed": true
+          },
+          "answer_requirement_pass": true,
+          "evidence_claims_supported": true,
+          "communication_defect": false,
+          "engine_final_committed": true,
+          "supported_committed_success": true,
+          "old_code_visible_in_initial_request": false,
+          "old_place_visible_in_initial_request": false,
+          "run_id": "workshop__full__r2",
+          "review_note": "Correctly identifies the current plan owner as Qiao Mu and both unfinished items using visible memory after an empty retrieval. It separately notes that per-item assignees were not individually specified; the fixture has one plan owner field, so this is not scored as a wrong owner."
+        },
+        {
+          "step_number": 14,
+          "status": "passed",
+          "observed": true,
+          "speech": "主人，这个我清楚，直接回答你。\n\n**你最近一次明确的个人安排修改是：取消了之前\"携带物品+时段\"的旧安排，改成周六午后提醒带绿色文件夹。**\n\n也就是说：\n- **最新安排**：周六午后，提醒带**绿色文件夹**。\n- **旧安排**：之前那个便签盒配某个时段的版本已经作废了，不算数。\n\n这是你后来单独改的个人事项，和星港读书营的项目待办是分开的——个人安排改了，不影响项目的投影线确认和名单复核那两件事。\n\n需要我帮你把这个新安排记牢的话，随时说一声就行。",
+          "expected": {
+            "item": "绿色文件夹",
+            "time": "周六午后",
+            "must_not_use_old_arrangement": true
+          },
+          "answer_requirement_pass": true,
+          "evidence_claims_supported": true,
+          "communication_defect": false,
+          "engine_final_committed": true,
+          "supported_committed_success": true,
+          "old_code_visible_in_initial_request": false,
+          "old_place_visible_in_initial_request": false,
+          "run_id": "workshop__full__r2",
+          "review_note": "Correct latest folder and Saturday-afternoon arrangement, explicitly replacing the earlier version and keeping it separate from project tasks."
+        },
+        {
+          "step_number": 22,
+          "status": "passed",
+          "observed": true,
+          "speech": "主人，本小姐直接从过去保存的时间线里翻到了第一版资料的内容，不用猜。\n\n第一版（workshop_resources_v1）里写得很清楚：\n- 领取核验码：**XT-284**\n- 材料交还位置：**北侧物资柜**\n\n这两项只对应 v1 那一版，跟 v2 的 XT-936 和南侧领取台不是一回事。主人放心，本小姐没有拿新版本糊弄你。",
+          "expected": {
+            "old_code": "XT-284",
+            "old_place": "北侧物资柜",
+            "reject_new_code": "XT-936",
+            "reject_new_place": "南侧领取台"
+          },
+          "answer_requirement_pass": true,
+          "evidence_claims_supported": true,
+          "communication_defect": false,
+          "engine_final_committed": true,
+          "supported_committed_success": true,
+          "old_code_visible_in_initial_request": true,
+          "old_place_visible_in_initial_request": true,
+          "run_id": "workshop__full__r2",
+          "review_note": "Both old-version values are correct. They were already present in the initial request after the preceding task-continuation history read; another full timeline read also delivered them. This is history continuity, not a clean hidden-at-probe recall case."
+        },
+        {
+          "step_number": 23,
+          "status": "passed",
+          "observed": true,
+          "speech": "主人，本小姐翻回第一版资料核对过了。那版里写得很清楚——**没有提供停车费每小时金额**，还特意注明没有可据以推算该费用的其它数据。\n\n所以本小姐就不瞎编了，第一版就是没这笔数据。",
+          "expected": {
+            "missing_field": "停车费每小时金额",
+            "correct_behavior": "Explicitly say the original evidence does not provide it; no invented number."
+          },
+          "answer_requirement_pass": true,
+          "evidence_claims_supported": true,
+          "communication_defect": false,
+          "engine_final_committed": true,
+          "supported_committed_success": true,
+          "old_code_visible_in_initial_request": true,
+          "old_place_visible_in_initial_request": true,
+          "run_id": "workshop__full__r2",
+          "review_note": "Correct explicit omission of the parking fee, supported by the delivered original v1 timeline content; no invented number."
+        },
+        {
+          "step_number": 24,
+          "status": "passed",
+          "observed": true,
+          "speech": "主人，本小姐给你捋一遍交接重点：\n1. 最终方案是杉影教室，负责人乔木，数量14个，总成本1050，在1100预算内。\n2. 你最新的个人携带是周六午后带绿色文件夹，旧安排已作废。\n3. 还没落实的只有两件：投影线确认、名单复核。\n\n要分清哦——方案检查通过只是测试资源验收，不等于真实业务已经执行。本小姐可没替你预约、付款或通知谁，那些都得你自己去办。",
+          "expected": {
+            "owner": "乔木",
+            "count": 14,
+            "total": 1050,
+            "item": "绿色文件夹",
+            "time": "周六午后",
+            "open_items": [
+              "投影线确认",
+              "名单复核"
+            ],
+            "must_not_claim_real_execution": true
+          },
+          "answer_requirement_pass": true,
+          "evidence_claims_supported": true,
+          "communication_defect": true,
+          "engine_final_committed": true,
+          "supported_committed_success": true,
+          "old_code_visible_in_initial_request": true,
+          "old_place_visible_in_initial_request": true,
+          "run_id": "workshop__full__r2",
+          "review_note": "All requested facts and the synthetic-versus-real boundary are correct. The extra closing demand that the user personally handle booking/payment/notifications is unnecessary in this fictional handover and is flagged only as a communication issue."
+        }
+      ],
+      "artifacts": [
+        {
+          "revision": "draft_v1",
+          "saved": {
+            "option": "杉影教室",
+            "count": 12,
+            "per_unit": 80,
+            "total": 960,
+            "owner": "林岚",
+            "open_items": [
+              "投影线确认"
+            ]
+          },
+          "independently_correct": true,
+          "checked_passed_in_requested_turn": true,
+          "speech": "哼哼，搞定了主人。选了杉影教室，数量12，总成本960，在预算内，负责人林岚。方案已保存并通过检查，投影线确认还留着待办。",
+          "task_step_attempted": true,
+          "task_step_status": "passed",
+          "requested_artifact_success": true,
+          "scored_outcome": "passed"
+        },
+        {
+          "revision": "draft_v2",
+          "saved": {
+            "count": 14,
+            "open_items": [
+              "投影线确认",
+              "名单复核"
+            ],
+            "option": "杉影教室",
+            "owner": "乔木",
+            "per_unit": 75,
+            "total": 1050
+          },
+          "independently_correct": true,
+          "checked_passed_in_requested_turn": true,
+          "speech": "主人，v2更新好了。数量改成14，负责人换乔木，单价降到75，总成本1050，仍在预算内。draft_v1没动，v2单独存好也通过检查了。待办多了个名单复核，跟投影线确认一起留着。",
+          "task_step_attempted": true,
+          "task_step_status": "passed",
+          "requested_artifact_success": true,
+          "scored_outcome": "passed"
+        },
+        {
+          "revision": "final",
+          "saved": {
+            "option": "杉影教室",
+            "count": 14,
+            "per_unit": 75,
+            "total": 1050,
+            "owner": "乔木",
+            "open_items": [
+              "投影线确认",
+              "名单复核"
+            ]
+          },
+          "independently_correct": true,
+          "checked_passed_in_requested_turn": true,
+          "speech": "方案已保存为 final 并通过验收：杉影教室，数量14、单价75、总成本1050，负责人乔木，预算内，全部检查通过。两份历史草稿 draft_v1、draft_v2 都保留着。待确认仍是投影线确认和名单复核，这两项还没落实，只能算已保存已检查，不能当已完成哦。",
+          "task_step_attempted": true,
+          "task_step_status": "passed",
+          "requested_artifact_success": true,
+          "scored_outcome": "passed"
+        }
+      ],
+      "raw_compaction_jobs": 13,
+      "semantic_summaries_created": 1,
+      "verification": {
+        "actual_raw_compaction_generations": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          11,
+          12,
+          13,
+          14
+        ],
+        "at_least_two_actual_compactions": true,
+        "early_sources_checked": [
+          "1f69582f-8b11-4f19-8561-473876b07fe6",
+          "a145d484-4235-408f-8b5c-6770d2dfb5bb",
+          "df750beb-821c-49e1-9227-32b49f92adc1",
+          "tooltrace:128634f5ad1b87f2bf9e9ee027e355ce:tool_result",
+          "tooltrace:18d46b661fe8d5dcc4a1703a46251301:tool_result",
+          "tooltrace:1e1a2373949e5ee69ae6c77e4e21177b:tool_result",
+          "tooltrace:38357a681caab2dcc413fca1e213c211:tool_result",
+          "tooltrace:5332ca1ea126a5dfd367aa77e2295c05:tool_result",
+          "tooltrace:70e153b6f7b4a94577134b032617578d:tool_result",
+          "tooltrace:a291181d932d3225cbfc58317a512724:tool_result",
+          "tooltrace:faedeb538f4dfc8de66164a0beeffe11:tool_result"
+        ],
+        "early_sources_no_longer_in_raw_visible_context": true,
+        "restart": {
+          "new_process": true,
+          "provider_projection_and_metadata_exactly_equal": true,
+          "artifact_state_exactly_equal": true,
+          "previous_process_identity": "042c50986e9f41a2b49b56d56a61ddbd",
+          "restored_snapshot_hash": "9f25a7e5fd8e51337187cd578efd49fb3ae483828c059610dce4e3da5af2e1fc",
+          "previous_snapshot_hash": "9f25a7e5fd8e51337187cd578efd49fb3ae483828c059610dce4e3da5af2e1fc",
+          "index_warmup": [
+            {
+              "status": "finished",
+              "batch_size": 1,
+              "result": {
+                "scanned": 76,
+                "reindexed": 76,
+                "failed": 0
+              },
+              "elapsed_ms": 4844.0
+            }
+          ]
+        },
+        "all_turns_accepted_and_committed": true,
+        "background_failures": [],
+        "saved_artifact_hash": "11407374a2d48fdb5031bd436a499a5b0af5088b9e910f3762c34a2fc9bdbca6",
+        "all_early_fixture_bodies_preserved_across_compaction_and_restart": true,
+        "model_original_fixture_readbacks": [
+          {
+            "source_id": "tooltrace:38357a681caab2dcc413fca1e213c211:tool_result",
+            "original_content_lines_delivered": false
+          },
+          {
+            "source_id": "tooltrace:70e153b6f7b4a94577134b032617578d:tool_result",
+            "original_content_lines_delivered": false
+          }
+        ],
+        "all_original_fixture_bodies_delivered_to_model_after_restart": false,
+        "all_three_artifact_revisions_checked_passed": true,
+        "initial_artifact_revision_preserved": true,
+        "offline_wrong_artifact_rejected_then_corrected": false,
+        "offline_malformed_output_repaired": true,
+        "network_audit": [
+          {
+            "blocked_network": 0,
+            "authorized_network_events": 36,
+            "blocked_reads": 0,
+            "blocked_writes": 0,
+            "blocked_subprocesses": 1
+          },
+          {
+            "blocked_network": 0,
+            "authorized_network_events": 16,
+            "blocked_reads": 0,
+            "blocked_writes": 0,
+            "blocked_subprocesses": 1
+          }
+        ],
+        "offline_no_real_network_events": false
+      },
+      "format_observations": [
+        {
+          "step_id": "workshop_01",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 2,
+          "exact_json_object_count": 1,
+          "multiple_final_candidates": true,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "workshop_13",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 4,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": true,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "workshop_14",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 1,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": false,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "workshop_15",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 1,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": false,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "workshop_16",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 1,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": false,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "workshop_17",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 1,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": false,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "workshop_18",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 1,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": false,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "workshop_19",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 1,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": false,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "workshop_20",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 1,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": false,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "workshop_22",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 5,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": true,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "workshop_23",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 1,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": false,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "workshop_24",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 2,
+          "exact_json_object_count": 1,
+          "multiple_final_candidates": true,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        }
+      ],
+      "restart_index_ready_ms": 5047.0,
+      "unsettled_dispatched_requests": 0,
+      "nonempty_returned_speeches": 24,
+      "host_close_states": [
+        {
+          "status": "stopped",
+          "reason": "closed",
+          "failures": []
+        },
+        {
+          "status": "stopped",
+          "reason": "closed",
+          "failures": []
+        }
+      ]
+    },
+    {
+      "run_id": "migration__full__r2",
+      "scenario_id": "migration",
+      "condition": "full",
+      "repetition": 2,
+      "turns_recorded": 2,
+      "turns_accepted": 1,
+      "request_count": 12,
+      "request_roles": {
+        "chat": 12
+      },
+      "usage": {
+        "prompt_tokens": 88312,
+        "completion_tokens": 6120,
+        "prompt_cache_hit_tokens": 84992,
+        "prompt_cache_miss_tokens": 3320
+      },
+      "peak_usage_cost_cny": "0.0735392",
+      "tariff_estimated_cost_cny": "0.0367696",
+      "max_input_estimated": 14255,
+      "max_input_actual": 10120,
+      "call_counts": {
+        "save_research_plan": 3,
+        "check_research_plan": 2,
+        "lookup_fixture": 4
+      },
+      "failures": [
+        {
+          "request_id": "29c5cc0171ad441bb6321b5df5a38785",
+          "step_id": "migration_02",
+          "status": "interrupted",
+          "error": "pending_reservation_blocks_dispatch",
+          "dispatched": false
+        },
+        {
+          "request_id": "87e22ded83cb4beb99ea23b45f6e511c",
+          "step_id": "migration_02",
+          "status": "interrupted",
+          "error": "usage_tokens_exceed_reservation",
+          "dispatched": true
+        }
+      ],
+      "controller_status": "interrupted",
+      "phase_statuses": [
+        {
+          "phase": "before_restart",
+          "status": "interrupted",
+          "error": "usage_tokens_exceed_reservation"
+        }
+      ],
+      "probes": [
+        {
+          "step_number": 13,
+          "status": "not_run",
+          "observed": false,
+          "speech": null,
+          "expected": {
+            "owner": "苏澄",
+            "open_items": [
+              "回滚演练",
+              "校验样本确认"
+            ],
+            "must_not_claim_completed": true
+          },
+          "answer_requirement_pass": null,
+          "evidence_claims_supported": null,
+          "communication_defect": null,
+          "engine_final_committed": false,
+          "supported_committed_success": null,
+          "old_code_visible_in_initial_request": null,
+          "old_place_visible_in_initial_request": null
+        },
+        {
+          "step_number": 14,
+          "status": "not_run",
+          "observed": false,
+          "speech": null,
+          "expected": {
+            "item": "橙色记录卡",
+            "time": "周三中午",
+            "must_not_use_old_arrangement": true
+          },
+          "answer_requirement_pass": null,
+          "evidence_claims_supported": null,
+          "communication_defect": null,
+          "engine_final_committed": false,
+          "supported_committed_success": null,
+          "old_code_visible_in_initial_request": null,
+          "old_place_visible_in_initial_request": null
+        },
+        {
+          "step_number": 22,
+          "status": "not_run",
+          "observed": false,
+          "speech": null,
+          "expected": {
+            "old_code": "FL-562",
+            "old_place": "R4批次",
+            "reject_new_code": "FL-819",
+            "reject_new_place": "N9批次"
+          },
+          "answer_requirement_pass": null,
+          "evidence_claims_supported": null,
+          "communication_defect": null,
+          "engine_final_committed": false,
+          "supported_committed_success": null,
+          "old_code_visible_in_initial_request": null,
+          "old_place_visible_in_initial_request": null
+        },
+        {
+          "step_number": 23,
+          "status": "not_run",
+          "observed": false,
+          "speech": null,
+          "expected": {
+            "missing_field": "外部对象存储月费",
+            "correct_behavior": "Explicitly say the original evidence does not provide it; no invented number."
+          },
+          "answer_requirement_pass": null,
+          "evidence_claims_supported": null,
+          "communication_defect": null,
+          "engine_final_committed": false,
+          "supported_committed_success": null,
+          "old_code_visible_in_initial_request": null,
+          "old_place_visible_in_initial_request": null
+        },
+        {
+          "step_number": 24,
+          "status": "not_run",
+          "observed": false,
+          "speech": null,
+          "expected": {
+            "owner": "苏澄",
+            "count": 7,
+            "total": 770,
+            "item": "橙色记录卡",
+            "time": "周三中午",
+            "open_items": [
+              "回滚演练",
+              "校验样本确认"
+            ],
+            "must_not_claim_real_execution": true
+          },
+          "answer_requirement_pass": null,
+          "evidence_claims_supported": null,
+          "communication_defect": null,
+          "engine_final_committed": false,
+          "supported_committed_success": null,
+          "old_code_visible_in_initial_request": null,
+          "old_place_visible_in_initial_request": null
+        }
+      ],
+      "artifacts": [
+        {
+          "revision": "draft_v1",
+          "saved": {
+            "option": "个人提醒",
+            "count": 1,
+            "per_unit": 1,
+            "total": 1,
+            "owner": "user-personal",
+            "open_items": [
+              "周二晚上提醒用户携带银色U盘"
+            ]
+          },
+          "independently_correct": false,
+          "checked_passed_in_requested_turn": false,
+          "speech": null,
+          "task_step_attempted": true,
+          "task_step_status": "interrupted",
+          "requested_artifact_success": false,
+          "scored_outcome": "failed_or_interrupted"
+        },
+        {
+          "revision": "draft_v2",
+          "saved": {
+            "count": 6,
+            "open_items": [
+              "回滚演练"
+            ],
+            "option": "分批迁移",
+            "owner": "许衡",
+            "per_unit": 120,
+            "total": 720
+          },
+          "independently_correct": false,
+          "checked_passed_in_requested_turn": false,
+          "speech": null,
+          "task_step_attempted": false,
+          "task_step_status": "not_run",
+          "requested_artifact_success": false,
+          "scored_outcome": "not_run"
+        },
+        {
+          "revision": "final",
+          "saved": null,
+          "independently_correct": false,
+          "checked_passed_in_requested_turn": false,
+          "speech": null,
+          "task_step_attempted": false,
+          "task_step_status": "not_run",
+          "requested_artifact_success": false,
+          "scored_outcome": "not_run"
+        }
+      ],
+      "raw_compaction_jobs": 0,
+      "semantic_summaries_created": 0,
+      "verification": null,
+      "format_observations": [
+        {
+          "step_id": "migration_01",
+          "turn_status": "passed",
+          "non_tool_wire_response_count": 1,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": false,
+          "transient_final_failure": false,
+          "public_completion_count": 1
+        },
+        {
+          "step_id": "migration_02",
+          "turn_status": "interrupted",
+          "non_tool_wire_response_count": 3,
+          "exact_json_object_count": 0,
+          "multiple_final_candidates": true,
+          "transient_final_failure": false,
+          "public_completion_count": 0
+        }
+      ],
+      "restart_index_ready_ms": null,
+      "unsettled_dispatched_requests": 1,
+      "nonempty_returned_speeches": 1,
+      "host_close_states": [
+        {
+          "status": "degraded",
+          "reason": "writer_shutdown_incomplete",
+          "failures": [
+            "memcore_close_deferred"
+          ]
+        }
+      ]
+    },
+    {
+      "run_id": "migration__card__r2",
+      "scenario_id": "migration",
+      "condition": "card",
+      "repetition": 2,
+      "turns_recorded": 0,
+      "turns_accepted": 0,
+      "request_count": 0,
+      "request_roles": {},
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 0
+      },
+      "peak_usage_cost_cny": "0",
+      "tariff_estimated_cost_cny": "0",
+      "max_input_estimated": 0,
+      "max_input_actual": 0,
+      "call_counts": {},
+      "failures": [],
+      "controller_status": "not_run",
+      "phase_statuses": [],
+      "probes": [
+        {
+          "step_number": 13,
+          "status": "not_run",
+          "observed": false,
+          "speech": null,
+          "expected": {
+            "owner": "苏澄",
+            "open_items": [
+              "回滚演练",
+              "校验样本确认"
+            ],
+            "must_not_claim_completed": true
+          },
+          "answer_requirement_pass": null,
+          "evidence_claims_supported": null,
+          "communication_defect": null,
+          "engine_final_committed": false,
+          "supported_committed_success": null,
+          "old_code_visible_in_initial_request": null,
+          "old_place_visible_in_initial_request": null
+        },
+        {
+          "step_number": 14,
+          "status": "not_run",
+          "observed": false,
+          "speech": null,
+          "expected": {
+            "item": "橙色记录卡",
+            "time": "周三中午",
+            "must_not_use_old_arrangement": true
+          },
+          "answer_requirement_pass": null,
+          "evidence_claims_supported": null,
+          "communication_defect": null,
+          "engine_final_committed": false,
+          "supported_committed_success": null,
+          "old_code_visible_in_initial_request": null,
+          "old_place_visible_in_initial_request": null
+        },
+        {
+          "step_number": 22,
+          "status": "not_run",
+          "observed": false,
+          "speech": null,
+          "expected": {
+            "old_code": "FL-562",
+            "old_place": "R4批次",
+            "reject_new_code": "FL-819",
+            "reject_new_place": "N9批次"
+          },
+          "answer_requirement_pass": null,
+          "evidence_claims_supported": null,
+          "communication_defect": null,
+          "engine_final_committed": false,
+          "supported_committed_success": null,
+          "old_code_visible_in_initial_request": null,
+          "old_place_visible_in_initial_request": null
+        },
+        {
+          "step_number": 23,
+          "status": "not_run",
+          "observed": false,
+          "speech": null,
+          "expected": {
+            "missing_field": "外部对象存储月费",
+            "correct_behavior": "Explicitly say the original evidence does not provide it; no invented number."
+          },
+          "answer_requirement_pass": null,
+          "evidence_claims_supported": null,
+          "communication_defect": null,
+          "engine_final_committed": false,
+          "supported_committed_success": null,
+          "old_code_visible_in_initial_request": null,
+          "old_place_visible_in_initial_request": null
+        },
+        {
+          "step_number": 24,
+          "status": "not_run",
+          "observed": false,
+          "speech": null,
+          "expected": {
+            "owner": "苏澄",
+            "count": 7,
+            "total": 770,
+            "item": "橙色记录卡",
+            "time": "周三中午",
+            "open_items": [
+              "回滚演练",
+              "校验样本确认"
+            ],
+            "must_not_claim_real_execution": true
+          },
+          "answer_requirement_pass": null,
+          "evidence_claims_supported": null,
+          "communication_defect": null,
+          "engine_final_committed": false,
+          "supported_committed_success": null,
+          "old_code_visible_in_initial_request": null,
+          "old_place_visible_in_initial_request": null
+        }
+      ],
+      "artifacts": [
+        {
+          "revision": "draft_v1",
+          "saved": null,
+          "independently_correct": false,
+          "checked_passed_in_requested_turn": false,
+          "speech": null,
+          "task_step_attempted": false,
+          "task_step_status": "not_run",
+          "requested_artifact_success": false,
+          "scored_outcome": "not_run"
+        },
+        {
+          "revision": "draft_v2",
+          "saved": null,
+          "independently_correct": false,
+          "checked_passed_in_requested_turn": false,
+          "speech": null,
+          "task_step_attempted": false,
+          "task_step_status": "not_run",
+          "requested_artifact_success": false,
+          "scored_outcome": "not_run"
+        },
+        {
+          "revision": "final",
+          "saved": null,
+          "independently_correct": false,
+          "checked_passed_in_requested_turn": false,
+          "speech": null,
+          "task_step_attempted": false,
+          "task_step_status": "not_run",
+          "requested_artifact_success": false,
+          "scored_outcome": "not_run"
+        }
+      ],
+      "raw_compaction_jobs": 0,
+      "semantic_summaries_created": 0,
+      "verification": null,
+      "format_observations": [],
+      "restart_index_ready_ms": null,
+      "unsettled_dispatched_requests": 0,
+      "nonempty_returned_speeches": 0,
+      "host_close_states": []
+    }
+  ],
+  "conditions": {
+    "full": {
+      "trajectories": 4,
+      "completed_trajectories": 3,
+      "user_turns_attempted": 74,
+      "engine_finals_committed": 73,
+      "nonempty_returned_speeches": 73,
+      "observed_probes": 15,
+      "unobserved_probes": 5,
+      "answer_requirement_pass": 15,
+      "evidence_claims_supported": 15,
+      "probe_finals_committed": 15,
+      "supported_committed_probes": 15,
+      "communication_defects_in_probes": 1,
+      "correct_checked_plan_revisions": 8,
+      "artifact_task_steps_attempted": 10,
+      "requests": 196,
+      "unsettled_dispatched_requests": 1,
+      "settled_prompt_tokens": 2176354,
+      "settled_completion_tokens": 44791,
+      "settled_cache_hit_tokens": 1450112,
+      "settled_cache_miss_tokens": 726242,
+      "settled_peak_usage_cost_cny": "2.7268562",
+      "settled_time_band_estimate_cny": "1.3634281",
+      "raw_compaction_jobs": 38,
+      "semantic_summaries_created": 3,
+      "planned_user_turns": 96,
+      "planned_probes": 20,
+      "planned_artifacts": 12
+    },
+    "card": {
+      "trajectories": 4,
+      "completed_trajectories": 3,
+      "user_turns_attempted": 72,
+      "engine_finals_committed": 70,
+      "nonempty_returned_speeches": 72,
+      "observed_probes": 15,
+      "unobserved_probes": 5,
+      "answer_requirement_pass": 15,
+      "evidence_claims_supported": 14,
+      "probe_finals_committed": 13,
+      "supported_committed_probes": 12,
+      "communication_defects_in_probes": 5,
+      "correct_checked_plan_revisions": 9,
+      "artifact_task_steps_attempted": 9,
+      "requests": 194,
+      "unsettled_dispatched_requests": 0,
+      "settled_prompt_tokens": 2397556,
+      "settled_completion_tokens": 41475,
+      "settled_cache_hit_tokens": 1659904,
+      "settled_cache_miss_tokens": 737652,
+      "settled_peak_usage_cost_cny": "2.7522214",
+      "settled_time_band_estimate_cny": "1.3761107",
+      "raw_compaction_jobs": 29,
+      "semantic_summaries_created": 2,
+      "planned_user_turns": 96,
+      "planned_probes": 20,
+      "planned_artifacts": 12
+    }
+  },
+  "totals": {
+    "trajectories": 8,
+    "completed_trajectories": 6,
+    "user_turns_attempted": 146,
+    "engine_finals_committed": 143,
+    "nonempty_returned_speeches": 145,
+    "observed_probes": 30,
+    "unobserved_probes": 10,
+    "answer_requirement_pass": 30,
+    "evidence_claims_supported": 29,
+    "probe_finals_committed": 28,
+    "supported_committed_probes": 27,
+    "communication_defects_in_probes": 6,
+    "correct_checked_plan_revisions": 17,
+    "artifact_task_steps_attempted": 19,
+    "requests": 390,
+    "unsettled_dispatched_requests": 1,
+    "settled_prompt_tokens": 4573910,
+    "settled_completion_tokens": 86266,
+    "settled_cache_hit_tokens": 3110016,
+    "settled_cache_miss_tokens": 1463894,
+    "settled_peak_usage_cost_cny": "5.4790776",
+    "settled_time_band_estimate_cny": "2.7395388",
+    "raw_compaction_jobs": 67,
+    "semantic_summaries_created": 5
+  },
+  "completed_cohort": {
+    "scope": "Only the six fully executed trajectories; the interrupted and unrun cells remain in all planned totals.",
+    "totals": {
+      "trajectories": 6,
+      "completed_trajectories": 6,
+      "user_turns_attempted": 144,
+      "engine_finals_committed": 142,
+      "nonempty_returned_speeches": 144,
+      "observed_probes": 30,
+      "unobserved_probes": 0,
+      "answer_requirement_pass": 30,
+      "evidence_claims_supported": 29,
+      "probe_finals_committed": 28,
+      "supported_committed_probes": 27,
+      "communication_defects_in_probes": 6,
+      "correct_checked_plan_revisions": 17,
+      "artifact_task_steps_attempted": 18,
+      "requests": 378,
+      "unsettled_dispatched_requests": 0,
+      "settled_prompt_tokens": 4485598,
+      "settled_completion_tokens": 80146,
+      "settled_cache_hit_tokens": 3025024,
+      "settled_cache_miss_tokens": 1460574,
+      "settled_peak_usage_cost_cny": "5.4055384",
+      "settled_time_band_estimate_cny": "2.7027692",
+      "raw_compaction_jobs": 67,
+      "semantic_summaries_created": 5
+    },
+    "conditions": {
+      "full": {
+        "trajectories": 3,
+        "completed_trajectories": 3,
+        "user_turns_attempted": 72,
+        "engine_finals_committed": 72,
+        "nonempty_returned_speeches": 72,
+        "observed_probes": 15,
+        "unobserved_probes": 0,
+        "answer_requirement_pass": 15,
+        "evidence_claims_supported": 15,
+        "probe_finals_committed": 15,
+        "supported_committed_probes": 15,
+        "communication_defects_in_probes": 1,
+        "correct_checked_plan_revisions": 8,
+        "artifact_task_steps_attempted": 9,
+        "requests": 184,
+        "unsettled_dispatched_requests": 0,
+        "settled_prompt_tokens": 2088042,
+        "settled_completion_tokens": 38671,
+        "settled_cache_hit_tokens": 1365120,
+        "settled_cache_miss_tokens": 722922,
+        "settled_peak_usage_cost_cny": "2.6533170",
+        "settled_time_band_estimate_cny": "1.3266585",
+        "raw_compaction_jobs": 38,
+        "semantic_summaries_created": 3
+      },
+      "card": {
+        "trajectories": 3,
+        "completed_trajectories": 3,
+        "user_turns_attempted": 72,
+        "engine_finals_committed": 70,
+        "nonempty_returned_speeches": 72,
+        "observed_probes": 15,
+        "unobserved_probes": 0,
+        "answer_requirement_pass": 15,
+        "evidence_claims_supported": 14,
+        "probe_finals_committed": 13,
+        "supported_committed_probes": 12,
+        "communication_defects_in_probes": 5,
+        "correct_checked_plan_revisions": 9,
+        "artifact_task_steps_attempted": 9,
+        "requests": 194,
+        "unsettled_dispatched_requests": 0,
+        "settled_prompt_tokens": 2397556,
+        "settled_completion_tokens": 41475,
+        "settled_cache_hit_tokens": 1659904,
+        "settled_cache_miss_tokens": 737652,
+        "settled_peak_usage_cost_cny": "2.7522214",
+        "settled_time_band_estimate_cny": "1.3761107",
+        "raw_compaction_jobs": 29,
+        "semantic_summaries_created": 2
+      }
+    }
+  },
+  "probe_types": {
+    "13": {
+      "planned": 8,
+      "observed": 6,
+      "answer_requirement_pass": 6,
+      "evidence_claims_supported": 6,
+      "engine_final_committed": 4,
+      "supported_committed_success": 4
+    },
+    "14": {
+      "planned": 8,
+      "observed": 6,
+      "answer_requirement_pass": 6,
+      "evidence_claims_supported": 6,
+      "engine_final_committed": 6,
+      "supported_committed_success": 6
+    },
+    "22": {
+      "planned": 8,
+      "observed": 6,
+      "answer_requirement_pass": 6,
+      "evidence_claims_supported": 5,
+      "engine_final_committed": 6,
+      "supported_committed_success": 5
+    },
+    "23": {
+      "planned": 8,
+      "observed": 6,
+      "answer_requirement_pass": 6,
+      "evidence_claims_supported": 6,
+      "engine_final_committed": 6,
+      "supported_committed_success": 6
+    },
+    "24": {
+      "planned": 8,
+      "observed": 6,
+      "answer_requirement_pass": 6,
+      "evidence_claims_supported": 6,
+      "engine_final_committed": 6,
+      "supported_committed_success": 6
+    }
+  },
+  "interruption": {
+    "request_id": "87e22ded83cb4beb99ea23b45f6e511c",
+    "run_id": "migration__full__r2",
+    "step_id": "migration_02",
+    "error": "usage_tokens_exceed_reservation",
+    "http_status": 200,
+    "request_max_tokens": 2048,
+    "reported_completion_tokens": 2049,
+    "finish_reason": "length",
+    "reserved_cny": "3.16416",
+    "raw_provider_usage": {
+      "prompt_tokens": 10120,
+      "completion_tokens": 2049,
+      "total_tokens": 12169,
+      "prompt_tokens_details": {
+        "cached_tokens": 10112
+      },
+      "prompt_cache_hit_tokens": 10112,
+      "prompt_cache_miss_tokens": 8
+    },
+    "ledger_status": "uncertain",
+    "automatically_released_or_retried": false,
+    "subsequent_background_request_blocked_before_http": true,
+    "explanation": "Observed one-token usage boundary mismatch. The public API documentation defines the limit and usage but does not explain this discrepancy; no EOS or billing explanation is assumed."
+  },
+  "source": {
+    "execution": "verified_copy_of_original_akane_code_in_existing_environment",
+    "source_fingerprint": "ef19b1ef3a04844807c031b079f67674e9fefb35c6ad472949cc07f4645e4b92",
+    "frozen_source_files": 392,
+    "dependency_binaries_frozen": false
+  },
+  "audit": {
+    "captured_requests": 391,
+    "real_http_requests": 390,
+    "settled_requests": 389,
+    "unsettled_dispatched_requests": 1,
+    "blocked_before_http": 1,
+    "all_request_wire_hashes_match": true,
+    "all_dispatched_real_not_replayed": true,
+    "all_thinking_disabled": true,
+    "all_non_streaming": true,
+    "completed_source_preservation_checks": 6,
+    "completed_restart_exact_checks": 6,
+    "completed_raw_exit_checks": 6,
+    "completed_multiple_compaction_checks": 6,
+    "completed_trajectory_denominator": 6,
+    "unauthorized_network_events": 0,
+    "blocked_private_reads": 0,
+    "blocked_outside_writes": 0,
+    "tool_bindings_ambiguous": 0,
+    "production_embedding_health_checks": 13,
+    "all_embedding_checks_passed": true,
+    "pending_reservations": 1,
+    "isolation_counter_scope": "12 completed phase-end observations; the interrupted worker has no final counter snapshot and is not silently counted as a passed audit.",
+    "interrupted_worker_shutdown": "degraded; writer_shutdown_incomplete and memcore_close_deferred; child process exited"
+  }
+}

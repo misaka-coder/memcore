@@ -1,0 +1,1008 @@
+{
+  "format": "akane_actual_host_retest_results_v2",
+  "study_status": "completed",
+  "study_scope": "Exploratory controlled pilot of the actual Akane turn chain with constrained synthetic fixture and memory tools; not full product acceptance or publication evidence.",
+  "actual_akane_controlled_run_complete": true,
+  "production_host_or_memcore_core_modified_for_retest": false,
+  "date": "2026-09-06",
+  "aggregate": {
+    "runs": 4,
+    "setup_turns": 20,
+    "independent_physical_probe_branches": 12,
+    "host_completed_and_persisted_probes": 12,
+    "semantically_correct_probes_primary": 11,
+    "probe_denominator": 12,
+    "semantically_correct_probes_strict_interpretation": 10,
+    "adjudication_sensitivity_case": "notifier_history__card__r1/n_probe_memory",
+    "by_kind_primary": {
+      "historical_tool_detail": {
+        "correct": 4,
+        "total": 4
+      },
+      "conversation_fact": {
+        "correct": 3,
+        "total": 4
+      },
+      "explicitly_missing_field": {
+        "correct": 4,
+        "total": 4
+      }
+    },
+    "by_condition_primary": {
+      "full": {
+        "correct": 5,
+        "total": 6
+      },
+      "card": {
+        "correct": 6,
+        "total": 6
+      }
+    },
+    "setup_task_factual_correct": 7,
+    "setup_task_scope_compliant": 7,
+    "setup_tasks_fully_satisfied": 6,
+    "setup_task_denominator": 8,
+    "actual_full_original_body_readbacks": 4,
+    "distinct_v1_sources_reloaded": 2,
+    "setup_authored_fixture_answer_exposures": 0,
+    "actual_http_requests": 48,
+    "zero_http_response_replays": 84,
+    "host_format_or_protocol_recovery_http_requests": 0,
+    "budget_or_context_interruptions": 0
+  },
+  "controls": {
+    "engine": "actual AkaneMemoryEngine.process_turn and _run_turn_core",
+    "only_intentionally_varied_config": "operation_projection_policy",
+    "policy_definitions": {
+      "full": "full_until_raw_compaction",
+      "card": "compact_after_terminal"
+    },
+    "treatment_includes_host_builtin_readback_prompt": true,
+    "system_prompts_identical_between_conditions": false,
+    "system_difference_exactly_builtin_hint": true,
+    "tool_schema_identical_between_conditions": true,
+    "care_enabled": false,
+    "original_persona_and_output_template": true,
+    "artificial_six_call_cap": false,
+    "actual_tool_round_hard_limit": 0,
+    "generation_settings": {
+      "model": "deepseek-v4-flash",
+      "thinking": {
+        "type": "disabled"
+      },
+      "temperature": 0.8,
+      "max_tokens": 2048,
+      "stream": false,
+      "bundle_role": "chat"
+    },
+    "actual_sdk_generation_preserved": true,
+    "input_timestamp_policy": "Live input timestamps, original setup input timestamps preserved in replay; original scenario dates are provenance only.",
+    "gap_policy": "Intervening conversation turns, not a simulated day.",
+    "raw_compaction_generation": 0,
+    "baseline_normalized_equal_count": 12,
+    "baseline_raw_equal_count": 0,
+    "replay_response_bytes_unchanged": true,
+    "replay_id_maps_empty": true,
+    "source_files_frozen_and_verified": 382,
+    "source_fingerprint": "56eb3fbca505e3bee413222327ce30da20ffb917c813f6419fccd3f8f872460d",
+    "dependency_binaries_frozen": false,
+    "production_embedding": {
+      "format": "memcore_pilot_production_embedding_preflight_v1",
+      "status": "passed",
+      "reason": null,
+      "model_id": "BAAI/bge-m3",
+      "provider": "HuggingFaceEmbeddingProvider",
+      "adapter_version": "st-local-v1",
+      "device": "cuda",
+      "local_files_only": true,
+      "hashed_fallback": false,
+      "paid_embedding_api_calls": 0,
+      "downloaded_model": false,
+      "dimension": 1024,
+      "finite_normalized_vectors": true,
+      "synthetic_texts": [
+        "我喜欢喝不加糖的咖啡。",
+        "我的咖啡要无糖。",
+        "今晚可以观测流星雨。"
+      ],
+      "similar_score": 0.880459,
+      "unrelated_score": 0.414591,
+      "semantic_gap": 0.465868,
+      "required_gap": 0.05,
+      "repeat_score": 1.0,
+      "vector_fingerprint": "765c7ea6e931ae6d9b7c233bfec2737ac9bca4b465a8bd2fb0261e279858ef8f",
+      "probe_scope": "small_synthetic_health_check_not_retrieval_benchmark",
+      "previous_health_probe_matched": true,
+      "runtime_package_versions": {
+        "sentence-transformers": "3.4.1",
+        "transformers": "4.57.6",
+        "torch": "2.11.0+cu128",
+        "numpy": "1.26.4",
+        "huggingface-hub": "0.36.2"
+      }
+    }
+  },
+  "new_retest_accounting": {
+    "actual_http_requests": 48,
+    "settled_requests": 48,
+    "request_purposes": {
+      "initial": 32,
+      "native_tool_followup": 16
+    },
+    "provider_usage": {
+      "prompt_tokens": 363324,
+      "completion_tokens": 4247,
+      "prompt_cache_hit_tokens": 316800,
+      "prompt_cache_miss_tokens": 46524,
+      "total_tokens": 367571
+    },
+    "cache_hit_fraction_of_prompt": 0.871949004,
+    "requests_with_cached_input": 47,
+    "maximum_prompt_tokens": 9999,
+    "maximum_completion_tokens": 323,
+    "usage_cost_at_reserved_peak_rates_cny": "0.2094750",
+    "tariff_estimated_cost_cny": "0.1047375",
+    "known_tariff_estimate_subtotal_cny": "0.1047375",
+    "unknown_tariff_requests": 0,
+    "tariff_bands": {
+      "off_peak": 48
+    },
+    "invoice_cost_cny": null,
+    "started_at": "2026-09-06T05:09:51.086953+00:00",
+    "ended_at": "2026-09-06T05:12:45.305075+00:00",
+    "latency_ms": {
+      "available_count": 48,
+      "sum": 58127.0,
+      "mean": 1210.979,
+      "median": 1055.0,
+      "p95_nearest_rank": 2578.0,
+      "minimum": 516.0,
+      "maximum": 3391.0,
+      "first_byte_available_count": 0,
+      "first_token_available_count": 0
+    }
+  },
+  "carried_forward_accounting": {
+    "source": "../../../.research-runs/pilot-live-20260906-result/analysis/accounting-review.json",
+    "actual_http_requests": 82,
+    "preflight_requests": 2,
+    "previous_scenario_requests": 80,
+    "provider_usage": {
+      "prompt_tokens": 710544,
+      "completion_tokens": 15994,
+      "prompt_cache_hit_tokens": 669824,
+      "prompt_cache_miss_tokens": 40720,
+      "total_tokens": 726538
+    },
+    "peak_usage_cost_cny": "0.3330884",
+    "tariff_estimated_cost_cny": "0.1665442",
+    "invoice_cost_cny": null
+  },
+  "entire_authorized_stage": {
+    "stage_id": "9cd1db823a2345e3b555e6dc20c0463f",
+    "actual_http_requests": 130,
+    "provider_usage": {
+      "prompt_tokens": 1073868,
+      "completion_tokens": 20241,
+      "prompt_cache_hit_tokens": 986624,
+      "prompt_cache_miss_tokens": 87244,
+      "total_tokens": 1094109
+    },
+    "cache_hit_fraction_of_prompt": 0.91875724,
+    "peak_usage_cost_cny": "0.5425634",
+    "tariff_estimated_cost_cny": "0.2712817",
+    "invoice_cost_cny": null,
+    "limit_cny": "50",
+    "remaining_conservative_budget_cny": "49.4574366",
+    "pending_requests": 0,
+    "reserved_cny": "0",
+    "largest_committed_during_new_request_reservation_cny": "3.6973184"
+  },
+  "latency_definition": "传输适配器记录的请求耗时，含少量本地捕获落盘与JSON校验开销。计时结束于usage结算之前，不是纯网络耗时。本轮非流式，首字节/首token指标未取得。回放没有供应商请求延迟，已排除。宿主完整回合耗时包括宿主处理与回放重建，是另一口径。",
+  "runs": [
+    {
+      "run_id": "gallery_history__full__r1",
+      "scenario_id": "gallery_history",
+      "condition": "full",
+      "host_status": "passed",
+      "probes_correct": 2,
+      "probe_denominator": 3,
+      "task_checks": [
+        {
+          "step_id": "g_task_v1",
+          "factual_criteria_satisfied": true,
+          "scope_compliant": true,
+          "fully_satisfied": true
+        },
+        {
+          "step_id": "g_task_v2",
+          "factual_criteria_satisfied": true,
+          "scope_compliant": true,
+          "fully_satisfied": true
+        }
+      ],
+      "probes": [
+        {
+          "step_id": "g_probe_history",
+          "kind": "historical_tool_detail",
+          "host_completed_and_persisted": true,
+          "answer_correct": true,
+          "strict_interpretation_correct": true,
+          "manual_reason": "两个值均明确归属于第一版；直接使用已完整可见的 v1 工具结果，没有新增回读。",
+          "quality": "correct",
+          "evidence_grade": "exact_v1_full_result_already_visible",
+          "actual_complete_original_body_readback": false,
+          "setup_authored_fixture_answer_exposed": false,
+          "baseline_raw_equal": false,
+          "baseline_normalized_equal": true,
+          "actual_http_requests": 1,
+          "tool_names": [],
+          "request_ids": [
+            "b674d9edcc3445faa3456d8309fac831"
+          ]
+        },
+        {
+          "step_id": "g_probe_memory",
+          "kind": "conversation_fact",
+          "host_completed_and_persisted": true,
+          "answer_correct": false,
+          "strict_interpretation_correct": false,
+          "manual_reason": "最终声称未找到具体安排，未回答蓝色笔记本，也未回答晚上；结尾仅说周四。检索前后请求均保留了用户原话和助手确认，检索 query 本身也已写出蓝色笔记本。",
+          "quality": "incorrect",
+          "evidence_grade": "conversation_fact_visible_but_answer_failed",
+          "actual_complete_original_body_readback": false,
+          "setup_authored_fixture_answer_exposed": false,
+          "baseline_raw_equal": false,
+          "baseline_normalized_equal": true,
+          "actual_http_requests": 2,
+          "tool_names": [
+            "retrieve_memory"
+          ],
+          "request_ids": [
+            "d392cd60931a4677a02beff385878ab9",
+            "cefa52aaa2a5450581bd41e7be6960ce"
+          ]
+        },
+        {
+          "step_id": "g_probe_unknown",
+          "kind": "explicitly_missing_field",
+          "host_completed_and_persisted": true,
+          "answer_correct": true,
+          "strict_interpretation_correct": true,
+          "manual_reason": "明确停车计费未提供，没有编造金额；v1 完整正文原已可见，无新增回读。",
+          "quality": "correct",
+          "evidence_grade": "exact_v1_full_result_already_visible",
+          "actual_complete_original_body_readback": false,
+          "setup_authored_fixture_answer_exposed": false,
+          "baseline_raw_equal": false,
+          "baseline_normalized_equal": true,
+          "actual_http_requests": 1,
+          "tool_names": [],
+          "request_ids": [
+            "0523b07b2b634717af589a79f92b0921"
+          ]
+        }
+      ],
+      "projection_evidence": {
+        "run_id": "gallery_history__full__r1",
+        "condition": "full",
+        "fixture_projections": [
+          {
+            "step_id": "g_task_v1",
+            "document_id": "gallery_doc_v1",
+            "source_id": "tooltrace:d32f52ea5a78129d12ec4185224be9dc:tool_result",
+            "open_turn_sdk_body_exact": true,
+            "original_provider_body_sha256": "a1acb940da0912e5a803bcaca3be2fb065b48e7fa867aaa47de27bc58ddc3fa1",
+            "original_provider_body_utf8_bytes": 3653,
+            "post_final_projection_status": "request_frozen",
+            "post_final_body_sha256": "a1acb940da0912e5a803bcaca3be2fb065b48e7fa867aaa47de27bc58ddc3fa1",
+            "post_final_body_utf8_bytes": 3653,
+            "post_final_full_body_equal": true,
+            "post_gap_same_projection_body": true,
+            "public_original_body_readback_claim": "not established by projection hash; see independent actual model open audit"
+          },
+          {
+            "step_id": "g_task_v2",
+            "document_id": "gallery_doc_v2",
+            "source_id": "tooltrace:69c61b9938d082a0dc85dc8caf3aedb5:tool_result",
+            "open_turn_sdk_body_exact": true,
+            "original_provider_body_sha256": "4b4175a5df7c82444aaffe9c554c06d7294dd43c3e4208f5d844758ee9c202cf",
+            "original_provider_body_utf8_bytes": 3656,
+            "post_final_projection_status": "request_frozen",
+            "post_final_body_sha256": "4b4175a5df7c82444aaffe9c554c06d7294dd43c3e4208f5d844758ee9c202cf",
+            "post_final_body_utf8_bytes": 3656,
+            "post_final_full_body_equal": true,
+            "post_gap_same_projection_body": true,
+            "public_original_body_readback_claim": "not established by projection hash; see independent actual model open audit"
+          }
+        ],
+        "baseline_provider_history_utf8_bytes": 10307,
+        "baseline_memory_count": 15,
+        "baseline_normalized_equal": [
+          true,
+          true,
+          true
+        ],
+        "baseline_raw_equal": [
+          false,
+          false,
+          false
+        ],
+        "accepted_and_persisted_turns": 8,
+        "actual_raw_compaction_generation": 0,
+        "host_closed": true,
+        "host_guard": {
+          "blocked_network": 0,
+          "authorized_network_events": 8,
+          "blocked_reads": 0,
+          "blocked_writes": 0,
+          "blocked_subprocesses": 1
+        }
+      },
+      "accounting": {
+        "run_id": "gallery_history__full__r1",
+        "scenario_id": "gallery_history",
+        "condition": "full",
+        "actual_http_requests": 11,
+        "settled_requests": 11,
+        "request_purposes": {
+          "initial": 8,
+          "native_tool_followup": 3
+        },
+        "provider_usage": {
+          "prompt_tokens": 83447,
+          "completion_tokens": 576,
+          "prompt_cache_hit_tokens": 69504,
+          "prompt_cache_miss_tokens": 13943,
+          "total_tokens": 84023
+        },
+        "cache_hit_fraction_of_prompt": 0.832911908,
+        "requests_with_cached_input": 10,
+        "maximum_prompt_tokens": 8590,
+        "maximum_completion_tokens": 75,
+        "usage_cost_at_reserved_peak_rates_cny": "0.0539634",
+        "tariff_estimated_cost_cny": "0.0269817",
+        "known_tariff_estimate_subtotal_cny": "0.0269817",
+        "unknown_tariff_requests": 0,
+        "tariff_bands": {
+          "off_peak": 11
+        },
+        "invoice_cost_cny": null,
+        "started_at": "2026-09-06T05:09:51.086953+00:00",
+        "ended_at": "2026-09-06T05:10:26.556739+00:00",
+        "latency_ms": {
+          "available_count": 11,
+          "sum": 10891.0,
+          "mean": 990.091,
+          "median": 969.0,
+          "p95_nearest_rank": 1281.0,
+          "minimum": 531.0,
+          "maximum": 1281.0,
+          "first_byte_available_count": 0,
+          "first_token_available_count": 0
+        }
+      }
+    },
+    {
+      "run_id": "gallery_history__card__r1",
+      "scenario_id": "gallery_history",
+      "condition": "card",
+      "host_status": "passed",
+      "probes_correct": 3,
+      "probe_denominator": 3,
+      "task_checks": [
+        {
+          "step_id": "g_task_v1",
+          "factual_criteria_satisfied": true,
+          "scope_compliant": true,
+          "fully_satisfied": true
+        },
+        {
+          "step_id": "g_task_v2",
+          "factual_criteria_satisfied": false,
+          "scope_compliant": true,
+          "fully_satisfied": false
+        }
+      ],
+      "probes": [
+        {
+          "step_id": "g_probe_history",
+          "kind": "historical_tool_detail",
+          "host_completed_and_persisted": true,
+          "answer_correct": true,
+          "strict_interpretation_correct": true,
+          "manual_reason": "打开明确的 v1 原始工具结果后回答 RZ-417 和东侧服务台；开头请求和铺垫作者输出都未暴露这两个值。",
+          "quality": "correct",
+          "evidence_grade": "exact_v1_source_body_reloaded_and_delivered",
+          "actual_complete_original_body_readback": true,
+          "setup_authored_fixture_answer_exposed": false,
+          "baseline_raw_equal": false,
+          "baseline_normalized_equal": true,
+          "actual_http_requests": 2,
+          "tool_names": [
+            "open_memory"
+          ],
+          "request_ids": [
+            "c50f76594a5d45efa3cf6aac0b858ee0",
+            "495fd34b678c40478f449674bfd3fd05"
+          ]
+        },
+        {
+          "step_id": "g_probe_memory",
+          "kind": "conversation_fact",
+          "host_completed_and_persisted": true,
+          "answer_correct": true,
+          "strict_interpretation_correct": true,
+          "manual_reason": "即使此次语义检索返回空，最终仍正确回答初始可见对话中的物品与晚上。",
+          "quality": "correct",
+          "evidence_grade": "conversation_fact_correct_despite_empty_retrieval",
+          "actual_complete_original_body_readback": false,
+          "setup_authored_fixture_answer_exposed": false,
+          "baseline_raw_equal": false,
+          "baseline_normalized_equal": true,
+          "actual_http_requests": 2,
+          "tool_names": [
+            "retrieve_memory"
+          ],
+          "request_ids": [
+            "3e7753b3205f4db28a97f0442e47838e",
+            "042ea2e497724d9cadc3b2cb0e9d204d"
+          ]
+        },
+        {
+          "step_id": "g_probe_unknown",
+          "kind": "explicitly_missing_field",
+          "host_completed_and_persisted": true,
+          "answer_correct": true,
+          "strict_interpretation_correct": true,
+          "manual_reason": "重新打开 v1 保存正文后指出资料未给停车费及计费规则，没有编造数值。",
+          "quality": "correct",
+          "evidence_grade": "exact_v1_source_body_reloaded_and_delivered",
+          "actual_complete_original_body_readback": true,
+          "setup_authored_fixture_answer_exposed": false,
+          "baseline_raw_equal": false,
+          "baseline_normalized_equal": true,
+          "actual_http_requests": 2,
+          "tool_names": [
+            "open_memory"
+          ],
+          "request_ids": [
+            "40ef49d1efe54b799bcdb4356a10b4d4",
+            "315e9ddb5ad84b62b25b0f996ee31bcd"
+          ]
+        }
+      ],
+      "projection_evidence": {
+        "run_id": "gallery_history__card__r1",
+        "condition": "card",
+        "fixture_projections": [
+          {
+            "step_id": "g_task_v1",
+            "document_id": "gallery_doc_v1",
+            "source_id": "tooltrace:d37abcab890a6e272ec885459543b02b:tool_result",
+            "open_turn_sdk_body_exact": true,
+            "original_provider_body_sha256": "a1acb940da0912e5a803bcaca3be2fb065b48e7fa867aaa47de27bc58ddc3fa1",
+            "original_provider_body_utf8_bytes": 3653,
+            "post_final_projection_status": "settled",
+            "post_final_body_sha256": "01f5f850eaaad4bf2ccd04a29610e9028e4908f218b3baac35dd628759fbbce6",
+            "post_final_body_utf8_bytes": 435,
+            "post_final_full_body_equal": false,
+            "post_gap_same_projection_body": true,
+            "public_original_body_readback_claim": "not established by projection hash; see independent actual model open audit"
+          },
+          {
+            "step_id": "g_task_v2",
+            "document_id": "gallery_doc_v2",
+            "source_id": "tooltrace:8d7327cae58ae9d052941953a7d606bf:tool_result",
+            "open_turn_sdk_body_exact": true,
+            "original_provider_body_sha256": "4b4175a5df7c82444aaffe9c554c06d7294dd43c3e4208f5d844758ee9c202cf",
+            "original_provider_body_utf8_bytes": 3656,
+            "post_final_projection_status": "settled",
+            "post_final_body_sha256": "9c707f89dc1c177bfafe8539fbc6b21744965b7027606c1597f8eaa55e8d6cdd",
+            "post_final_body_utf8_bytes": 435,
+            "post_final_full_body_equal": false,
+            "post_gap_same_projection_body": true,
+            "public_original_body_readback_claim": "not established by projection hash; see independent actual model open audit"
+          }
+        ],
+        "baseline_provider_history_utf8_bytes": 3729,
+        "baseline_memory_count": 15,
+        "baseline_normalized_equal": [
+          true,
+          true,
+          true
+        ],
+        "baseline_raw_equal": [
+          false,
+          false,
+          false
+        ],
+        "accepted_and_persisted_turns": 8,
+        "actual_raw_compaction_generation": 0,
+        "host_closed": true,
+        "host_guard": {
+          "blocked_network": 0,
+          "authorized_network_events": 16,
+          "blocked_reads": 0,
+          "blocked_writes": 0,
+          "blocked_subprocesses": 1
+        }
+      },
+      "accounting": {
+        "run_id": "gallery_history__card__r1",
+        "scenario_id": "gallery_history",
+        "condition": "card",
+        "actual_http_requests": 13,
+        "settled_requests": 13,
+        "request_purposes": {
+          "initial": 8,
+          "native_tool_followup": 5
+        },
+        "provider_usage": {
+          "prompt_tokens": 93709,
+          "completion_tokens": 729,
+          "prompt_cache_hit_tokens": 79360,
+          "prompt_cache_miss_tokens": 14349,
+          "total_tokens": 94438
+        },
+        "cache_hit_fraction_of_prompt": 0.846877034,
+        "requests_with_cached_input": 13,
+        "maximum_prompt_tokens": 9273,
+        "maximum_completion_tokens": 97,
+        "usage_cost_at_reserved_peak_rates_cny": "0.0575440",
+        "tariff_estimated_cost_cny": "0.0287720",
+        "known_tariff_estimate_subtotal_cny": "0.0287720",
+        "unknown_tariff_requests": 0,
+        "tariff_bands": {
+          "off_peak": 13
+        },
+        "invoice_cost_cny": null,
+        "started_at": "2026-09-06T05:10:29.434228+00:00",
+        "ended_at": "2026-09-06T05:11:09.744625+00:00",
+        "latency_ms": {
+          "available_count": 13,
+          "sum": 12594.0,
+          "mean": 968.769,
+          "median": 906.0,
+          "p95_nearest_rank": 1485.0,
+          "minimum": 625.0,
+          "maximum": 1485.0,
+          "first_byte_available_count": 0,
+          "first_token_available_count": 0
+        }
+      }
+    },
+    {
+      "run_id": "notifier_history__full__r1",
+      "scenario_id": "notifier_history",
+      "condition": "full",
+      "host_status": "passed",
+      "probes_correct": 3,
+      "probe_denominator": 3,
+      "task_checks": [
+        {
+          "step_id": "n_task_v1",
+          "factual_criteria_satisfied": true,
+          "scope_compliant": true,
+          "fully_satisfied": true
+        },
+        {
+          "step_id": "n_task_v2",
+          "factual_criteria_satisfied": true,
+          "scope_compliant": false,
+          "fully_satisfied": false
+        }
+      ],
+      "probes": [
+        {
+          "step_id": "n_probe_history",
+          "kind": "historical_tool_detail",
+          "host_completed_and_persisted": true,
+          "answer_correct": true,
+          "strict_interpretation_correct": true,
+          "manual_reason": "准确回答 v1 的17秒和5秒，并正确区分 v2 的23和9。原始v1正文已在首次请求中可见，未声称刚调用了回读工具。",
+          "quality": "correct",
+          "evidence_grade": "original_fixture_visible_in_initial_request",
+          "actual_complete_original_body_readback": false,
+          "setup_authored_fixture_answer_exposed": false,
+          "baseline_raw_equal": false,
+          "baseline_normalized_equal": true,
+          "actual_http_requests": 1,
+          "tool_names": [],
+          "request_ids": [
+            "6fe8181014a14e2f972ad248c8a5de7e"
+          ]
+        },
+        {
+          "step_id": "n_probe_memory",
+          "kind": "conversation_fact",
+          "host_completed_and_persisted": true,
+          "answer_correct": true,
+          "strict_interpretation_correct": true,
+          "manual_reason": "明确回忆用户希望先结论后原因，也明确原交期是周日。后加今天或改期的推测没有把交期改写成另一日。",
+          "quality": "correct_with_qualification",
+          "evidence_grade": "original_user_statement_visible",
+          "actual_complete_original_body_readback": false,
+          "setup_authored_fixture_answer_exposed": false,
+          "baseline_raw_equal": false,
+          "baseline_normalized_equal": true,
+          "actual_http_requests": 2,
+          "tool_names": [
+            "retrieve_memory"
+          ],
+          "request_ids": [
+            "f84bac3fadb642aa94f5912da1d19da4",
+            "3814b085f0ed40daa864df30e4731d32"
+          ]
+        },
+        {
+          "step_id": "n_probe_unknown",
+          "kind": "explicitly_missing_field",
+          "host_completed_and_persisted": true,
+          "answer_correct": true,
+          "strict_interpretation_correct": true,
+          "manual_reason": "明确v1资料没有HTTP连接超时，并正确说明17秒是退避而非连接超时。原始边界说明已可见。",
+          "quality": "correct",
+          "evidence_grade": "original_fixture_visible_in_initial_request",
+          "actual_complete_original_body_readback": false,
+          "setup_authored_fixture_answer_exposed": false,
+          "baseline_raw_equal": false,
+          "baseline_normalized_equal": true,
+          "actual_http_requests": 1,
+          "tool_names": [],
+          "request_ids": [
+            "5e593871872c4f17b686246d1d857364"
+          ]
+        }
+      ],
+      "projection_evidence": {
+        "run_id": "notifier_history__full__r1",
+        "condition": "full",
+        "fixture_projections": [
+          {
+            "step_id": "n_task_v1",
+            "document_id": "notifier_doc_v1",
+            "source_id": "tooltrace:1bf50858d867fdfe592f89ee4c1db423:tool_result",
+            "open_turn_sdk_body_exact": true,
+            "original_provider_body_sha256": "153c660e3ee84a50bd1dc77b937a034257cb3a9aa2de9dad801c304ee1c7be25",
+            "original_provider_body_utf8_bytes": 3346,
+            "post_final_projection_status": "request_frozen",
+            "post_final_body_sha256": "153c660e3ee84a50bd1dc77b937a034257cb3a9aa2de9dad801c304ee1c7be25",
+            "post_final_body_utf8_bytes": 3346,
+            "post_final_full_body_equal": true,
+            "post_gap_same_projection_body": true,
+            "public_original_body_readback_claim": "not established by projection hash; see independent actual model open audit"
+          },
+          {
+            "step_id": "n_task_v2",
+            "document_id": "notifier_doc_v2",
+            "source_id": "tooltrace:7df0fbc330818c525f40b07db8901265:tool_result",
+            "open_turn_sdk_body_exact": true,
+            "original_provider_body_sha256": "d0616dd84de478cc604f0b6b47748a9f79fb57fa31ef54bdaf86ada60d02b1a7",
+            "original_provider_body_utf8_bytes": 3346,
+            "post_final_projection_status": "request_frozen",
+            "post_final_body_sha256": "d0616dd84de478cc604f0b6b47748a9f79fb57fa31ef54bdaf86ada60d02b1a7",
+            "post_final_body_utf8_bytes": 3346,
+            "post_final_full_body_equal": true,
+            "post_gap_same_projection_body": true,
+            "public_original_body_readback_claim": "not established by projection hash; see independent actual model open audit"
+          }
+        ],
+        "baseline_provider_history_utf8_bytes": 11440,
+        "baseline_memory_count": 15,
+        "baseline_normalized_equal": [
+          true,
+          true,
+          true
+        ],
+        "baseline_raw_equal": [
+          false,
+          false,
+          false
+        ],
+        "accepted_and_persisted_turns": 8,
+        "actual_raw_compaction_generation": 0,
+        "host_closed": true,
+        "host_guard": {
+          "blocked_network": 0,
+          "authorized_network_events": 24,
+          "blocked_reads": 0,
+          "blocked_writes": 0,
+          "blocked_subprocesses": 1
+        }
+      },
+      "accounting": {
+        "run_id": "notifier_history__full__r1",
+        "scenario_id": "notifier_history",
+        "condition": "full",
+        "actual_http_requests": 11,
+        "settled_requests": 11,
+        "request_purposes": {
+          "initial": 8,
+          "native_tool_followup": 3
+        },
+        "provider_usage": {
+          "prompt_tokens": 86184,
+          "completion_tokens": 1079,
+          "prompt_cache_hit_tokens": 78720,
+          "prompt_cache_miss_tokens": 7464,
+          "total_tokens": 87263
+        },
+        "cache_hit_fraction_of_prompt": 0.913394598,
+        "requests_with_cached_input": 11,
+        "maximum_prompt_tokens": 8974,
+        "maximum_completion_tokens": 304,
+        "usage_cost_at_reserved_peak_rates_cny": "0.0399750",
+        "tariff_estimated_cost_cny": "0.0199875",
+        "known_tariff_estimate_subtotal_cny": "0.0199875",
+        "unknown_tariff_requests": 0,
+        "tariff_bands": {
+          "off_peak": 11
+        },
+        "invoice_cost_cny": null,
+        "started_at": "2026-09-06T05:11:12.782122+00:00",
+        "ended_at": "2026-09-06T05:11:53.684537+00:00",
+        "latency_ms": {
+          "available_count": 11,
+          "sum": 14643.0,
+          "mean": 1331.182,
+          "median": 1219.0,
+          "p95_nearest_rank": 3391.0,
+          "minimum": 516.0,
+          "maximum": 3391.0,
+          "first_byte_available_count": 0,
+          "first_token_available_count": 0
+        }
+      }
+    },
+    {
+      "run_id": "notifier_history__card__r1",
+      "scenario_id": "notifier_history",
+      "condition": "card",
+      "host_status": "passed",
+      "probes_correct": 3,
+      "probe_denominator": 3,
+      "task_checks": [
+        {
+          "step_id": "n_task_v1",
+          "factual_criteria_satisfied": true,
+          "scope_compliant": true,
+          "fully_satisfied": true
+        },
+        {
+          "step_id": "n_task_v2",
+          "factual_criteria_satisfied": true,
+          "scope_compliant": true,
+          "fully_satisfied": true
+        }
+      ],
+      "probes": [
+        {
+          "step_id": "n_probe_history",
+          "kind": "historical_tool_detail",
+          "host_completed_and_persisted": true,
+          "answer_correct": true,
+          "strict_interpretation_correct": true,
+          "manual_reason": "准确回答v1固定退避17、抖动上限5（范围0至5）；声称重开v1核实与实际open_memory调用及正文交付一致。",
+          "quality": "correct",
+          "evidence_grade": "exact_original_fixture_reloaded_by_native_open_memory",
+          "actual_complete_original_body_readback": true,
+          "setup_authored_fixture_answer_exposed": false,
+          "baseline_raw_equal": false,
+          "baseline_normalized_equal": true,
+          "actual_http_requests": 2,
+          "tool_names": [
+            "open_memory"
+          ],
+          "request_ids": [
+            "6b6bf073e510480d8da606f0815edb81",
+            "35a31333489d4954bee691d181cbb22f"
+          ]
+        },
+        {
+          "step_id": "n_probe_memory",
+          "kind": "conversation_fact",
+          "host_completed_and_persisted": true,
+          "answer_correct": true,
+          "strict_interpretation_correct": false,
+          "manual_reason": "主判定为正确但有表述瑕疵。回答明确把先结论再原因归为用户先前的习惯，并两次确认周日；具体章节排法以建议呈现，没有把建议冒充已经定好的历史。",
+          "quality": "correct_with_qualification",
+          "evidence_grade": "original_user_statement_visible",
+          "actual_complete_original_body_readback": false,
+          "setup_authored_fixture_answer_exposed": false,
+          "baseline_raw_equal": false,
+          "baseline_normalized_equal": true,
+          "actual_http_requests": 2,
+          "tool_names": [
+            "retrieve_memory"
+          ],
+          "request_ids": [
+            "7e8b098287b346c69e35074b6f219b2e",
+            "fe1ebc5c2f154a36a1b89afdfdf705ad"
+          ]
+        },
+        {
+          "step_id": "n_probe_unknown",
+          "kind": "explicitly_missing_field",
+          "host_completed_and_persisted": true,
+          "answer_correct": true,
+          "strict_interpretation_correct": true,
+          "manual_reason": "实际打开v1后明确HTTP连接超时未提供，并区分17秒退避/5秒抖动与连接超时。",
+          "quality": "correct",
+          "evidence_grade": "exact_original_fixture_reloaded_by_native_open_memory",
+          "actual_complete_original_body_readback": true,
+          "setup_authored_fixture_answer_exposed": false,
+          "baseline_raw_equal": false,
+          "baseline_normalized_equal": true,
+          "actual_http_requests": 2,
+          "tool_names": [
+            "open_memory"
+          ],
+          "request_ids": [
+            "cf0ff60a08184e43a79f59cfc85449f3",
+            "2005a01e136c433ea64d4c89d53b2158"
+          ]
+        }
+      ],
+      "projection_evidence": {
+        "run_id": "notifier_history__card__r1",
+        "condition": "card",
+        "fixture_projections": [
+          {
+            "step_id": "n_task_v1",
+            "document_id": "notifier_doc_v1",
+            "source_id": "tooltrace:eeb3bd673dbb6939ca054b10f2d84a6f:tool_result",
+            "open_turn_sdk_body_exact": true,
+            "original_provider_body_sha256": "153c660e3ee84a50bd1dc77b937a034257cb3a9aa2de9dad801c304ee1c7be25",
+            "original_provider_body_utf8_bytes": 3346,
+            "post_final_projection_status": "settled",
+            "post_final_body_sha256": "3a14bbc33c680d5688f0b4bc971edd3d2ba2fdcd955ab6a8bdab08afad0eedea",
+            "post_final_body_utf8_bytes": 435,
+            "post_final_full_body_equal": false,
+            "post_gap_same_projection_body": true,
+            "public_original_body_readback_claim": "not established by projection hash; see independent actual model open audit"
+          },
+          {
+            "step_id": "n_task_v2",
+            "document_id": "notifier_doc_v2",
+            "source_id": "tooltrace:7061faaf3eefdabca5a73730af020963:tool_result",
+            "open_turn_sdk_body_exact": true,
+            "original_provider_body_sha256": "d0616dd84de478cc604f0b6b47748a9f79fb57fa31ef54bdaf86ada60d02b1a7",
+            "original_provider_body_utf8_bytes": 3346,
+            "post_final_projection_status": "settled",
+            "post_final_body_sha256": "0a7d0dd55df2895bb1764279d68f1d6cbb01844933670e2c2897e899e82d6a43",
+            "post_final_body_utf8_bytes": 435,
+            "post_final_full_body_equal": false,
+            "post_gap_same_projection_body": true,
+            "public_original_body_readback_claim": "not established by projection hash; see independent actual model open audit"
+          }
+        ],
+        "baseline_provider_history_utf8_bytes": 6630,
+        "baseline_memory_count": 15,
+        "baseline_normalized_equal": [
+          true,
+          true,
+          true
+        ],
+        "baseline_raw_equal": [
+          false,
+          false,
+          false
+        ],
+        "accepted_and_persisted_turns": 8,
+        "actual_raw_compaction_generation": 0,
+        "host_closed": true,
+        "host_guard": {
+          "blocked_network": 0,
+          "authorized_network_events": 32,
+          "blocked_reads": 0,
+          "blocked_writes": 0,
+          "blocked_subprocesses": 1
+        }
+      },
+      "accounting": {
+        "run_id": "notifier_history__card__r1",
+        "scenario_id": "notifier_history",
+        "condition": "card",
+        "actual_http_requests": 13,
+        "settled_requests": 13,
+        "request_purposes": {
+          "initial": 8,
+          "native_tool_followup": 5
+        },
+        "provider_usage": {
+          "prompt_tokens": 99984,
+          "completion_tokens": 1863,
+          "prompt_cache_hit_tokens": 89216,
+          "prompt_cache_miss_tokens": 10768,
+          "total_tokens": 101847
+        },
+        "cache_hit_fraction_of_prompt": 0.892302768,
+        "requests_with_cached_input": 13,
+        "maximum_prompt_tokens": 9999,
+        "maximum_completion_tokens": 323,
+        "usage_cost_at_reserved_peak_rates_cny": "0.0579926",
+        "tariff_estimated_cost_cny": "0.0289963",
+        "known_tariff_estimate_subtotal_cny": "0.0289963",
+        "unknown_tariff_requests": 0,
+        "tariff_bands": {
+          "off_peak": 13
+        },
+        "invoice_cost_cny": null,
+        "started_at": "2026-09-06T05:11:56.906291+00:00",
+        "ended_at": "2026-09-06T05:12:45.305075+00:00",
+        "latency_ms": {
+          "available_count": 13,
+          "sum": 19999.0,
+          "mean": 1538.385,
+          "median": 1406.0,
+          "p95_nearest_rank": 2906.0,
+          "minimum": 625.0,
+          "maximum": 2906.0,
+          "first_byte_available_count": 0,
+          "first_token_available_count": 0
+        }
+      }
+    }
+  ],
+  "validation_summary": {
+    "unittest": {
+      "passed": true,
+      "tests_run": 736,
+      "skipped": 7
+    },
+    "research_ruff_check_passed": true,
+    "research_ruff_format_passed": true,
+    "repository_ruff_check_passed": false,
+    "repository_ruff_error_count": 9,
+    "repository_format_check_passed": false,
+    "repository_format_files": 10,
+    "repository_static_issues_outside_research_changes": true,
+    "git_diff_check_passed": true,
+    "build_passed": true
+  },
+  "preserved_failures": [
+    {
+      "run": "akane-retest-live-20260906-attempt01",
+      "stage": "startup",
+      "actual_http_requests": 0,
+      "status": "failed before model calls; retained"
+    },
+    {
+      "run": "pilot_v1_restricted_harness",
+      "status": "retained separately; not an actual Akane baseline; costs included"
+    },
+    {
+      "run": "gallery_history__full__r1",
+      "probe": "g_probe_memory",
+      "status": "accepted and persisted, semantically incorrect"
+    }
+  ],
+  "limitations": [
+    "One setup sample per scenario/condition. Probe stores are isolated, but probes share their group's setup provenance and are not independent statistical replications.",
+    "Card treatment includes the actual host's policy-dependent readback hint; this is not a storage-only causal ablation.",
+    "Fixed execution order, live timestamps, cache warming and generated output differences confound causal cost/latency and accuracy comparisons.",
+    "The 11/12 primary semantic score includes one disputed wording case; a stricter interpretation gives 10/12. This is a scoring sensitivity, not a confidence interval.",
+    "Empty retrieval did not imply missing visible memory. The failing gallery response had the required fact visible before and after retrieval.",
+    "Missing-field probes test fields explicitly marked absent in fixtures, not general abstention over unsearched evidence.",
+    "Four verified actual model readbacks cover two card v1 sources. No actual model content-open of v2 was observed; compact projection hashes do not verify original raw bodies.",
+    "No actual paid host format/protocol recovery was triggered. The actual-engine offline gates cover these paths separately.",
+    "Source/template copies and runtime package versions are recorded; dependency binaries, weights and remote model version are not fully frozen.",
+    "Tariff costs are usage estimates and peak budget accounting, not an invoice or provider account balance.",
+    "Prior restricted-harness 5/12 and current actual-host results are not comparable as an isolated treatment effect and are not pooled."
+  ],
+  "evidence": {
+    "report": "actual_experiment_report.md",
+    "raw_report": "../../../.research-runs/akane-retest-live-20260906-attempt02/run/report.json",
+    "trace_index": "../../../.research-runs/akane-retest-live-20260906-attempt02/TRACE_INDEX.md",
+    "gallery_review": "../../../.research-runs/akane-retest-live-20260906-attempt02/audit-gallery/manual_scores.json",
+    "notifier_review": "../../../.research-runs/akane-retest-live-20260906-attempt02/audit-notifier/manual_scores.json",
+    "accounting_review": "../../../.research-runs/akane-retest-live-20260906-attempt02/audit-budget/accounting_audit.json",
+    "controls_review": "../../../.research-runs/akane-retest-live-20260906-attempt02/audit-root/controls_audit.json",
+    "source_manifest": "../../../.research-runs/akane-retest-live-20260906-attempt02/source/source_evidence.json",
+    "raw_report_sha256": "b266869b5455ae58ee44173871a2ec35e88bc4f58e1b54d88bab9f39171ddf99",
+    "gallery_review_sha256": "582085cf391e6e356edb745411548fb6918f2bf5396222529bf8008f6361d691",
+    "notifier_review_sha256": "ff64ae6a1297f35b4180e0e993072f5c0254f92fa1fae04a641efd55308579ae",
+    "accounting_review_sha256": "edb7db4e40cec04c39565b514425644a3bf248831fcf02c6a26255827b841f20"
+  }
+}

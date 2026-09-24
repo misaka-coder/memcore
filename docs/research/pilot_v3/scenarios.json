@@ -1,0 +1,154 @@
+{
+  "format": "akane_memcore_pilot_scenarios_v1",
+  "status": "prepared_not_run",
+  "synthetic": true,
+  "timezone": "Asia/Shanghai",
+  "instructions_for_host": "This file is a scenario specification, not a runnable MemCore eval dataset. Only user_text at the current step and a selected fixture result may reach the model. Do not dump this entire file or future steps into a prompt.",
+  "shared_model_instruction": "你在一个明确虚构的封闭测试场景中协助用户。仅依据当前可见历史和工具返回的信息回答；有足够信息时直接回答，需要历史细节时可使用记忆读取工具，缺少证据时明确说明。用户明确询问旧版本时，不把新版本当作旧记录。测试资料不要求执行真实网络操作或修改真实文件。",
+  "fixture_tool_spec": {
+    "name": "lookup_fixture",
+    "description": "读取虚构测试资料指定版本。只返回请求对应的资料；不读取文件系统、不联网、不执行代码。资料服务按脚本更新版本；已失效的旧版本返回 unavailable，不会自动替换成新版本。过去读取过的正文可通过历史记忆工具查阅。",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "query_key": {
+          "type": "string",
+          "enum": [
+            "gallery_v1",
+            "gallery_v2",
+            "notifier_v1",
+            "notifier_v2"
+          ]
+        }
+      },
+      "required": [
+        "query_key"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "scenarios": [
+    {
+      "scenario_id": "gallery_history",
+      "title": "日常约定、两版场地资料与旧结果追问",
+      "allowed_fixture_ids": [
+        "gallery_doc_v1",
+        "gallery_doc_v2"
+      ],
+      "fixtures": [
+        {
+          "fixture_id": "gallery_doc_v1",
+          "arguments": {
+            "query_key": "gallery_v1"
+          },
+          "result": {
+            "status": "ok",
+            "synthetic": true,
+            "document_id": "gallery_doc_v1",
+            "content": "【完全虚构的研究夹具；不对应真实场地、机构或开放服务】\n\n资料名称：云栖展馆小型分享会资料 / v1\n\n资料版本：v1；资料更新时间：2026-08-10 18:00 +08:00。此正文只代表该版本的历史快照。\n\n一、场地选择\n\n松岚厅：室内独立房间，最多 12 人，固定桌椅，窗帘可遮光。与公共走廊有双层门，闭门讨论时不受主展区背景音乐影响。适合小型阅读、图像展示和安静交流，不接受明火或舞台烟雾。\n\n晚照厅：最多 24 人，面积较大，与主展区连通。适合声音不敏感的开放展示；傍晚有公共背景音乐，主展区参观者可能经过。需要安静、人数较少的分享会应优先比较松岚厅。\n\n二、预约和变更\n\n预约表应包含活动主题、人数、负责人和开始结束时间。收到受理回执不代表场地已经确认，正式确认以场地名称和日期均完整的确认单为准。若更换主题但人数与时间不变，可附补充说明；若增加人数，需要重新核对容量。\n\n三、入场与钥匙\n\n松岚厅本版入场核验码：RZ-417。签到人应使用该版本确认单上的核验码；不同版本的码不能混用。松岚厅钥匙归还位置：东侧服务台。值班人员离岗时，应按确认单联系电话处理，不能自行把钥匙放在门框或花盆内。\n\n晚照厅实行工作人员开门，不向活动负责人交付钥匙。晚照厅的签到名册应保留活动日期和实际人数，不要求抄录松岚厅核验码。两厅的流程相互独立。\n\n四、设备与资料展示\n\n松岚厅提供一块白板、一台固定投影仪和一组桌面插座。投影连接线由工作人员点交；自带设备应在活动开始前完成连接测试。工作人员只检查接口连通，不保证所有文件格式均可正确显示。讲者应准备可离线展示的备份材料。\n\n晚照厅提供移动展示架和两块海报板。若使用临时屏幕，需要提前注明放置区域，不能遮挡消防标识。公共背景音乐无法单独为某次活动关闭。\n\n五、茶水与清理\n\n两厅均可携带有盖饮水杯。茶叶由活动组织者自行准备；展馆不记录个人饮品偏好。活动结束后应把纸杯与可回收材料分开，擦净桌面，并确认投影设备已正常关机。场地工作人员检查完设备后再结束交接。\n\n六、时间与声音约束\n\n活动负责人可以在预约开始前十五分钟进行布置，结束后十分钟内完成基本清理。超过约定时间需要重新确认，不可仅凭前一场活动曾获延时就推定本次也允许。室内讨论不得使用扩音器朝向公共走廊。\n\n七、附件与遗失物\n\n确认单、签到表和设备交接单是三份不同文件。签到表中不得记录无关私人信息；设备问题应写入设备交接单。遗失物由工作人员登记物品外观和发现位置，不在公开群聊发布物主完整信息。\n\n八、资料边界\n\n本资料没有停车计费标准、停车费数值或交通补贴规则。涉及停车费用的问题应回答资料未提供，不能从场地容量或其它费用推算。没有写明的服务也不能视为默认提供。\n\n九、版本使用说明\n\n后续版本可能修改容量、核验码和交接位置。询问“当时读到的版本”时，应依据对应版本的保存正文；询问最新规定时，才需要查阅指定新版本。版本之间的其它相同段落不能用于推定变动字段未改变。"
+          }
+        },
+        {
+          "fixture_id": "gallery_doc_v2",
+          "arguments": {
+            "query_key": "gallery_v2"
+          },
+          "result": {
+            "status": "ok",
+            "synthetic": true,
+            "document_id": "gallery_doc_v2",
+            "content": "【完全虚构的研究夹具；不对应真实场地、机构或开放服务】\n\n资料名称：云栖展馆小型分享会资料 / v2\n\n资料版本：v2；资料更新时间：2026-08-10 19:15 +08:00。此正文只代表该版本的历史快照。\n\n一、场地选择\n\n松岚厅：室内独立房间，最多 10 人，固定桌椅，窗帘可遮光。与公共走廊有双层门，闭门讨论时不受主展区背景音乐影响。适合小型阅读、图像展示和安静交流，不接受明火或舞台烟雾。\n\n晚照厅：最多 24 人，面积较大，与主展区连通。适合声音不敏感的开放展示；傍晚有公共背景音乐，主展区参观者可能经过。需要安静、人数较少的分享会应优先比较松岚厅。\n\n二、预约和变更\n\n预约表应包含活动主题、人数、负责人和开始结束时间。收到受理回执不代表场地已经确认，正式确认以场地名称和日期均完整的确认单为准。若更换主题但人数与时间不变，可附补充说明；若增加人数，需要重新核对容量。\n\n三、入场与钥匙\n\n松岚厅本版入场核验码：RZ-982。签到人应使用该版本确认单上的核验码；不同版本的码不能混用。松岚厅钥匙归还位置：北门值班柜台。值班人员离岗时，应按确认单联系电话处理，不能自行把钥匙放在门框或花盆内。\n\n晚照厅实行工作人员开门，不向活动负责人交付钥匙。晚照厅的签到名册应保留活动日期和实际人数，不要求抄录松岚厅核验码。两厅的流程相互独立。\n\n四、设备与资料展示\n\n松岚厅提供一块白板、一台固定投影仪和一组桌面插座。投影连接线由工作人员点交；自带设备应在活动开始前完成连接测试。工作人员只检查接口连通，不保证所有文件格式均可正确显示。讲者应准备可离线展示的备份材料。\n\n晚照厅提供移动展示架和两块海报板。若使用临时屏幕，需要提前注明放置区域，不能遮挡消防标识。公共背景音乐无法单独为某次活动关闭。\n\n五、茶水与清理\n\n两厅均可携带有盖饮水杯。茶叶由活动组织者自行准备；展馆不记录个人饮品偏好。活动结束后应把纸杯与可回收材料分开，擦净桌面，并确认投影设备已正常关机。场地工作人员检查完设备后再结束交接。\n\n六、时间与声音约束\n\n活动负责人可以在预约开始前十五分钟进行布置，结束后十分钟内完成基本清理。超过约定时间需要重新确认，不可仅凭前一场活动曾获延时就推定本次也允许。室内讨论不得使用扩音器朝向公共走廊。\n\n七、附件与遗失物\n\n确认单、签到表和设备交接单是三份不同文件。签到表中不得记录无关私人信息；设备问题应写入设备交接单。遗失物由工作人员登记物品外观和发现位置，不在公开群聊发布物主完整信息。\n\n八、资料边界\n\n本资料没有停车计费标准、停车费数值或交通补贴规则。涉及停车费用的问题应回答资料未提供，不能从场地容量或其它费用推算。没有写明的服务也不能视为默认提供。\n\n九、版本使用说明\n\n后续版本可能修改容量、核验码和交接位置。询问“当时读到的版本”时，应依据对应版本的保存正文；询问最新规定时，才需要查阅指定新版本。版本之间的其它相同段落不能用于推定变动字段未改变。"
+          }
+        }
+      ],
+      "steps": [
+        {
+          "step_id": "g_intro",
+          "stage": "conversation",
+          "timestamp": "2026-08-10T19:00:00+08:00",
+          "user_text": "这是虚构场景里的我的安排：我平时喜欢无咖啡因茶，请记住周四晚上提醒我带蓝色笔记本。先简单回应就好。"
+        },
+        {
+          "step_id": "g_task_v1",
+          "stage": "task",
+          "timestamp": "2026-08-10T19:05:00+08:00",
+          "user_text": "请用 lookup_fixture 读取 gallery_v1，比较两个厅，推荐一个适合安静小型分享会的场地。最终只说推荐、人数上限和理由，不列核验码、钥匙交接位置等流程细节。"
+        },
+        {
+          "step_id": "g_task_v2",
+          "stage": "task",
+          "timestamp": "2026-08-10T19:20:00+08:00",
+          "user_text": "资料更新了，请读取 gallery_v2，确认之前推荐的场地是否仍然合适。最终仍只说推荐、人数上限和理由，不列入场和钥匙流程细节。"
+        },
+        {
+          "step_id": "g_gap_1",
+          "stage": "conversation",
+          "timestamp": "2026-08-10T19:25:00+08:00",
+          "user_text": "活动封面我想用蓝灰色，你给我一句简短的排版建议。"
+        },
+        {
+          "step_id": "g_gap_2",
+          "stage": "conversation",
+          "timestamp": "2026-08-10T19:30:00+08:00",
+          "user_text": "我准备先整理讲稿，再休息一会儿。简单回应就好，不用重新查资料。"
+        },
+        {
+          "step_id": "g_probe_history",
+          "stage": "probe",
+          "timestamp": "2026-08-11T19:00:00+08:00",
+          "user_text": "请按你读过的第一版资料回答：松岚厅当时的入场核验码是什么，钥匙应还到哪里？我要的是旧版本。"
+        },
+        {
+          "step_id": "g_probe_memory",
+          "stage": "probe",
+          "timestamp": "2026-08-11T19:05:00+08:00",
+          "user_text": "我之前让你提醒我带什么东西，安排在哪个晚上？"
+        },
+        {
+          "step_id": "g_probe_unknown",
+          "stage": "probe",
+          "timestamp": "2026-08-11T19:10:00+08:00",
+          "user_text": "第一版场地资料里写的停车费每小时是多少？"
+        }
+      ],
+      "fixture_availability_by_step": {
+        "g_intro": [
+          "gallery_doc_v1"
+        ],
+        "g_task_v1": [
+          "gallery_doc_v1"
+        ],
+        "g_task_v2": [
+          "gallery_doc_v2"
+        ],
+        "g_gap_1": [
+          "gallery_doc_v2"
+        ],
+        "g_gap_2": [
+          "gallery_doc_v2"
+        ],
+        "g_probe_history": [
+          "gallery_doc_v2"
+        ],
+        "g_probe_memory": [
+          "gallery_doc_v2"
+        ],
+        "g_probe_unknown": [
+          "gallery_doc_v2"
+        ]
+      },
+      "unavailable_fixture_result": {
+        "status": "unavailable",
+        "reason": "fixture_version_not_available_in_current_service",
+        "message": "当前资料服务无法重新提供此版本；如先前读过，可通过历史记忆查看当时保存的结果。"
+      },
+      "probe_preconditions": [
+        "Both task-version fixtures were actually returned in preceding completed turns.",
+        "The full fixture result was delivered without an extra host truncation.",
+        "Record settlement status applied/noop/fallback per observation; do not label policy configured as card actually applied.",
+        "Audit all model-visible assistant outputs before branching for probe-answer exposure; retain and annotate exposed runs.",
+        "Create isolated store and index copies from the same post-gap state for each probe; never feed a preceding probe answer into another probe."
+      ]
+    }
+  ]
+}

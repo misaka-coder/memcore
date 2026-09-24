@@ -1,0 +1,91 @@
+{
+  "format": "akane_actual_long_horizon_manifest_v1",
+  "status": "prepared_not_run",
+  "created_at": "2026-09-06",
+  "stage_id": "9cd1db823a2345e3b555e6dc20c0463f",
+  "budget_ceiling_cny": 50,
+  "condition_definitions": {
+    "full": "full_until_raw_compaction",
+    "card": "compact_after_terminal"
+  },
+  "raw_token_trigger": 4000,
+  "raw_token_batch_ratio": 0.67,
+  "phases": {
+    "before_restart": {
+      "first_step": 1,
+      "last_step": 20
+    },
+    "after_restart": {
+      "first_step": 21,
+      "last_step": 24
+    }
+  },
+  "planned_trajectories": 8,
+  "planned_user_turns": 192,
+  "planned_scored_probes": 40,
+  "minimum_raw_compaction_generations_per_trajectory": 2,
+  "actual_initial_tool_choice": "autonomous, no original-choice replay",
+  "history_restore": "close child process; reopen the same isolated persistent data in a new child process; no setup response replay",
+  "repeat_design": "Two scenario families, two independently generated trajectories per condition; fixed counterbalanced order. Trajectories share scripts but never provider responses or mutable stores.",
+  "time_policy": "Real input/assistant timestamps; accelerated context pressure, not simulated elapsed days.",
+  "background_policy": "Original Engine background scheduling. Observer waits for public Futures and index-call completion between scripted user turns; no forced due invocation.",
+  "output_policy": "Chat keeps authentic max_tokens=2048; memcore_summary/aux may keep authentic absent max_tokens, reserving verified model maximum 393216 output tokens. No request body rewriting.",
+  "provider_generation": "deepseek-v4-flash, nonthinking; original role temperatures; no SDK retries; no artificial tool-round limit",
+  "interruption_policy": "Transport, context, budget, source or isolation errors halt further physical requests and retain the entire fixed denominator. A semantic wrong answer is scored and does not trigger resampling.",
+  "acceptance_scope": "Offline real Engine with mock HTTP exercises artifact tools, real raw compaction, saved source readback and actual process restart before paid requests. Live verifies at least two compactions, original records absent from raw visible window, replay-free restart identity, current-state task continuation, old-version recall and missing-evidence handling.",
+  "runs": [
+    {
+      "run_id": "workshop__full__r1",
+      "scenario_id": "workshop",
+      "condition": "full",
+      "repetition": 1
+    },
+    {
+      "run_id": "workshop__card__r1",
+      "scenario_id": "workshop",
+      "condition": "card",
+      "repetition": 1
+    },
+    {
+      "run_id": "migration__card__r1",
+      "scenario_id": "migration",
+      "condition": "card",
+      "repetition": 1
+    },
+    {
+      "run_id": "migration__full__r1",
+      "scenario_id": "migration",
+      "condition": "full",
+      "repetition": 1
+    },
+    {
+      "run_id": "workshop__card__r2",
+      "scenario_id": "workshop",
+      "condition": "card",
+      "repetition": 2
+    },
+    {
+      "run_id": "workshop__full__r2",
+      "scenario_id": "workshop",
+      "condition": "full",
+      "repetition": 2
+    },
+    {
+      "run_id": "migration__full__r2",
+      "scenario_id": "migration",
+      "condition": "full",
+      "repetition": 2
+    },
+    {
+      "run_id": "migration__card__r2",
+      "scenario_id": "migration",
+      "condition": "card",
+      "repetition": 2
+    }
+  ],
+  "input_token_budget": 65536,
+  "context_policy": "Long experiment admits at most 65536 estimated input tokens per physical request and checks actual input usage after settlement. Earlier short experiments retain their 30720 default. Full provider input reservation and the same 50 CNY stage ledger remain unchanged.",
+  "embedding_reindex_batch_size": 1,
+  "startup_index_wait_seconds": 600,
+  "resource_policy": "Use the original host reindex entry point with configured EMBEDDING_REINDEX_BATCH_SIZE=1. First actual attempt with the default 64 exceeded the observer startup wait on the 8 GB GPU and is retained separately. No embedding text truncation, replacement model, source rewriting or answer resampling within a formal run."
+}

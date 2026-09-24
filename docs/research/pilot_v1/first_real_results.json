@@ -1,0 +1,681 @@
+{
+  "format": "akane_memcore_first_real_results_v1",
+  "date": "2026-09-06",
+  "experiment_complete": true,
+  "execution_all_passed": false,
+  "experiment_scope": "restricted_harness_pilot_reusing_akane_prompt",
+  "formal_akane_controlled_experiment_complete": false,
+  "akane_host_behavior_equivalence_verified": false,
+  "score_applies_to": "six_call_limit_and_direct_memcore_json_parser_harness_only",
+  "host_fidelity_correction_file": "host_fidelity_correction.md",
+  "host_fidelity_differences": [
+    "Pilot imposes six tool calls; Akane source defaults to no finite tool-round hard limit.",
+    "Pilot overrides the desktop output contract and immediately rejects invalid final JSON; actual Akane has validation and recovery.",
+    "Pilot uses direct MemCore strict=True native schema with required nullable fields; Akane uses plain specs and capcore provider default strict=False preserving optional fields."
+  ],
+  "review_method": "Criterion-by-criterion semantic reading by execution agent and an independent review agent; not blind, not human-subject evaluation. Keyword helper outputs are evidence candidates only.",
+  "denominators": {
+    "runs": 4,
+    "setup_turns": 20,
+    "task_checks": 8,
+    "probe_branches": 12
+  },
+  "summary": {
+    "setup_passed": 20,
+    "task_checks_passed": 8,
+    "task_scope_compliant": 7,
+    "probes_attempted": 12,
+    "delivered_correct": 5,
+    "semantic_correct_including_rejected_raw_outputs": 7,
+    "semantic_partial": 1,
+    "no_final_answer": 4,
+    "failure_counts": {
+      "invalid_final_json": 3,
+      "tool_call_limit_exceeded": 4
+    },
+    "paid_scenario_requests": 80,
+    "tool_status_counts": {
+      "ok": 9,
+      "invalid_arguments": 30,
+      "empty": 3,
+      "unavailable": 4,
+      "invalid_filter": 2
+    },
+    "model_content_readback_success_count": 1,
+    "ledger": {
+      "stage_id": "9cd1db823a2345e3b555e6dc20c0463f",
+      "limit_cny": "50",
+      "usage_cost_at_reserved_rates_cny": "0.3330884",
+      "reserved_cny": "0",
+      "committed_cny": "0.3330884",
+      "remaining_cny": "49.6669116",
+      "pending_count": 0,
+      "settled_requests": 82
+    }
+  },
+  "source_fingerprint": "ef541c0196d81d3c6cc02549768ee2c9f386088c1de46d8a670c8a0c0abed8fb",
+  "source_file_count": 71,
+  "input_file_count": 2,
+  "embedding": {
+    "model_id": "BAAI/bge-m3",
+    "dimension": 1024,
+    "device": "cuda",
+    "local_files_only": true,
+    "hashed_fallback": false,
+    "similar_score": 0.880459,
+    "unrelated_score": 0.414591,
+    "repeat_score": 1.0,
+    "runtime_package_versions": {
+      "python": "3.11.4",
+      "sentence-transformers": "3.4.1",
+      "transformers": "4.57.6",
+      "torch": "2.11.0+cu128",
+      "numpy": "1.26.4",
+      "huggingface-hub": "0.36.2"
+    }
+  },
+  "akane_prompt_verified": true,
+  "akane_engine_verified": false,
+  "scenario_accounting": {
+    "request_count": 80,
+    "settled_request_count": 80,
+    "provider_usage": {
+      "prompt_tokens": 708433,
+      "completion_tokens": 15893,
+      "prompt_cache_hit_tokens": 669824,
+      "prompt_cache_miss_tokens": 38609,
+      "total_tokens": 724326
+    },
+    "cache_hit_fraction_of_prompt": 0.94550084,
+    "peak_prompt_tokens": 11646,
+    "peak_completion_tokens": 454,
+    "usage_cost_at_reserved_rates_cny": "0.3258464",
+    "tariff_estimated_cost_cny": "0.1629232",
+    "known_tariff_estimate_subtotal_cny": "0.1629232",
+    "unknown_tariff_request_count": 0,
+    "tariff_bands": {
+      "off_peak": 80
+    },
+    "invoice_cost_cny": null,
+    "started_at": "2026-09-06T03:36:33.921870+00:00",
+    "ended_at": "2026-09-06T03:39:12.215688+00:00",
+    "request_span_ms": 158293.818,
+    "latency_ms": {
+      "available_count": 80,
+      "sum": 124077.0,
+      "mean": 1550.963,
+      "median": 1476.5,
+      "p95_nearest_rank": 2531.0,
+      "minimum": 610.0,
+      "maximum": 4344.0,
+      "first_token_latency": null
+    }
+  },
+  "preflight_accounting": {
+    "request_count": 2,
+    "settled_request_count": 2,
+    "provider_usage": {
+      "prompt_tokens": 2111,
+      "completion_tokens": 101,
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 2111,
+      "total_tokens": 2212
+    },
+    "cache_hit_fraction_of_prompt": 0.0,
+    "peak_prompt_tokens": 1159,
+    "peak_completion_tokens": 59,
+    "usage_cost_at_reserved_rates_cny": "0.007242",
+    "tariff_estimated_cost_cny": "0.0036210",
+    "known_tariff_estimate_subtotal_cny": "0.0036210",
+    "unknown_tariff_request_count": 0,
+    "tariff_bands": {
+      "off_peak": 2
+    },
+    "invoice_cost_cny": null,
+    "started_at": "2026-09-06T02:52:26.740092+00:00",
+    "ended_at": "2026-09-06T02:52:28.472559+00:00",
+    "request_span_ms": 1732.467,
+    "latency_ms": {
+      "available_count": 2,
+      "sum": 1656.0,
+      "mean": 828.0,
+      "median": 828.0,
+      "p95_nearest_rank": 922.0,
+      "minimum": 734.0,
+      "maximum": 922.0,
+      "first_token_latency": null
+    }
+  },
+  "stage_accounting": {
+    "request_count": 82,
+    "settled_request_count": 82,
+    "provider_usage": {
+      "prompt_tokens": 710544,
+      "completion_tokens": 15994,
+      "prompt_cache_hit_tokens": 669824,
+      "prompt_cache_miss_tokens": 40720,
+      "total_tokens": 726538
+    },
+    "cache_hit_fraction_of_prompt": 0.9426918,
+    "peak_prompt_tokens": 11646,
+    "peak_completion_tokens": 454,
+    "usage_cost_at_reserved_rates_cny": "0.3330884",
+    "tariff_estimated_cost_cny": "0.1665442",
+    "known_tariff_estimate_subtotal_cny": "0.1665442",
+    "unknown_tariff_request_count": 0,
+    "tariff_bands": {
+      "off_peak": 82
+    },
+    "invoice_cost_cny": null,
+    "started_at": "2026-09-06T02:52:26.740092+00:00",
+    "ended_at": "2026-09-06T03:39:12.215688+00:00",
+    "request_span_ms": 2805475.596,
+    "latency_ms": {
+      "available_count": 82,
+      "sum": 125733.0,
+      "mean": 1533.329,
+      "median": 1461.0,
+      "p95_nearest_rank": 2531.0,
+      "minimum": 610.0,
+      "maximum": 4344.0,
+      "first_token_latency": null
+    }
+  },
+  "runs": [
+    {
+      "run_id": "gallery_history__full__r1",
+      "scenario_id": "gallery_history",
+      "condition": "full",
+      "execution_status": "failed",
+      "setup_history_utf8_bytes": 11344,
+      "control_hash": "f79ac6c076fe5b83b80765fdbbbcb212c5684b9156076bcc81a85e26e953719d",
+      "all_probe_baselines_equal": true,
+      "delivered_correct_count": 2,
+      "request_count": 12,
+      "tasks": [
+        {
+          "step_id": "g_task_v1",
+          "accepted": true,
+          "semantic_grade": "correct",
+          "scope_compliant": true,
+          "criteria_passed": [
+            true,
+            true,
+            true
+          ],
+          "forbidden_detail_exposure": false
+        },
+        {
+          "step_id": "g_task_v2",
+          "accepted": true,
+          "semantic_grade": "correct",
+          "scope_compliant": true,
+          "criteria_passed": [
+            true,
+            true
+          ],
+          "forbidden_detail_exposure": false
+        }
+      ],
+      "probes": [
+        {
+          "step_id": "g_probe_history",
+          "kind": "historical_tool_detail",
+          "execution_status": "passed",
+          "accepted": true,
+          "semantic_grade": "correct",
+          "delivered_correct": true,
+          "evidence_grade": "visible_v1_body",
+          "setup_answer_exposed": false,
+          "exposure_interpretation": "probe-specific exposure audit",
+          "error": null,
+          "review_note": "v1 的 RZ-417 与东侧服务台均正确；未调用工具，首请求已含完整 v1。",
+          "request_count": 1,
+          "verified_body_source_ids": []
+        },
+        {
+          "step_id": "g_probe_memory",
+          "kind": "conversation_fact",
+          "execution_status": "failed",
+          "accepted": false,
+          "semantic_grade": "correct",
+          "delivered_correct": false,
+          "evidence_grade": "visible_dialogue_rejected_final",
+          "setup_answer_exposed": true,
+          "exposure_interpretation": "expected visible conversation continuity",
+          "error": "invalid_final_json",
+          "review_note": "原始最终输出正确给出蓝色笔记本和周四晚上，但 JSON 前有解释段，宿主拒绝。",
+          "request_count": 3,
+          "verified_body_source_ids": []
+        },
+        {
+          "step_id": "g_probe_unknown",
+          "kind": "explicitly_missing_field",
+          "execution_status": "passed",
+          "accepted": true,
+          "semantic_grade": "correct",
+          "delivered_correct": true,
+          "evidence_grade": "visible_v1_body",
+          "setup_answer_exposed": false,
+          "exposure_interpretation": "probe-specific exposure audit",
+          "error": null,
+          "review_note": "明确 v1 未提供停车费；未编金额；首请求已含完整 v1。",
+          "request_count": 1,
+          "verified_body_source_ids": []
+        }
+      ],
+      "provider_accounting": {
+        "request_count": 12,
+        "settled_request_count": 12,
+        "provider_usage": {
+          "prompt_tokens": 104311,
+          "completion_tokens": 1543,
+          "prompt_cache_hit_tokens": 92032,
+          "prompt_cache_miss_tokens": 12279,
+          "total_tokens": 105854
+        },
+        "cache_hit_fraction_of_prompt": 0.88228471,
+        "peak_prompt_tokens": 10257,
+        "peak_completion_tokens": 277,
+        "usage_cost_at_reserved_rates_cny": "0.0599272",
+        "tariff_estimated_cost_cny": "0.0299636",
+        "known_tariff_estimate_subtotal_cny": "0.0299636",
+        "unknown_tariff_request_count": 0,
+        "tariff_bands": {
+          "off_peak": 12
+        },
+        "invoice_cost_cny": null,
+        "started_at": "2026-09-06T03:36:33.921870+00:00",
+        "ended_at": "2026-09-06T03:36:55.243610+00:00",
+        "request_span_ms": 21321.74,
+        "latency_ms": {
+          "available_count": 12,
+          "sum": 14810.0,
+          "mean": 1234.167,
+          "median": 1234.0,
+          "p95_nearest_rank": 1812.0,
+          "minimum": 719.0,
+          "maximum": 1812.0,
+          "first_token_latency": null
+        }
+      },
+      "setup_request_count": 7
+    },
+    {
+      "run_id": "gallery_history__card__r1",
+      "scenario_id": "gallery_history",
+      "condition": "card",
+      "execution_status": "failed",
+      "setup_history_utf8_bytes": 4722,
+      "control_hash": "f79ac6c076fe5b83b80765fdbbbcb212c5684b9156076bcc81a85e26e953719d",
+      "all_probe_baselines_equal": true,
+      "delivered_correct_count": 2,
+      "request_count": 22,
+      "tasks": [
+        {
+          "step_id": "g_task_v1",
+          "accepted": true,
+          "semantic_grade": "correct",
+          "scope_compliant": true,
+          "criteria_passed": [
+            true,
+            true,
+            true
+          ],
+          "forbidden_detail_exposure": false
+        },
+        {
+          "step_id": "g_task_v2",
+          "accepted": true,
+          "semantic_grade": "correct",
+          "scope_compliant": true,
+          "criteria_passed": [
+            true,
+            true
+          ],
+          "forbidden_detail_exposure": false
+        }
+      ],
+      "probes": [
+        {
+          "step_id": "g_probe_history",
+          "kind": "historical_tool_detail",
+          "execution_status": "failed",
+          "accepted": false,
+          "semantic_grade": "not_observed",
+          "delivered_correct": false,
+          "evidence_grade": "no_successful_readback",
+          "setup_answer_exposed": false,
+          "exposure_interpretation": "probe-specific exposure audit",
+          "error": "tool_call_limit_exceeded",
+          "review_note": "首个 source_id 正确；字符串 null cursor 与时间参数冲突导致六次错误，第七次调用在执行前被上限拒绝，无最终答案。",
+          "request_count": 7,
+          "verified_body_source_ids": []
+        },
+        {
+          "step_id": "g_probe_memory",
+          "kind": "conversation_fact",
+          "execution_status": "passed",
+          "accepted": true,
+          "semantic_grade": "correct",
+          "delivered_correct": true,
+          "evidence_grade": "visible_dialogue",
+          "setup_answer_exposed": true,
+          "exposure_interpretation": "expected visible conversation continuity",
+          "error": null,
+          "review_note": "两项均正确；一次参数错误后合法检索为空，实际依据可见开头安排。",
+          "request_count": 3,
+          "verified_body_source_ids": []
+        },
+        {
+          "step_id": "g_probe_unknown",
+          "kind": "explicitly_missing_field",
+          "execution_status": "passed",
+          "accepted": true,
+          "semantic_grade": "correct",
+          "delivered_correct": true,
+          "evidence_grade": "exact_v1_body_reloaded",
+          "setup_answer_exposed": false,
+          "exposure_interpretation": "probe-specific exposure audit",
+          "error": null,
+          "review_note": "先查询失效 v1，再两次 cursor 错误，第四次工具调用省略 cursor 后成功 open_memory；返回正文与原 v1 完全相等，最终明确未提供费用。",
+          "request_count": 5,
+          "verified_body_source_ids": [
+            "g_task_v1:result:0"
+          ]
+        }
+      ],
+      "provider_accounting": {
+        "request_count": 22,
+        "settled_request_count": 22,
+        "provider_usage": {
+          "prompt_tokens": 182370,
+          "completion_tokens": 3720,
+          "prompt_cache_hit_tokens": 175488,
+          "prompt_cache_miss_tokens": 6882,
+          "total_tokens": 186090
+        },
+        "cache_hit_fraction_of_prompt": 0.96226353,
+        "peak_prompt_tokens": 9908,
+        "peak_completion_tokens": 349,
+        "usage_cost_at_reserved_rates_cny": "0.0716748",
+        "tariff_estimated_cost_cny": "0.0358374",
+        "known_tariff_estimate_subtotal_cny": "0.0358374",
+        "unknown_tariff_request_count": 0,
+        "tariff_bands": {
+          "off_peak": 22
+        },
+        "invoice_cost_cny": null,
+        "started_at": "2026-09-06T03:36:55.507404+00:00",
+        "ended_at": "2026-09-06T03:37:34.581160+00:00",
+        "request_span_ms": 39073.756,
+        "latency_ms": {
+          "available_count": 22,
+          "sum": 30282.0,
+          "mean": 1376.455,
+          "median": 1351.5,
+          "p95_nearest_rank": 2250.0,
+          "minimum": 610.0,
+          "maximum": 2313.0,
+          "first_token_latency": null
+        }
+      },
+      "setup_request_count": 7
+    },
+    {
+      "run_id": "notifier_history__full__r1",
+      "scenario_id": "notifier_history",
+      "condition": "full",
+      "execution_status": "failed",
+      "setup_history_utf8_bytes": 12588,
+      "control_hash": "f79ac6c076fe5b83b80765fdbbbcb212c5684b9156076bcc81a85e26e953719d",
+      "all_probe_baselines_equal": true,
+      "delivered_correct_count": 1,
+      "request_count": 18,
+      "tasks": [
+        {
+          "step_id": "n_task_v1",
+          "accepted": true,
+          "semantic_grade": "correct",
+          "scope_compliant": true,
+          "criteria_passed": [
+            true,
+            true,
+            true
+          ],
+          "forbidden_detail_exposure": false
+        },
+        {
+          "step_id": "n_task_v2",
+          "accepted": true,
+          "semantic_grade": "correct",
+          "scope_compliant": true,
+          "criteria_passed": [
+            true,
+            true
+          ],
+          "forbidden_detail_exposure": false
+        }
+      ],
+      "probes": [
+        {
+          "step_id": "n_probe_history",
+          "kind": "historical_tool_detail",
+          "execution_status": "passed",
+          "accepted": true,
+          "semantic_grade": "correct",
+          "delivered_correct": true,
+          "evidence_grade": "visible_v1_body",
+          "setup_answer_exposed": false,
+          "exposure_interpretation": "probe-specific exposure audit",
+          "error": null,
+          "review_note": "v1 固定退避17秒、抖动上限5秒正确；另准确比较 v2 的23/9，未混淆版本。",
+          "request_count": 1,
+          "verified_body_source_ids": []
+        },
+        {
+          "step_id": "n_probe_memory",
+          "kind": "conversation_fact",
+          "execution_status": "failed",
+          "accepted": false,
+          "semantic_grade": "partial",
+          "delivered_correct": false,
+          "evidence_grade": "visible_dialogue_rejected_final",
+          "setup_answer_exposed": true,
+          "exposure_interpretation": "expected visible conversation continuity",
+          "error": "invalid_final_json",
+          "review_note": "周日正确，也复述先结论后原因，但转向未询问的章节顺序，并总结顺序尚未明确，整体标准不通过；另有 JSON 前缀错误。",
+          "request_count": 3,
+          "verified_body_source_ids": []
+        },
+        {
+          "step_id": "n_probe_unknown",
+          "kind": "explicitly_missing_field",
+          "execution_status": "failed",
+          "accepted": false,
+          "semantic_grade": "not_observed",
+          "delivered_correct": false,
+          "evidence_grade": "visible_v1_body_but_no_final",
+          "setup_answer_exposed": false,
+          "exposure_interpretation": "probe-specific exposure audit",
+          "error": "tool_call_limit_exceeded",
+          "review_note": "初始已有 v1 正文，却请求失效资料并陷入时间参数错误；六次工具后达到上限，无最终答案。",
+          "request_count": 7,
+          "verified_body_source_ids": []
+        }
+      ],
+      "provider_accounting": {
+        "request_count": 18,
+        "settled_request_count": 18,
+        "provider_usage": {
+          "prompt_tokens": 171879,
+          "completion_tokens": 3752,
+          "prompt_cache_hit_tokens": 158976,
+          "prompt_cache_miss_tokens": 12903,
+          "total_tokens": 175631
+        },
+        "cache_hit_fraction_of_prompt": 0.92492975,
+        "peak_prompt_tokens": 11646,
+        "peak_completion_tokens": 339,
+        "usage_cost_at_reserved_rates_cny": "0.0883746",
+        "tariff_estimated_cost_cny": "0.0441873",
+        "known_tariff_estimate_subtotal_cny": "0.0441873",
+        "unknown_tariff_request_count": 0,
+        "tariff_bands": {
+          "off_peak": 18
+        },
+        "invoice_cost_cny": null,
+        "started_at": "2026-09-06T03:37:34.979557+00:00",
+        "ended_at": "2026-09-06T03:38:14.613642+00:00",
+        "request_span_ms": 39634.085,
+        "latency_ms": {
+          "available_count": 18,
+          "sum": 31171.0,
+          "mean": 1731.722,
+          "median": 1789.0,
+          "p95_nearest_rank": 3266.0,
+          "minimum": 735.0,
+          "maximum": 3266.0,
+          "first_token_latency": null
+        }
+      },
+      "setup_request_count": 7
+    },
+    {
+      "run_id": "notifier_history__card__r1",
+      "scenario_id": "notifier_history",
+      "condition": "card",
+      "execution_status": "failed",
+      "setup_history_utf8_bytes": 6786,
+      "control_hash": "f79ac6c076fe5b83b80765fdbbbcb212c5684b9156076bcc81a85e26e953719d",
+      "all_probe_baselines_equal": true,
+      "delivered_correct_count": 0,
+      "request_count": 28,
+      "tasks": [
+        {
+          "step_id": "n_task_v1",
+          "accepted": true,
+          "semantic_grade": "correct",
+          "scope_compliant": false,
+          "criteria_passed": [
+            true,
+            true,
+            true
+          ],
+          "forbidden_detail_exposure": false
+        },
+        {
+          "step_id": "n_task_v2",
+          "accepted": true,
+          "semantic_grade": "correct",
+          "scope_compliant": true,
+          "criteria_passed": [
+            true,
+            true
+          ],
+          "forbidden_detail_exposure": false
+        }
+      ],
+      "probes": [
+        {
+          "step_id": "n_probe_history",
+          "kind": "historical_tool_detail",
+          "execution_status": "failed",
+          "accepted": false,
+          "semantic_grade": "not_observed",
+          "delivered_correct": false,
+          "evidence_grade": "no_successful_readback",
+          "setup_answer_exposed": false,
+          "exposure_interpretation": "probe-specific exposure audit",
+          "error": "tool_call_limit_exceeded",
+          "review_note": "正确选择 v1 source_id 后两次字符串 null cursor 错误，查询失效资料，再三次时间参数错误，无最终答案。",
+          "request_count": 7,
+          "verified_body_source_ids": []
+        },
+        {
+          "step_id": "n_probe_memory",
+          "kind": "conversation_fact",
+          "execution_status": "failed",
+          "accepted": false,
+          "semantic_grade": "correct",
+          "delivered_correct": false,
+          "evidence_grade": "visible_dialogue_rejected_final",
+          "setup_answer_exposed": true,
+          "exposure_interpretation": "expected visible conversation continuity",
+          "error": "invalid_final_json",
+          "review_note": "原始最终输出正确给出先结论后原因、周日（8月16日），但大量英文解释在 JSON 之外，宿主拒绝。",
+          "request_count": 7,
+          "verified_body_source_ids": []
+        },
+        {
+          "step_id": "n_probe_unknown",
+          "kind": "explicitly_missing_field",
+          "execution_status": "failed",
+          "accepted": false,
+          "semantic_grade": "not_observed",
+          "delivered_correct": false,
+          "evidence_grade": "setup_answer_exposed_but_no_final",
+          "setup_answer_exposed": true,
+          "exposure_interpretation": "probe-specific exposure audit",
+          "error": "tool_call_limit_exceeded",
+          "review_note": "setup 的 n_task_v1 已明确说未提供 HTTP 超时；探针仍出现两次 cursor 错误、一次失效查询、三次时间参数错误，无最终答案。",
+          "request_count": 7,
+          "verified_body_source_ids": []
+        }
+      ],
+      "provider_accounting": {
+        "request_count": 28,
+        "settled_request_count": 28,
+        "provider_usage": {
+          "prompt_tokens": 249873,
+          "completion_tokens": 6878,
+          "prompt_cache_hit_tokens": 243328,
+          "prompt_cache_miss_tokens": 6545,
+          "total_tokens": 256751
+        },
+        "cache_hit_fraction_of_prompt": 0.97380669,
+        "peak_prompt_tokens": 10709,
+        "peak_completion_tokens": 454,
+        "usage_cost_at_reserved_rates_cny": "0.1058698",
+        "tariff_estimated_cost_cny": "0.0529349",
+        "known_tariff_estimate_subtotal_cny": "0.0529349",
+        "unknown_tariff_request_count": 0,
+        "tariff_bands": {
+          "off_peak": 28
+        },
+        "invoice_cost_cny": null,
+        "started_at": "2026-09-06T03:38:14.819452+00:00",
+        "ended_at": "2026-09-06T03:39:12.215688+00:00",
+        "request_span_ms": 57396.236,
+        "latency_ms": {
+          "available_count": 28,
+          "sum": 47814.0,
+          "mean": 1707.643,
+          "median": 1773.5,
+          "p95_nearest_rank": 2938.0,
+          "minimum": 672.0,
+          "maximum": 4344.0,
+          "first_token_latency": null
+        }
+      },
+      "setup_request_count": 7
+    }
+  ],
+  "extra_unscored_observations": [
+    "Both notifier n_gap_1 replies suggested a six-character title without shortening the original; card additionally called it four characters. This is outside the eight prespecified task checks."
+  ],
+  "limitations": [
+    "Two synthetic scenarios; one run per condition; not blind or human-subject evaluation.",
+    "PromptBuilder reuse only; the full Akane Engine and care runtime were not run.",
+    "No raw or semantic maintenance; visible dialogue continuity is not a long-term memory recovery benchmark.",
+    "One unknown-field probe was exposed during setup; retain it and do not claim mandatory readback success.",
+    "Fixed full-then-card order shares provider caching; costs are descriptive estimates, invoice unknown.",
+    "Source frozen with hashes; dependencies and immutable remote model version not fully pinned."
+  ],
+  "local_artifact_links_from_this_file": {
+    "trace_index": "../../../.research-runs/pilot-live-20260906-result/TRACE_INDEX.md",
+    "raw_report": "../../../.research-runs/pilot-live-20260906-result/run/report.json",
+    "criterion_review": "../../../.research-runs/pilot-live-20260906-result/analysis/criterion_review.json",
+    "accounting_review": "../../../.research-runs/pilot-live-20260906-result/analysis/accounting-review.json"
+  }
+}

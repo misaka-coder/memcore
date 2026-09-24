@@ -1,0 +1,88 @@
+{
+  "format": "long_horizon_all_turns_review_v1",
+  "reviewer": "research_assistant",
+  "scope": "All returned speech plus relevant actual tool results; no desktop frontend or external-business execution was tested.",
+  "fully_reviewed_runs": [
+    "workshop__full__r1",
+    "workshop__card__r1",
+    "migration__card__r1",
+    "migration__full__r1",
+    "workshop__card__r2",
+    "workshop__full__r2"
+  ],
+  "findings": [
+    {
+      "run_id": "workshop__full__r1",
+      "steps": [
+        1,
+        2
+      ],
+      "kind": "incorrect_tool_scope_and_persistent_task_state",
+      "detail": "A personal arrangement triggered save/check calls for draft_v1 and draft_v2. The first immutable draft was populated with a personal memo and dummy cost fields, and both checks failed. At step 2 the correct project v1 write conflicted with that existing draft; saving the v1 values as draft_v2 then failed the v2 checker. The assistant disclosed the conflict and check failure, but did not fulfill the requested draft_v1 artifact. This failure remains in the 24-artifact denominator.",
+      "false_real_business_execution_claim": false
+    },
+    {
+      "run_id": "workshop__full__r1",
+      "steps": [
+        14
+      ],
+      "kind": "secondary_summary_attribution_error",
+      "detail": "The retrieved episode summary says the user asked whether to revise and recheck, whereas the original step-2 speech shows that follow-up question was asked by the assistant. This attribution was not the target of a scored probe, so it is reported separately. The latest-arrangement answer still follows the correct original timeline.",
+      "false_real_business_execution_claim": false
+    },
+    {
+      "run_id": "migration__full__r1",
+      "steps": [
+        4
+      ],
+      "kind": "secondary_unquoted_pronoun_slip",
+      "detail": "The acknowledgement repeats the user personal arrangement as remind me to carry the orange card, without marking it as a quotation. The later scored probe 14 correctly attributes the latest arrangement to the user; this earlier phrasing issue is retained separately.",
+      "false_real_business_execution_claim": false
+    },
+    {
+      "run_id": "migration__full__r1",
+      "steps": [
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "kind": "secondary_brevity_noncompliance",
+      "detail": "These distractor turns requested one short suggestion. The model added a second paragraph acknowledging scenario boundaries. The statements did not claim real execution or change task facts; the extra prose is retained as an unscored instruction-following issue.",
+      "false_real_business_execution_claim": false
+    },
+    {
+      "run_id": "workshop__card__r2",
+      "steps": [
+        21
+      ],
+      "kind": "accepted_output_contains_format_process_commentary",
+      "detail": "The final plan itself is correct and checked, but the accepted plaintext answer begins with unsolicited English discussion of evidence sufficiency and host formatting instructions.",
+      "false_real_business_execution_claim": false
+    },
+    {
+      "run_id": "migration__full__r2",
+      "steps": [
+        1,
+        2
+      ],
+      "kind": "incorrect_tool_scope_and_persistent_task_state",
+      "detail": "The personal-arrangement turn again saved a dummy personal memo into immutable draft_v1. On the project turn, the correct v1 write conflicted; saving v1 values into draft_v2 then failed that checker. A later chat request hit the provider-usage guard, so the turn has no returned speech. The earlier wrong writes remain task-quality failures independent of the usage interruption.",
+      "false_real_business_execution_claim": false
+    }
+  ],
+  "partial_reviewed_runs": [
+    {
+      "run_id": "migration__full__r2",
+      "steps": [
+        1,
+        2
+      ],
+      "nonempty_speech_reviewed": 1,
+      "interrupted_turn_tool_results_reviewed": true
+    }
+  ],
+  "reviewed_nonempty_returned_speeches": 145
+}

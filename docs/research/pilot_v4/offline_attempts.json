@@ -1,0 +1,170 @@
+{
+  "format": "long_experiment_offline_attempts_v1",
+  "attempts": [
+    {
+      "attempt": 1,
+      "test_only": true,
+      "acceptance_status": "failed",
+      "source_fingerprint": "ac06f4e3c6fa6682c9e2b359aa816e12ede5c9d6b5afa144f19ebbf40bbdd469",
+      "failures": [
+        {
+          "artifact": "trajectories/workshop__full__r1/phases/before_restart/startup_failure.json",
+          "error": "AkaneHostError"
+        }
+      ],
+      "failed_flags": {
+        "workshop__full__r1": [],
+        "workshop__card__r1": []
+      },
+      "ledger_is_test_only": true
+    },
+    {
+      "attempt": 2,
+      "test_only": true,
+      "acceptance_status": "failed",
+      "source_fingerprint": "cb739b1ede6bb5e76da648bb4cc93e56489bc3bfdbcbb24f8ad087f1f1769ac1",
+      "failures": [
+        {
+          "artifact": "trajectories/workshop__full__r1/phases/before_restart/startup_failure.json",
+          "error": "write_outside_isolated_run_forbidden"
+        }
+      ],
+      "failed_flags": {
+        "workshop__full__r1": [],
+        "workshop__card__r1": []
+      },
+      "ledger_is_test_only": true
+    },
+    {
+      "attempt": 3,
+      "test_only": true,
+      "acceptance_status": "failed",
+      "source_fingerprint": "26cbeefeb544c0334b40d0e2c253aed47cbb4635582cb8c934082532f81aa11f",
+      "failures": [
+        {
+          "artifact": "trajectories/workshop__full__r1/phases/after_restart/report.json",
+          "error": "estimated_input_token_budget_exceeded"
+        }
+      ],
+      "failed_flags": {
+        "workshop__full__r1": [],
+        "workshop__card__r1": []
+      },
+      "ledger_is_test_only": true
+    },
+    {
+      "attempt": 4,
+      "test_only": true,
+      "acceptance_status": "passed",
+      "source_fingerprint": "12e1ff78fccbd93f61548793ffecba31fa1fb8722b57151fe30a1f2139fa75ca",
+      "failures": [],
+      "failed_flags": {
+        "workshop__full__r1": [],
+        "workshop__card__r1": []
+      },
+      "ledger_is_test_only": true
+    },
+    {
+      "attempt": 5,
+      "test_only": true,
+      "acceptance_status": "failed",
+      "source_fingerprint": "855526e869d7198467d1269d7c5a12516cac5f08e33b7f0a1b3cac255d2adc81",
+      "failures": [],
+      "failed_flags": {
+        "workshop__full__r1": [
+          "all_early_fixture_bodies_preserved_across_compaction_and_restart"
+        ],
+        "workshop__card__r1": [
+          "all_early_fixture_bodies_preserved_across_compaction_and_restart"
+        ]
+      },
+      "ledger_is_test_only": true
+    },
+    {
+      "attempt": 6,
+      "test_only": true,
+      "acceptance_status": "failed",
+      "source_fingerprint": "2d87c2f222abef13168eaca5e47c4436717cdc2a6c3fe89372868a369fc9eed1",
+      "failures": [],
+      "failed_flags": {
+        "workshop__full__r1": [
+          "all_early_fixture_bodies_preserved_across_compaction_and_restart"
+        ],
+        "workshop__card__r1": [
+          "all_early_fixture_bodies_preserved_across_compaction_and_restart"
+        ]
+      },
+      "ledger_is_test_only": true
+    },
+    {
+      "attempt": 7,
+      "test_only": true,
+      "acceptance_status": "passed",
+      "source_fingerprint": "f2d5b5eb2ff36831ec6aba1ab0e06acca477a988e15d61445a9f27a4af2f23e8",
+      "failures": [],
+      "failed_flags": {
+        "workshop__full__r1": [],
+        "workshop__card__r1": []
+      },
+      "ledger_is_test_only": true
+    },
+    {
+      "attempt": 8,
+      "test_only": true,
+      "acceptance_status": "passed",
+      "source_fingerprint": "b4c7538d100d9b48500eee0c9f320833845c0c686977798253457311d528f9b3",
+      "failures": [],
+      "failed_flags": {
+        "workshop__full__r1": [],
+        "workshop__card__r1": []
+      },
+      "ledger_is_test_only": true,
+      "real_network_events": 0,
+      "embedding_reindex_batch_size": 1
+    },
+    {
+      "attempt": 9,
+      "test_only": true,
+      "acceptance_status": "passed",
+      "source_fingerprint": "ebcdd79d82820e959defb62b6c3be44c23b7ed51a124bc287fc2e7742c45bd17",
+      "failures": [],
+      "failed_flags": {
+        "workshop__full__r1": [],
+        "workshop__card__r1": []
+      },
+      "ledger_is_test_only": true,
+      "real_network_events": 0,
+      "embedding_reindex_batch_size": 1
+    },
+    {
+      "attempt": 10,
+      "test_only": true,
+      "acceptance_status": "passed",
+      "source_fingerprint": "19df2ff3be96ba0acf69ab6d31897a30188db7427a25d8aa8c97224b4fdae7b0",
+      "failures": [],
+      "failed_flags": {
+        "workshop__full__r1": [],
+        "workshop__card__r1": []
+      },
+      "ledger_is_test_only": true,
+      "real_network_events": 0,
+      "embedding_reindex_batch_size": 1
+    },
+    {
+      "attempt": 11,
+      "test_only": true,
+      "acceptance_status": "passed",
+      "source_fingerprint": "ef19b1ef3a04844807c031b079f67674e9fefb35c6ad472949cc07f4645e4b92",
+      "failures": [],
+      "failed_flags": {
+        "workshop__full__r1": [],
+        "workshop__card__r1": []
+      },
+      "ledger_is_test_only": true,
+      "real_network_events": 0,
+      "embedding_reindex_batch_size": 1
+    }
+  ],
+  "paid_attempt_03_gate": 11,
+  "note": "Gate 10 passed the Engine exercise but a separate nested genuine-path unit control still failed; it was not used to launch paid calls. Gate 11 and all regression tests passed after structured-string decoding was added."
+}

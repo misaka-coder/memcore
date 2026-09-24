@@ -1,0 +1,74 @@
+{
+  "format": "long_horizon_validation_v1",
+  "validation_date": "2026-09-06",
+  "unit_tests": {
+    "command": "uv run --extra dev python -m unittest discover -s tests -v",
+    "status": "passed",
+    "tests_run": 749,
+    "skipped": 9
+  },
+  "changed_research_static": {
+    "status": "passed",
+    "file_count": 38,
+    "commands": [
+      "uv run --extra dev ruff check examples/research_pilot tests/test_research_pilot_*.py",
+      "uv run --extra dev ruff format --check examples/research_pilot tests/test_research_pilot_*.py"
+    ]
+  },
+  "whole_tree_ruff": {
+    "status": "pre_existing_failures_remain",
+    "count": 9,
+    "files": [
+      "tests/test_projection_path_semantics.py",
+      "tests/test_retention_anchor_oversized.py",
+      "tests/test_visible_lineage_asymmetric.py"
+    ]
+  },
+  "whole_tree_format": {
+    "status": "pre_existing_failures_remain",
+    "count": 10,
+    "files": [
+      "memcore/config.py",
+      "memcore/conformance.py",
+      "memcore/context_contract.py",
+      "memcore/projection.py",
+      "memcore/rendering.py",
+      "tests/test_projection_path_semantics.py",
+      "tests/test_request_binding.py",
+      "tests/test_retention_anchor_oversized.py",
+      "tests/test_slice4_compaction.py",
+      "tests/test_visible_lineage_asymmetric.py"
+    ]
+  },
+  "diff_check": "passed",
+  "build": {
+    "command": "uv run --extra dev python -m build",
+    "status": "passed",
+    "outputs": [
+      "memcore-0.1.0.tar.gz",
+      "memcore-0.1.0-py3-none-any.whl"
+    ]
+  },
+  "offline_engine_gate": {
+    "attempt": 11,
+    "status": "passed",
+    "trajectories": 2,
+    "user_turns": 48,
+    "real_network_events": 0,
+    "all_required_flags_pass": true
+  },
+  "post_run_response_capture_fix": {
+    "status": "verified_offline_only",
+    "behavior": "Preserve received response bytes/hash before usage validation; keep anomalous reservations unresolved and block subsequent dispatch.",
+    "regression_test": "test_usage_overrun_retains_exact_response_and_keeps_reservation_blocked",
+    "old_code_failed_regression": true,
+    "fixed_code_passed_regression": true,
+    "focused_transport_and_budget_tests": 27,
+    "focused_skipped": 1,
+    "full_suite_and_build_rerun_after_fix": true,
+    "paid_rerun_after_fix": false,
+    "past_missing_wire_evidence_restored": false,
+    "frozen_paid_source_fingerprint": "ef19b1ef3a04844807c031b079f67674e9fefb35c6ad472949cc07f4645e4b92"
+  },
+  "scope": "This long experiment changes the research harness and its tests/documentation. The offline Engine gate describes the frozen paid-run code; the latest unit suite also covers the subsequent response-capture fix. Pre-existing core changes and unrelated lint/format findings were preserved."
+}

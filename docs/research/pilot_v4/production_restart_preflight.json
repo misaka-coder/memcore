@@ -1,0 +1,67 @@
+{
+  "format": "production_embedding_restart_preflight_v1",
+  "status": "passed",
+  "source_run_id": "workshop__full__r1",
+  "synthetic_data_copy": true,
+  "model_calls_allowed": false,
+  "embedding": {
+    "format": "memcore_pilot_production_embedding_preflight_v1",
+    "status": "passed",
+    "reason": null,
+    "model_id": "BAAI/bge-m3",
+    "provider": "HuggingFaceEmbeddingProvider",
+    "adapter_version": "st-local-v1",
+    "device": "cuda",
+    "local_files_only": true,
+    "hashed_fallback": false,
+    "paid_embedding_api_calls": 0,
+    "downloaded_model": false,
+    "dimension": 1024,
+    "finite_normalized_vectors": true,
+    "synthetic_texts": [
+      "我喜欢喝不加糖的咖啡。",
+      "我的咖啡要无糖。",
+      "今晚可以观测流星雨。"
+    ],
+    "similar_score": 0.880459,
+    "unrelated_score": 0.414591,
+    "semantic_gap": 0.465868,
+    "required_gap": 0.05,
+    "repeat_score": 1.0,
+    "vector_fingerprint": "765c7ea6e931ae6d9b7c233bfec2737ac9bca4b465a8bd2fb0261e279858ef8f",
+    "probe_scope": "small_synthetic_health_check_not_retrieval_benchmark"
+  },
+  "index_ready_elapsed_ms": 10437.0,
+  "restored_snapshot_hash": "35567c42451769d9824d28ecfa3efefddf34a2130e0e239fce1a87faebcd260f",
+  "original_snapshot_hash": "35567c42451769d9824d28ecfa3efefddf34a2130e0e239fce1a87faebcd260f",
+  "exact_saved_context_restored": true,
+  "exact_saved_artifacts_restored": true,
+  "host_close": {
+    "status": "stopped",
+    "reason": "closed",
+    "failures": []
+  },
+  "maintenance": {
+    "compactions": [],
+    "index_runs": [
+      {
+        "status": "finished",
+        "result": {
+          "scanned": 80,
+          "reindexed": 80,
+          "failed": 0
+        }
+      }
+    ],
+    "completions": []
+  },
+  "audit_guard": {
+    "blocked_network": 0,
+    "authorized_network_events": 0,
+    "blocked_reads": 0,
+    "blocked_writes": 0,
+    "blocked_subprocesses": 1
+  },
+  "embedding_reindex_batch_size": 1,
+  "source_fingerprint": "b4c7538d100d9b48500eee0c9f320833845c0c686977798253457311d528f9b3"
+}
