@@ -37,6 +37,18 @@ MemCore 不是停留在 Paper 或 Demo 里的理论模型。在深度角色伴�
 ## 核心设计哲学与突破
 
 ### 1. 终局结算与渐进式回读（Settlement & Progressive Disclosure）
+
+```mermaid
+flowchart LR
+    A["重复调工具<br/>调用与参数 + 完整结果正文<br/>（推理依据充分）"]
+    A --> B["本轮成功完成"]
+    B --> C["符合门槛的长正文收起<br/>调用与参数保留 + 原文 ID 卡片"]
+    C --> D["后续聊天或新任务<br/>不需要原文就直接继续"]
+    C -. "确需旧细节" .-> E["沿 source_id 回读留存原文"]
+```
+
+折叠的是**默认展示**，不是删除。原文仍保存在 SQLite 中，只是不再占据后续请求的上下文预算。
+
 * **执行期（Open Turn）**：工具调用与大体量原始输出完整呈给模型，保证复杂多步任务推理拥有充分的信息依据。
 * **终局完成后（Post-Final）**：启用 `compact_after_terminal` 策略后，庞大的结果自动折叠为一条包含时间、来源和 `source_id` 的小巧卡片（平均仅 100 Token）。
 * **按需瞬间回溯**：后续日常闲聊不受长文本干扰；某天用户突然追问“当时那个报错具体是哪一行”，模型可通过 `open_memory(memory_id=...)` 沿精准的 Lineage 血缘，瞬间把 25,000 字的原始执行轨迹调回前台！
@@ -63,7 +75,40 @@ MemCore 坚信：**语义向量只是检索的加速器，绝不是记忆可达�
   * **Raw 对话层**以 Token 差值蓄水（如 8k~24k Token）：蓄水期内前缀保持稳定，只往尾部追加；到达上限才集中下刀回退到 8k 基线。
 * 配合底层的 `ProjectionLedger` 与 Hash 锁定机制，绝不轻易篡改 System Prompt，**这是系统在真实生产中跑出 98% 以上 Prompt Cache 命中率的根本保证**。
 
+```mermaid
+flowchart TB
+    subgraph FIFO["传统 FIFO 滑动窗口：每一轮都动头部"]
+        direction LR
+        F1["第 1 轮<br/>[A B C D]"] --> F2["第 2 轮<br/>[B C D E]"] --> F3["第 3 轮<br/>[C D E F]"]
+    end
+    subgraph HYST["MemCore 迟滞缓冲：蓄水期内只追加尾部"]
+        direction LR
+        H1["第 1 轮<br/>[A B C D]"] --> H2["第 2 轮<br/>[A B C D E]"] --> H3["第 3 轮<br/>[A B C D E F]"] --> H4["蓄满上限<br/>才集中压缩一次"]
+    end
+```
+
+上排每一轮的历史起点都在前移，前缀缓存逐轮击穿；下排在弹性区间内前缀字节级不变，只有尾部增长。前缀变动频率因此从"每轮一次"稀释到 $\frac{1}{\text{Max} - \text{Min}}$。
+
 ### 5. 三层记忆生命周期（Raw → Episodic → Semantic）
+
+```mermaid
+flowchart LR
+    subgraph L1["沉淀：旧经历平时以什么形式留在眼前"]
+        direction LR
+        R["Raw<br/>近期对话与工具轨迹"] --> S["Episodic<br/>阶段摘要"] --> M["Semantic<br/>长期事实与线索"]
+    end
+```
+
+```mermaid
+flowchart LR
+    subgraph L2["阅读深度：回答眼前这个问题需要看多细"]
+        direction LR
+        C["目录卡片<br/>按时间浏览"] --> T["正文<br/>读摘要"] --> O["来源<br/>核对原话与工具凭据"]
+    end
+```
+
+这两条线回答的是不同问题：上面管**历史的沉淀**，下面管**本次阅读的深度**。渐进披露的价值不依赖"三"这个层数来证明。
+
 * **Raw（工作记忆）**：近期真实对话与原始工具轨迹，保留完整的原子时序。
 * **Episodic Summary（阶段摘要）**：按 Provider 投影的 Token 差值触发，**严格在完整 Turn 边界切割**，避免把一句话或一个调用对切成两半。
 * **Semantic Memory（长期事实）**：抽取长期偏好、稳定事实与待办。采用严格的强化合并机制——**仅当实体、主题、事实深度契合时才合并**，防止无关事件因为提到同一个人名而被错误焊死。
