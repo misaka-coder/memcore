@@ -6,6 +6,7 @@ Timeline V2 另有 turn / projection / conversation coordination 表，不建立
 - 隔离采用 Namespace 五层(tenant/user/domain 硬隔离 + conversation 窗口 + actor 软标签)。
 - index_status outbox 状态机(pending → indexed),向量 upsert 失败保持 pending,由 reindex 补做。
 - 写入用单库事务保证原子;向量 upsert 由上层在事务外做。
+- 文件型 SQLite 在建连时启用 WAL;`:memory:` 保持 SQLite 原生内存 journal mode。
 
 时间字段(date_label / time_of_day)由调用方按 tz 算好后传入;store 不做时区换算。
 """
@@ -126,10 +127,17 @@ class SQLiteMemoryStore(MemoryStore):
             if path_text == ":memory:"
             else "sqlite-file:" + hashlib.sha256(os.path.normcase(os.path.abspath(path_text)).encode()).hexdigest()
         )
-        self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        self._conn = sqlite3.connect(path_text, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.RLock()
         try:
+            if path_text != ":memory:":
+                row = self._conn.execute("PRAGMA journal_mode=WAL").fetchone()
+                journal_mode = str(row[0] if row is not None else "").strip().lower()
+                if journal_mode != "wal":
+                    raise sqlite3.OperationalError(
+                        f"failed to enable SQLite WAL journal mode; got {journal_mode or 'unknown'}"
+                    )
             migrate_database(self._conn)
         except Exception:
             self._conn.close()
