@@ -2169,6 +2169,36 @@ class SQLiteMemoryStore(MemoryStore):
                 raise SchemaError("ambiguous_memory_id")
             return matches[0] if matches else None
 
+    def get_retrieval_records(
+        self,
+        *,
+        namespace: Namespace,
+        source_ids: tuple[str, ...],
+        cross_conversation: bool = False,
+    ) -> dict[str, dict[str, Any]]:
+        requested = list(dict.fromkeys(str(item or "").strip() for item in source_ids if str(item or "").strip()))
+        scope, params = self._scope_clause(namespace, with_conversation=not cross_conversation)
+        records: dict[str, dict[str, Any]] = {}
+        with self._lock:
+            for table, id_column in (
+                ("messages", "source_id"),
+                ("summaries", "summary_id"),
+                ("semantic_summaries", "semantic_id"),
+            ):
+                for offset in range(0, len(requested), 400):
+                    batch = requested[offset : offset + 400]
+                    placeholders = ",".join("?" for _ in batch)
+                    rows = self._conn.execute(
+                        f"SELECT * FROM {table} WHERE {scope} AND {id_column} IN ({placeholders})",
+                        [*params, *batch],
+                    ).fetchall()
+                    for row in rows:
+                        sid = str(row[id_column])
+                        if sid in records:
+                            raise SchemaError("ambiguous_memory_id")
+                        records[sid] = self._row_to_record(row, table)
+        return records
+
     def get_entries_by_source_ids(
         self,
         *,
@@ -2213,26 +2243,29 @@ class SQLiteMemoryStore(MemoryStore):
         resolved_children: dict[str, tuple[str, ...]] = {}
         failure_reason = "lineage_broken_or_cyclic"
 
-        def read_children(source_id: str) -> tuple[str, ...] | None:
-            cached = resolved_children.get(source_id)
-            if cached is not None:
-                return cached
+        def prefetch_children(ids: list[str]) -> None:
+            pending = ids
             for table, id_column, lineage_column in (
                 ("messages", "source_id", ""),
                 ("summaries", "summary_id", "source_ids_json"),
                 ("semantic_summaries", "semantic_id", "source_summary_ids_json"),
             ):
-                select = lineage_column or id_column
-                row = self._conn.execute(
-                    f"SELECT {select} FROM {table} WHERE {scope_clause} AND {id_column} = ?",
-                    [*params, source_id],
-                ).fetchone()
-                if row is None:
-                    continue
-                children = tuple(self._json_list(row[lineage_column])) if lineage_column else ()
-                resolved_children[source_id] = children
-                return children
-            return None
+                columns = f"{id_column}, {lineage_column}" if lineage_column else id_column
+                for offset in range(0, len(pending), 400):
+                    batch = pending[offset : offset + 400]
+                    placeholders = ",".join("?" for _ in batch)
+                    rows = self._conn.execute(
+                        f"SELECT {columns} FROM {table} WHERE {scope_clause} AND {id_column} IN ({placeholders})",
+                        [*params, *batch],
+                    ).fetchall()
+                    for row in rows:
+                        resolved_children[str(row[id_column])] = (
+                            tuple(self._json_list(row[lineage_column])) if lineage_column else ()
+                        )
+                pending = [sid for sid in pending if sid not in resolved_children]
+
+        def read_children(source_id: str) -> tuple[str, ...] | None:
+            return resolved_children.get(source_id)
 
         def walk_descendants(source_id: str) -> bool:
             nonlocal failure_reason
@@ -2255,6 +2288,20 @@ class SQLiteMemoryStore(MemoryStore):
             return True
 
         with self._lock:
+            # Request-local frontier batches preserve the DFS result/order below,
+            # including missing-source and cycle failures, without one SQL read
+            # per raw child. No lineage cache survives a write or another call.
+            frontier = list(requested)
+            prefetched = set(frontier)
+            while frontier:
+                prefetch_children(frontier)
+                following = []
+                for sid in frontier:
+                    for child in resolved_children.get(sid, ()):
+                        if child not in prefetched:
+                            prefetched.add(child)
+                            following.append(child)
+                frontier = following
             if any(not walk_descendants(source_id) for source_id in requested):
                 return LineageClosure(
                     status="invalid",
@@ -3513,7 +3560,7 @@ class SQLiteMemoryStore(MemoryStore):
         scope_clause, params = self._scope_clause(namespace, with_conversation=True)
         with self._lock:
             anchor = self._conn.execute(
-                f"SELECT * FROM messages WHERE {scope_clause} AND source_id = ?",
+                f"SELECT source_id FROM messages WHERE {scope_clause} AND source_id = ?",
                 [*params, anchor_id],
             ).fetchone()
             if anchor is None:
@@ -3525,45 +3572,50 @@ class SQLiteMemoryStore(MemoryStore):
                     reason="anchor_not_found_or_out_of_scope",
                 )
             rows = self._conn.execute(
-                f"SELECT * FROM messages WHERE {scope_clause} ORDER BY seq_no",
+                f"SELECT source_id, turn_id FROM messages WHERE {scope_clause} ORDER BY seq_no",
                 params,
             ).fetchall()
 
-        groups: list[list[sqlite3.Row]] = []
-        group_indexes: dict[tuple[str, str], int] = {}
-        anchor_group = -1
-        for row in rows:
-            turn_id = str(row["turn_id"] or "").strip()
-            key = ("turn", turn_id) if turn_id else ("source", str(row["source_id"]))
-            group_index = group_indexes.get(key)
-            if group_index is None:
-                group_index = len(groups)
-                group_indexes[key] = group_index
-                groups.append([])
-            groups[group_index].append(row)
-            if str(row["source_id"]) == anchor_id:
-                anchor_group = group_index
+            groups: list[list[sqlite3.Row]] = []
+            group_indexes: dict[tuple[str, str], int] = {}
+            anchor_group = -1
+            for row in rows:
+                turn_id = str(row["turn_id"] or "").strip()
+                key = ("turn", turn_id) if turn_id else ("source", str(row["source_id"]))
+                group_index = group_indexes.get(key)
+                if group_index is None:
+                    group_index = len(groups)
+                    group_indexes[key] = group_index
+                    groups.append([])
+                groups[group_index].append(row)
+                if str(row["source_id"]) == anchor_id:
+                    anchor_group = group_index
 
-        if anchor_group < 0:
+            if anchor_group < 0:
+                return RawTurnWindow(
+                    status="empty",
+                    anchor_source_id=anchor_id,
+                    before_turns=before,
+                    after_turns=after,
+                    reason="anchor_not_found_or_out_of_scope",
+                )
+            start = max(0, anchor_group - before)
+            end = min(len(groups), anchor_group + after + 1)
+            selected_rows = [row for group in groups[start:end] for row in group]
+            entries = tuple(
+                self.get_entries_by_source_ids(
+                    namespace=namespace,
+                    source_ids=tuple(str(row["source_id"]) for row in selected_rows),
+                )
+            )
             return RawTurnWindow(
-                status="empty",
+                status="found" if entries else "empty",
+                entries=entries,
                 anchor_source_id=anchor_id,
                 before_turns=before,
                 after_turns=after,
-                reason="anchor_not_found_or_out_of_scope",
+                reason="" if entries else "no_entries",
             )
-        start = max(0, anchor_group - before)
-        end = min(len(groups), anchor_group + after + 1)
-        selected_rows = [row for group in groups[start:end] for row in group]
-        entries = tuple(TimelineEntry.from_record(self._row_to_record(row, "messages")) for row in selected_rows)
-        return RawTurnWindow(
-            status="found" if entries else "empty",
-            entries=entries,
-            anchor_source_id=anchor_id,
-            before_turns=before,
-            after_turns=after,
-            reason="" if entries else "no_entries",
-        )
 
     def get_unsummarized_messages(self, *, namespace: Namespace) -> list[dict[str, Any]]:
         scope_clause, params = self._scope_clause(namespace, with_conversation=True)

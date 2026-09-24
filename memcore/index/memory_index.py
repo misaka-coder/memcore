@@ -183,6 +183,7 @@ class InMemoryVectorIndex(VectorIndex):
         prepared = []
         for (source_id, text, metadata), raw_vector in zip(pending, vectors):
             vector = _compact_vector(raw_vector)
+            keyword_tf = Counter(tokenize(_keyword_doc_text(text, metadata)))
             prepared.append(
                 (
                     source_id,
@@ -192,6 +193,8 @@ class InMemoryVectorIndex(VectorIndex):
                         "metadata": dict(metadata),
                         "vector": vector,
                         "vector_norm": _vector_norm(vector),
+                        "keyword_tf": keyword_tf,
+                        "keyword_len": sum(keyword_tf.values()),
                     },
                 )
             )
@@ -297,19 +300,15 @@ class InMemoryVectorIndex(VectorIndex):
         if not query_terms:
             return []
 
-        doc_terms: dict[str, list[str]] = {}
         doc_freq: Counter[str] = Counter()
         for entry in candidates:
-            terms = tokenize(_keyword_doc_text(entry["document"], entry["metadata"]))
-            doc_terms[entry["source_id"]] = terms
-            for term in set(terms):
+            for term in entry["keyword_tf"]:
                 doc_freq[term] += 1
-        avgdl = sum(len(t) for t in doc_terms.values()) / max(1, len(doc_terms))
+        avgdl = sum(entry["keyword_len"] for entry in candidates) / len(candidates)
 
         hits: list[dict[str, Any]] = []
         for entry in candidates:
-            terms = doc_terms[entry["source_id"]]
-            score = self._bm25(query_terms, terms, len(terms), avgdl, len(candidates), doc_freq)
+            score = self._bm25(query_terms, entry["keyword_tf"], entry["keyword_len"], avgdl, len(candidates), doc_freq)
             if score <= 0:
                 continue
             hits.append(
@@ -337,7 +336,7 @@ class InMemoryVectorIndex(VectorIndex):
     @staticmethod
     def _bm25(
         query_terms: list[str],
-        doc_terms: list[str],
+        doc_terms: list[str] | Counter[str],
         doc_len: int,
         avgdl: float,
         doc_count: int,
@@ -345,7 +344,7 @@ class InMemoryVectorIndex(VectorIndex):
     ) -> float:
         if not doc_terms:
             return 0.0
-        tf = Counter(doc_terms)
+        tf = doc_terms if isinstance(doc_terms, Counter) else Counter(doc_terms)
         k1, b = 1.5, 0.75
         score = 0.0
         for term in query_terms:

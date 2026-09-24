@@ -201,6 +201,10 @@ def paginate_timeline_units(
     if budget < 0:
         raise ValueError("page_token_budget_must_be_non_negative_integer")
     resolved_counter = count_text or estimate_text_tokens
+    # Units own these unchanged message objects for this call. Reuse rendered
+    # rows across prefix probes; still count the exact combined text each time
+    # because arbitrary tokenizers are not additive across message boundaries.
+    render_cache: dict[int, tuple[str, tuple[str, ...]]] = {}
 
     def _messages(selected_units: Sequence[TimelineReadUnit]) -> list[dict[str, Any]]:
         return [message for unit in selected_units for message in unit.projected_messages]
@@ -209,7 +213,7 @@ def paginate_timeline_units(
         messages = _messages(selected_units)
         if not messages:
             return 0
-        count = int(resolved_counter(render_timeline(messages, tz=timezone)))
+        count = int(resolved_counter(render_timeline(messages, tz=timezone, _message_cache=render_cache)))
         if count < 0:
             raise ValueError("TokenCounter.count_text() must return a non-negative int")
         return count

@@ -2675,11 +2675,10 @@ class MemorySystem:
             normalize_page_size,
             paginate_memory_items,
         )
-        from .rendering import render_semantic_snippet, render_summary_snippet, render_timeline
+        from .rendering import render_timeline
         from .timeline_read import (
             build_timeline_read_units,
             normalize_timeline_projection,
-            project_timeline_entry,
         )
 
         def _invalid(reason: str) -> dict[str, Any]:
@@ -2702,16 +2701,43 @@ class MemorySystem:
             if batch_view not in {"card", "content"}:
                 return _invalid("invalid_memory_view")
 
-            opened = [
-                self.open_memory(
-                    memory_id=item,
-                    view=batch_view,
-                    detail=detail,
-                    projection=projection,
-                    cross_conversation=cross_conversation,
-                )
-                for item in requested_ids
-            ]
+            records = None
+            batch_detail = str(detail or "full").strip().lower()
+            try:
+                batch_projection = normalize_timeline_projection(projection)
+                if batch_detail in MEMORY_DETAILS:
+                    records = self.store.get_retrieval_records(
+                        namespace=self.namespace,
+                        source_ids=tuple(requested_ids),
+                        cross_conversation=cross_conversation,
+                    )
+            except (NamespaceError, SchemaError, ValueError, NotImplementedError):
+                # Preserve independent per-node errors for unsupported stores,
+                # ambiguous IDs and invalid options through the single path.
+                pass
+            if records is None:
+                opened = [
+                    self.open_memory(
+                        memory_id=item,
+                        view=batch_view,
+                        detail=detail,
+                        projection=projection,
+                        cross_conversation=cross_conversation,
+                    )
+                    for item in requested_ids
+                ]
+            else:
+                opened = [
+                    self._open_memory_record(
+                        memory_id=item,
+                        record=records.get(item),
+                        view=batch_view,
+                        detail=batch_detail,
+                        projection=batch_projection,
+                        cross_conversation=cross_conversation,
+                    )
+                    for item in requested_ids
+                ]
             opened_count = sum(str(item.get("status") or "") == "ok" for item in opened)
             failed_count = len(opened) - opened_count
             if opened_count == len(opened):
@@ -2819,6 +2845,16 @@ class MemorySystem:
                 "result": None,
             }
 
+        if view in {"card", "content"}:
+            return self._open_memory_record(
+                memory_id=memory_id,
+                record=record,
+                view=view,
+                detail=detail,
+                projection=projection,
+                cross_conversation=cross_conversation,
+            )
+
         card = build_memory_card(record, timezone=self.timezone)
         node_type = str(card["node_type"])
         base = {
@@ -2829,48 +2865,6 @@ class MemorySystem:
             "projection": projection,
             "cross_conversation": bool(cross_conversation),
         }
-        if view == "card":
-            return {"status": "ok", "reason": "", **base, "result": card, "text": ""}
-
-        if view == "content":
-            if node_type == "raw":
-                entry = TimelineEntry.from_record(record)
-                projected, _ = project_timeline_entry(
-                    entry,
-                    projection="full",
-                    renderer_registry=self.renderer_registry,
-                    timezone=self.timezone,
-                    detail_override=detail,
-                )
-                return {
-                    "status": "ok",
-                    "reason": "",
-                    **base,
-                    "result": projected,
-                    "text": str((projected or {}).get("content") or ""),
-                }
-            if node_type == "episodic":
-                content = {
-                    "card": card,
-                    "diary_summary": str(record.get("diary_summary") or ""),
-                    "key_events": list(record.get("key_events") or []),
-                    "core_facts": list(record.get("core_facts") or []),
-                    "period_label": str(record.get("period_label") or ""),
-                    "event_type": str(record.get("event_type") or ""),
-                }
-                text = render_summary_snippet(record, tz=self.timezone, enable_flavor=self.config.enable_flavor)
-            else:
-                content = {
-                    "card": card,
-                    "semantic_summary": str(record.get("semantic_summary") or ""),
-                    "stable_facts": list(record.get("stable_facts") or []),
-                    "recurring_topics": list(record.get("recurring_topics") or []),
-                    "important_people": list(record.get("important_people") or []),
-                    "open_loops": list(record.get("open_loops") or []),
-                }
-                text = render_semantic_snippet(record, tz=self.timezone, enable_flavor=self.config.enable_flavor)
-            return {"status": "ok", "reason": "", **base, "result": content, "text": text}
-
         selector = {
             "memory_id": memory_id,
             "view": "sources",
@@ -2892,14 +2886,12 @@ class MemorySystem:
             if str(item or "").strip()
         ]
         if node_type == "semantic":
-            children = [
-                self.store.get_retrieval_record(
-                    namespace=self.namespace,
-                    source_id=source_id,
-                    cross_conversation=cross_conversation,
-                )
-                for source_id in child_ids
-            ]
+            child_records = self.store.get_retrieval_records(
+                namespace=self.namespace,
+                source_ids=tuple(child_ids),
+                cross_conversation=cross_conversation,
+            )
+            children = [child_records.get(source_id) for source_id in child_ids]
             valid_records = [
                 child for child in children if child is not None and str(child.get("entry_type") or "") == "summary"
             ]
@@ -2997,6 +2989,81 @@ class MemorySystem:
             "result": result,
             "text": render_timeline(messages, tz=self.timezone) if messages else "",
         }
+
+    def _open_memory_record(
+        self,
+        *,
+        memory_id: str,
+        record: dict[str, Any] | None,
+        view: str,
+        detail: str,
+        projection: str,
+        cross_conversation: bool,
+    ) -> dict[str, Any]:
+        """Render an already scoped card/content record, shared by single and batch opens."""
+        from .memory_catalog import build_memory_card
+        from .rendering import render_semantic_snippet, render_summary_snippet
+        from .timeline_read import project_timeline_entry
+
+        if record is None:
+            return {
+                "status": "empty",
+                "reason": "memory_not_found_or_out_of_scope",
+                "memory_id": memory_id,
+                "view": view,
+                "result": None,
+            }
+        card = build_memory_card(record, timezone=self.timezone)
+        node_type = str(card["node_type"])
+        base = {
+            "memory_id": memory_id,
+            "node_type": node_type,
+            "view": view,
+            "detail": detail,
+            "projection": projection,
+            "cross_conversation": bool(cross_conversation),
+        }
+        if view == "card":
+            return {"status": "ok", "reason": "", **base, "result": card, "text": ""}
+
+        if view == "content":
+            if node_type == "raw":
+                entry = TimelineEntry.from_record(record)
+                projected, _ = project_timeline_entry(
+                    entry,
+                    projection="full",
+                    renderer_registry=self.renderer_registry,
+                    timezone=self.timezone,
+                    detail_override=detail,
+                )
+                return {
+                    "status": "ok",
+                    "reason": "",
+                    **base,
+                    "result": projected,
+                    "text": str((projected or {}).get("content") or ""),
+                }
+            if node_type == "episodic":
+                content = {
+                    "card": card,
+                    "diary_summary": str(record.get("diary_summary") or ""),
+                    "key_events": list(record.get("key_events") or []),
+                    "core_facts": list(record.get("core_facts") or []),
+                    "period_label": str(record.get("period_label") or ""),
+                    "event_type": str(record.get("event_type") or ""),
+                }
+                text = render_summary_snippet(record, tz=self.timezone, enable_flavor=self.config.enable_flavor)
+            else:
+                content = {
+                    "card": card,
+                    "semantic_summary": str(record.get("semantic_summary") or ""),
+                    "stable_facts": list(record.get("stable_facts") or []),
+                    "recurring_topics": list(record.get("recurring_topics") or []),
+                    "important_people": list(record.get("important_people") or []),
+                    "open_loops": list(record.get("open_loops") or []),
+                }
+                text = render_semantic_snippet(record, tz=self.timezone, enable_flavor=self.config.enable_flavor)
+            return {"status": "ok", "reason": "", **base, "result": content, "text": text}
 
     def read_entry(self, *, source_id: str, detail: str = "full") -> dict[str, Any]:
         """Compatibility adapter for the raw-only ``open_memory(content)`` view."""

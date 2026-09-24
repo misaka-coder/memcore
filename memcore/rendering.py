@@ -137,9 +137,16 @@ def render_semantic_snippet(record: dict[str, Any], *, tz: str, enable_flavor: b
     return "\n".join(parts)
 
 
-def render_timeline(messages: list[dict[str, Any]], *, tz: str) -> str:
+def render_timeline(
+    messages: list[dict[str, Any]],
+    *,
+    tz: str,
+    _message_cache: dict[int, tuple[str, tuple[str, ...]]] | None = None,
+) -> str:
     """时间线工具:把按日期范围读出的原始对话渲染成"按天分组、带时刻"的可读文本。"""
-    return _render_grouped_raw_messages(messages, tz=tz, title="【按时间读取的原始对话(精确记录,非摘要)】")
+    return _render_grouped_raw_messages(
+        messages, tz=tz, title="【按时间读取的原始对话(精确记录,非摘要)】", message_cache=_message_cache
+    )
 
 
 def render_visible_raw(messages: list[dict[str, Any]], *, tz: str) -> str:
@@ -340,30 +347,46 @@ def _append_raw_message_line(lines: list[str], *, head: str, speaker: str, conte
     lines.append(f"{prefix}: {content}".rstrip())
 
 
-def _render_grouped_raw_messages(messages: list[dict[str, Any]], *, tz: str, title: str) -> str:
+def _render_grouped_raw_messages(
+    messages: list[dict[str, Any]],
+    *,
+    tz: str,
+    title: str,
+    message_cache: dict[int, tuple[str, tuple[str, ...]]] | None = None,
+) -> str:
     if not messages:
         return ""
     lines: list[str] = [title]
     current_header = ""
     for row in messages:
-        ts = row.get("timestamp")
-        date_label = str(row.get("date_label") or "")
-        header_label = timestamp_to_date_weekday_label(ts, tz) if ts is not None else date_label
+        parts = message_cache.get(id(row)) if message_cache is not None else None
+        if parts is None:
+            parts = _raw_message_parts(row, tz=tz)
+            if message_cache is not None:
+                message_cache[id(row)] = parts
+        header_label, body_lines = parts
         if header_label and header_label != current_header:
             lines.append(f"[日期 {header_label}]")
             current_header = header_label
-        stamp = timestamp_to_datetime_weekday_label(ts, tz).rsplit(" ", 1)[-1] if ts is not None else ""  # HH:MM
-        period = TIME_PERIOD_LABELS.get(str(row.get("time_of_day") or ""), "")
-        head = " | ".join(p for p in (stamp, period) if p)
-        speaker = render_speaker_label(row)
-        _append_raw_message_line(
-            lines,
-            head=head,
-            speaker=speaker,
-            content=normalize_text(row.get("content")),
-            is_trace_event=_is_trace_event(row),
-        )
+        lines.extend(body_lines)
     return "\n".join(lines)
+
+
+def _raw_message_parts(row: dict[str, Any], *, tz: str) -> tuple[str, tuple[str, ...]]:
+    ts = row.get("timestamp")
+    date_label = str(row.get("date_label") or "")
+    header = timestamp_to_date_weekday_label(ts, tz) if ts is not None else date_label
+    stamp = timestamp_to_datetime_weekday_label(ts, tz).rsplit(" ", 1)[-1] if ts is not None else ""
+    period = TIME_PERIOD_LABELS.get(str(row.get("time_of_day") or ""), "")
+    lines: list[str] = []
+    _append_raw_message_line(
+        lines,
+        head=" | ".join(p for p in (stamp, period) if p),
+        speaker=render_speaker_label(row),
+        content=normalize_text(row.get("content")),
+        is_trace_event=_is_trace_event(row),
+    )
+    return header, tuple(lines)
 
 
 def render_prompt_context(context: dict[str, Any], *, tz: str, enable_flavor: bool = False) -> str:

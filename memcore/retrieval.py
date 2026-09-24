@@ -801,7 +801,7 @@ class ReadPipeline:
                 str(hit.get("source_id") or ""): hit for hit in positive_candidates if str(hit.get("source_id") or "")
             }.values()
         )
-        _validated, unsafe = self._build_matches(plan=plan, hits=backend_candidates)
+        _validated, unsafe = self._build_matches(plan=plan, hits=backend_candidates, validate_only=True)
         if unsafe:
             return [], True, strict_count, effective_count, relaxed
         semantic_hits = self._score_filter(
@@ -858,24 +858,23 @@ class ReadPipeline:
         *,
         plan: RetrievalQueryPlan,
         hits: list[dict[str, Any]],
+        validate_only: bool = False,
     ) -> tuple[list[RetrievalMatch], bool]:
         matches: list[RetrievalMatch] = []
+        records = self.store.get_retrieval_records(
+            namespace=self._plan_namespace(plan),
+            source_ids=tuple(str(hit.get("source_id") or "") for hit in hits),
+            cross_conversation=plan.hard.cross_conversation,
+        )
         for hit in hits:
             source_id = str(hit.get("source_id") or "")
-            record = self.store.get_retrieval_record(
-                namespace=Namespace(
-                    tenant_id=plan.hard.namespace_key[0],
-                    user_id=plan.hard.namespace_key[1],
-                    domain_id=plan.hard.namespace_key[2],
-                    conversation_id=plan.hard.namespace_key[3],
-                ),
-                source_id=source_id,
-                cross_conversation=plan.hard.cross_conversation,
-            )
+            record = records.get(source_id)
             if record is None:
                 return [], True
             if not self._record_satisfies_hard_plan(record=record, hard=plan.hard):
                 return [], True
+            if validate_only:
+                continue
             match = self._record_match(record=record, hit=hit)
             if match.rendered_text:
                 matches.append(match)

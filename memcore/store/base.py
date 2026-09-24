@@ -263,6 +263,28 @@ class MemoryStore(ABC):
         """Namespace-safe lookup for a raw/summary/semantic retrieval candidate."""
         raise NotImplementedError
 
+    def get_retrieval_records(
+        self,
+        *,
+        namespace: Namespace,
+        source_ids: tuple[str, ...],
+        cross_conversation: bool = False,
+    ) -> dict[str, dict[str, Any]]:
+        """Batch candidate lookup; existing stores retain their scoped single read.
+
+        Missing IDs are omitted. Ambiguous IDs raise SchemaError, as in a single
+        read; callers that need per-item failures may retry individually.
+        """
+        records = {}
+        for sid in dict.fromkeys(str(item or "").strip() for item in source_ids):
+            if sid:
+                record = self.get_retrieval_record(
+                    namespace=namespace, source_id=sid, cross_conversation=cross_conversation
+                )
+                if record is not None:
+                    records[sid] = record
+        return records
+
     def get_entries_by_source_ids(
         self,
         *,
