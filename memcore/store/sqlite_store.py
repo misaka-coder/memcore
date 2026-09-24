@@ -3628,15 +3628,15 @@ class SQLiteMemoryStore(MemoryStore):
         self,
         *,
         namespace: Namespace,
-        start_ts: int,
-        end_ts: int,
+        start_ts: int | None,
+        end_ts: int | None,
         cross_conversation: bool = False,
     ) -> list[dict[str, Any]]:
         if isinstance(start_ts, bool) or isinstance(end_ts, bool):
             raise ValueError("catalog_time_range_requires_integer_timestamps")
         try:
-            resolved_start = int(start_ts)
-            resolved_end = int(end_ts)
+            resolved_start = 0 if start_ts is None else int(start_ts)
+            resolved_end = (2**63 - 1) if end_ts is None else int(end_ts)
         except (TypeError, ValueError) as exc:
             raise ValueError("catalog_time_range_requires_integer_timestamps") from exc
         if resolved_start < 0 or resolved_end <= resolved_start:
@@ -3665,15 +3665,15 @@ class SQLiteMemoryStore(MemoryStore):
         self,
         *,
         namespace: Namespace,
-        start_ts: int,
-        end_ts: int,
+        start_ts: int | None,
+        end_ts: int | None,
         cross_conversation: bool = False,
     ) -> list[dict[str, Any]]:
         if isinstance(start_ts, bool) or isinstance(end_ts, bool):
             raise ValueError("catalog_time_range_requires_integer_timestamps")
         try:
-            resolved_start = int(start_ts)
-            resolved_end = int(end_ts)
+            resolved_start = 0 if start_ts is None else int(start_ts)
+            resolved_end = (2**63 - 1) if end_ts is None else int(end_ts)
         except (TypeError, ValueError) as exc:
             raise ValueError("catalog_time_range_requires_integer_timestamps") from exc
         if resolved_start < 0 or resolved_end <= resolved_start:
@@ -3701,14 +3701,14 @@ class SQLiteMemoryStore(MemoryStore):
         self,
         *,
         namespace: Namespace,
-        start_ts: int,
-        end_ts: int,
+        start_ts: int | None,
+        end_ts: int | None,
         cross_conversation: bool = False,
     ) -> dict[str, Any]:
         if isinstance(start_ts, bool) or isinstance(end_ts, bool):
             raise ValueError("catalog_time_range_requires_integer_timestamps")
-        resolved_start = int(start_ts)
-        resolved_end = int(end_ts)
+        resolved_start = 0 if start_ts is None else int(start_ts)
+        resolved_end = (2**63 - 1) if end_ts is None else int(end_ts)
         if resolved_start < 0 or resolved_end <= resolved_start:
             raise ValueError("catalog_time_range_invalid")
         scope_clause, params = self._scope_clause(
@@ -3766,6 +3766,98 @@ class SQLiteMemoryStore(MemoryStore):
                     }
                 )
         return result
+
+    def get_catalog_keyword_pools(
+        self,
+        *,
+        namespace: Namespace,
+        memory_ids: tuple[str, ...],
+        cross_conversation: bool = False,
+    ) -> dict[str, list[str]]:
+        """Batch-read tag/lineage columns only; no raw bodies or vector index.
+
+        Derive on read so metadata repair, reinforcement, deletion, and old
+        databases need neither an LLM backfill nor a second persistent index.
+        Each of the three lineage layers is read once in bounded SQL batches.
+        """
+        from ..catalog_keywords import catalog_metadata_terms, normalize_catalog_terms
+
+        scope, scope_params = self._scope_clause(namespace, with_conversation=not cross_conversation)
+
+        def load(table: str, id_column: str, ids: list[str], columns: str, condition: str) -> dict[str, Any]:
+            result: dict[str, Any] = {}
+            unique_ids = list(dict.fromkeys(ids))
+            for offset in range(0, len(unique_ids), 400):
+                batch = unique_ids[offset : offset + 400]
+                placeholders = ",".join("?" for _ in batch)
+                rows = self._conn.execute(
+                    f"SELECT {id_column}, memory_metadata_json, {columns} FROM {table} "
+                    f"WHERE {scope} AND {id_column} IN ({placeholders}) AND {condition}",
+                    [*scope_params, *batch],
+                ).fetchall()
+                result.update((str(row[id_column]), row) for row in rows)
+            return result
+
+        def source_ids(row: Any, field: str) -> list[str]:
+            try:
+                value = json.loads(row[field] or "[]")
+            except (TypeError, ValueError):
+                return []
+            return [item for item in value if isinstance(item, str) and item] if isinstance(value, list) else []
+
+        def terms(row: Any) -> list[str]:
+            try:
+                metadata = json.loads(row["memory_metadata_json"] or "{}")
+            except (TypeError, ValueError):
+                return []
+            return catalog_metadata_terms(metadata)
+
+        with self._lock:
+            semantics = load(
+                "semantic_summaries",
+                "semantic_id",
+                list(memory_ids),
+                "source_summary_ids_json",
+                "retrieval_visibility = 'default'",
+            )
+            episode_ids = list(memory_ids)
+            for row in semantics.values():
+                episode_ids.extend(source_ids(row, "source_summary_ids_json"))
+            episodes = load(
+                "summaries",
+                "summary_id",
+                episode_ids,
+                "source_ids_json",
+                "kind = 'memory.episode_summary' AND retrieval_visibility = 'default'",
+            )
+            if set(semantics).intersection(episodes):
+                raise SchemaError("ambiguous_memory_id")
+            raw_ids = [sid for row in episodes.values() for sid in source_ids(row, "source_ids_json")]
+            raw = load(
+                "messages",
+                "source_id",
+                raw_ids,
+                "annotation_status",
+                "retrieval_visibility = 'default' "
+                "AND annotation_status IN ('accepted_model', 'accepted_host', 'accepted_legacy') "
+                "AND COALESCE(turn_role, '') NOT IN ('action', 'observation') "
+                "AND kind NOT LIKE 'operation.%' AND kind NOT LIKE 'skill.%' "
+                "AND kind NOT LIKE 'tool.%' AND kind NOT LIKE 'material.%'",
+            )
+            episode_pools = {}
+            for sid, row in episodes.items():
+                pool = terms(row)
+                for source_id in source_ids(row, "source_ids_json"):
+                    if source_id in raw:
+                        pool.extend(terms(raw[source_id]))
+                episode_pools[sid] = normalize_catalog_terms(pool)
+            pools = {sid: episode_pools[sid] for sid in memory_ids if sid in episode_pools}
+            for sid, row in semantics.items():
+                pool = terms(row)
+                for child_id in source_ids(row, "source_summary_ids_json"):
+                    pool.extend(episode_pools.get(child_id, []))
+                pools[sid] = normalize_catalog_terms(pool)
+        return pools
 
     def get_recent_semantic_summaries(
         self, *, namespace: Namespace, limit: int | None = None, cross_conversation: bool = False

@@ -120,6 +120,11 @@ def _selector_for(operation: str, arguments: Mapping[str, Any], result: Mapping[
             "requested_range": dict(coverage.get("requested_range") or {}),
             "node_types": list(result.get("node_types") or []),
             "cross_conversation": bool(result.get("cross_conversation")),
+            **(
+                {"keywords": list(result["keywords"]), "keyword_match": result["keyword_match"]}
+                if result.get("keywords")
+                else {}
+            ),
         }
     if operation in {"open_memory", "read_entry"}:
         return {

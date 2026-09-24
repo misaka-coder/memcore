@@ -212,6 +212,8 @@ calling it again with only `cursor`.
 
 Recommended tool parameters:
 
+- `keywords: list[str]` optional — known names or concrete topic phrases; dates may be omitted when nonempty
+- `keyword_match: any|all` optional — stored tags contain query terms, against the deduplicated union of summary and exact-source tags
 - `time_range: {start_at, end_at}` optional
 - `date_from: YYYY-MM-DD` optional
 - `date_to: YYYY-MM-DD` optional
@@ -219,6 +221,15 @@ Recommended tool parameters:
 - `cross_conversation: bool` only if the product allows it
 - `page_size: int` optional
 - `cursor: str` optional; when present, send the cursor alone
+
+Cards expose summary `entity_anchors/topic_terms`, matched query `matched_terms`,
+and `keyword_hits` with one original stored term per query. Matching is one-way:
+stored `文旅答辩项目` matches query `文旅`, but stored `文旅` does not match the
+longer query `文旅答辩项目`. Exact and substring hits are returned together.
+Tags are navigation clues, not evidence that two names share an event or relationship.
+No keyword hit does not prove no history; use fuzzy retrieval for missing tags or
+paraphrases. Coverage describes history before keyword filtering. If continuation
+returns `catalog_changed_restart_required`, repeat the original query.
 
 ### `open_memory`
 

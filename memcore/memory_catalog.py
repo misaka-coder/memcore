@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from .catalog_keywords import catalog_tag_fields
 from .text_utils import normalize_text
 
 CATALOG_SCHEMA_VERSION = 1
@@ -82,6 +83,7 @@ def build_memory_card(record: Mapping[str, Any], *, timezone: str = "") -> dict[
         "node_type": node_type,
         "memory_title": title,
         "catalog_hint": hint,
+        **catalog_tag_fields(record.get("memory_metadata")),
         "topic_headings": [
             _compact_text(item, limit=_MAX_HEADING_CHARS)
             for item in _unique_strings(record.get("topic_headings"))[:_MAX_HEADINGS]

@@ -2382,16 +2382,19 @@ class MemorySystem:
         date_from: str = "",
         date_to: str = "",
         node_types: list[str] | None = None,
+        keywords: list[str] | None = None,
+        keyword_match: str = "any",
         cross_conversation: bool = False,
         page_size: int = 50,
         cursor: str = "",
     ) -> dict[str, Any]:
-        """Browse compact memory cards for a deterministic time range.
+        """Browse compact cards by time and/or substrings of entity/topic tags.
 
         This is a SQLite catalog read, not semantic Top-K.  Continuation cursors
         freeze the selector and return complete cards without hidden truncation.
         """
 
+        from .catalog_keywords import catalog_keyword_hits, normalize_catalog_terms
         from .memory_catalog import build_memory_card
         from .memory_navigation import (
             MEMORY_NODE_TYPES,
@@ -2420,6 +2423,8 @@ class MemorySystem:
                 or str(date_from or "").strip()
                 or str(date_to or "").strip()
                 or node_types is not None
+                or keywords is not None
+                or keyword_match != "any"
                 or bool(cross_conversation)
                 or page_size != 50
             ):
@@ -2433,37 +2438,53 @@ class MemorySystem:
                 selector_payload = dict(decoded["selector"])
                 page_size = int(decoded["page_size"])
                 after_key = tuple(decoded["last_key"])
-                start_ts = int(selector_payload["start_ts"])
-                end_ts = int(selector_payload["end_ts"])
+                start_ts = selector_payload["start_ts"]
+                end_ts = selector_payload["end_ts"]
+                start_ts = None if start_ts is None else int(start_ts)
+                end_ts = None if end_ts is None else int(end_ts)
                 resolved_node_types = [str(item) for item in list(selector_payload["node_types"])]
                 cross_conversation = bool(selector_payload["cross_conversation"])
+                resolved_keywords = normalize_catalog_terms(selector_payload.get("keywords"), strict=True)
+                keyword_match = selector_payload.get("keyword_match", "any")
+                if keyword_match not in ("any", "all"):
+                    raise ValueError("invalid_keyword_match")
             except (KeyError, TypeError, ValueError) as exc:
                 return _invalid(str(exc) or "invalid_cursor")
         else:
             try:
                 page_size = normalize_page_size(page_size)
+                resolved_keywords = normalize_catalog_terms(keywords, strict=True)
+                if keyword_match not in ("any", "all"):
+                    raise ValueError("invalid_keyword_match")
+                if keyword_match != "any" and not resolved_keywords:
+                    raise ValueError("keyword_match_requires_keywords")
                 requested = list(node_types or ["episodic"])
                 resolved_node_types = list(dict.fromkeys(str(item or "").strip().lower() for item in requested))
                 if not resolved_node_types or any(item not in MEMORY_NODE_TYPES for item in resolved_node_types):
                     raise ValueError("invalid_memory_node_types")
-                selector = normalize_timeline_time_selector(
-                    timezone=self.timezone,
-                    time_range=time_range,
-                    date_from=str(date_from or "").strip(),
-                    date_to=str(date_to or "").strip(),
-                )
+                has_time = time_range is not None or str(date_from or "").strip() or str(date_to or "").strip()
+                selector = None
+                if has_time or not resolved_keywords:
+                    selector = normalize_timeline_time_selector(
+                        timezone=self.timezone,
+                        time_range=time_range,
+                        date_from=str(date_from or "").strip(),
+                        date_to=str(date_to or "").strip(),
+                    )
             except (TypeError, ValueError) as exc:
                 return _invalid(str(exc) or "invalid_memory_browse_options")
-            start_ts = selector.start_ts
-            end_ts = selector.end_ts
+            start_ts = selector.start_ts if selector else None
+            end_ts = selector.end_ts if selector else None
             after_key = None
             selector_payload = {
                 "start_ts": start_ts,
                 "end_ts": end_ts,
-                "start_at": selector.start_at,
-                "end_at": selector.end_at,
+                "start_at": selector.start_at if selector else "",
+                "end_at": selector.end_at if selector else "",
                 "node_types": resolved_node_types,
                 "cross_conversation": bool(cross_conversation),
+                "keywords": resolved_keywords,
+                "keyword_match": keyword_match,
             }
 
         try:
@@ -2487,6 +2508,20 @@ class MemorySystem:
                     )
                 )
             cards = [build_memory_card(record, timezone=self.timezone) for record in records]
+            coverage_cards = cards
+            if resolved_keywords:
+                pools = self.store.get_catalog_keyword_pools(
+                    namespace=self.namespace,
+                    memory_ids=tuple(card["memory_id"] for card in cards),
+                    cross_conversation=cross_conversation,
+                )
+                matching_cards = []
+                for card in cards:
+                    hits = catalog_keyword_hits(pools.get(card["memory_id"], []), resolved_keywords)
+                    matched = [hit["query"] for hit in hits]
+                    if matched and (keyword_match == "any" or len(matched) == len(resolved_keywords)):
+                        matching_cards.append({**card, "matched_terms": matched, "keyword_hits": hits})
+                cards = matching_cards
             cards.sort(
                 key=lambda card: (
                     int(card.get("period_start_ts") or 0),
@@ -2495,6 +2530,13 @@ class MemorySystem:
                     str(card.get("memory_id") or ""),
                 )
             )
+            if resolved_keywords:
+                from .projection import stable_projection_hash
+
+                fingerprint = stable_projection_hash(cards)
+                if cursor_token and selector_payload.get("catalog_fingerprint") != fingerprint:
+                    return _invalid("catalog_changed_restart_required")
+                selector_payload["catalog_fingerprint"] = fingerprint
             page = paginate_memory_items(
                 cards,
                 item_keys=[
@@ -2527,22 +2569,31 @@ class MemorySystem:
                 "returned_card_count": 0,
                 "next_cursor": "",
             }
+        except SchemaError as exc:
+            return {
+                "status": "unavailable",
+                "reason": str(exc) or "memory_catalog_invalid",
+                "cards": [],
+                "matched_card_count": 0,
+                "returned_card_count": 0,
+                "next_cursor": "",
+            }
         except (TypeError, ValueError) as exc:
             return _invalid(str(exc) or "invalid_memory_browse_options")
 
         covered_intervals = merge_intervals(
             [
                 {
-                    "start_ts": max(start_ts, int(card.get("period_start_ts") or 0)),
+                    "start_ts": max(start_ts or 0, int(card.get("period_start_ts") or 0)),
                     "end_ts": min(
-                        end_ts,
+                        end_ts if end_ts is not None else 2**63 - 1,
                         max(
                             int(card.get("period_start_ts") or 0) + 1,
                             int(card.get("period_end_ts") or 0) + 1,
                         ),
                     ),
                 }
-                for card in cards
+                for card in coverage_cards
             ]
         )
         for interval in covered_intervals:
@@ -2565,9 +2616,16 @@ class MemorySystem:
             "complete": int(raw_coverage.get("gap_source_count") or 0) == 0,
             "meaning": "all stored raw sources in the requested range are accounted for; quiet wall-clock gaps are not missing memory",
         }
+        keyword_result = {}
+        if resolved_keywords:
+            keyword_result = {"keywords": resolved_keywords, "keyword_match": keyword_match}
+            coverage["keyword_filtered"] = False
         return {
-            "status": "ok" if cards or coverage["total_source_count"] else "empty",
-            "reason": "" if cards else "no_catalog_cards_in_range",
+            "status": "ok" if cards or (not resolved_keywords and coverage["total_source_count"]) else "empty",
+            "reason": ""
+            if cards
+            else ("no_catalog_keyword_matches" if resolved_keywords else "no_catalog_cards_in_range"),
+            **keyword_result,
             "node_types": resolved_node_types,
             "cross_conversation": bool(cross_conversation),
             "coverage": coverage,

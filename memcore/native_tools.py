@@ -207,7 +207,17 @@ def _dispatch_retrieve(
 def _dispatch_browse(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
     unknown = _unknown_keys(
         args,
-        {"time_range", "date_from", "date_to", "node_types", "cross_conversation", "page_size", "cursor"},
+        {
+            "time_range",
+            "date_from",
+            "date_to",
+            "node_types",
+            "keywords",
+            "keyword_match",
+            "cross_conversation",
+            "page_size",
+            "cursor",
+        },
     )
     if unknown:
         return _err("browse_memory", "invalid_arguments", f"unknown_arguments:{unknown}")
@@ -219,6 +229,15 @@ def _dispatch_browse(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
     node_types, error = _enum_list(args.get("node_types"), "node_types", MEMORY_NODE_TYPES)
     if error:
         return _err("browse_memory", "invalid_arguments", error)
+    from .catalog_keywords import normalize_catalog_terms
+
+    try:
+        keywords = normalize_catalog_terms(args.get("keywords"), strict=True)
+    except ValueError as exc:
+        return _err("browse_memory", "invalid_arguments", str(exc))
+    keyword_match = args.get("keyword_match") if args.get("keyword_match") is not None else "any"
+    if keyword_match not in ("any", "all"):
+        return _err("browse_memory", "invalid_arguments", "invalid_keyword_match")
     cross = args.get("cross_conversation", False)
     if cross is None:
         cross = False
@@ -237,6 +256,8 @@ def _dispatch_browse(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
             bool(date_from),
             bool(date_to),
             bool(node_types),
+            args.get("keywords") is not None,
+            args.get("keyword_match") is not None,
             bool(cross),
             args.get("page_size") is not None,
         )
@@ -247,6 +268,8 @@ def _dispatch_browse(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
         date_from=date_from,
         date_to=date_to,
         node_types=node_types or None,
+        keywords=keywords if args.get("keywords") is not None else None,
+        keyword_match=keyword_match,
         cross_conversation=cross,
         page_size=page_size,
         cursor=cursor,
@@ -765,10 +788,13 @@ def _timeline_description() -> str:
 
 def _browse_description() -> str:
     return (
-        "Browse a deterministic time catalog of compact memory cards before opening large history. Use this for "
-        "multi-day questions such as what happened from one date to another. It returns every matching card across "
-        "lossless cursor pages plus explicit coverage of summarized, live-unsummarized, and broken-lineage records. "
-        "If page_complete is false, call again with only next_cursor."
+        "Browse chronological compact memory cards by date and/or keywords; dates are optional with keywords. "
+        "A stored summary/source tag must contain the query term (one-way, normalized case-insensitive matching). "
+        "any=one or more queries, all=every query in one card's pool. Cards show title, time, summary tags, "
+        "matched_terms and keyword_hits (one stored term per query). Tags are clues, not proof of a relationship; "
+        "use open_memory(content/sources) for evidence. No match does not prove a topic was never discussed. "
+        "Coverage describes history before keyword filtering. If page_complete is false, continue with only "
+        "next_cursor; on catalog_changed_restart_required, repeat the original query."
     )
 
 
@@ -938,6 +964,16 @@ def _browse_schema() -> dict[str, Any]:
         "additionalProperties": False,
         "required": [],
         "properties": {
+            "keywords": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Known names or concrete topic phrases; stored tags must contain each query term after case/width/whitespace normalization.",
+            },
+            "keyword_match": {
+                "type": "string",
+                "enum": ["any", "all"],
+                "description": "any by default; all requires every keyword. Use only with keywords.",
+            },
             "time_range": {
                 "type": "object",
                 "additionalProperties": False,

@@ -444,33 +444,49 @@ class MemoryStore(ABC):
         self,
         *,
         namespace: Namespace,
-        start_ts: int,
-        end_ts: int,
+        start_ts: int | None,
+        end_ts: int | None,
         cross_conversation: bool = False,
     ) -> list[dict[str, Any]]:
-        """Return every overlapping episodic summary in deterministic time order."""
+        """Return overlapping episodic summaries; None bounds mean unbounded."""
         raise NotImplementedError
 
     def get_semantic_summaries_by_time_range(
         self,
         *,
         namespace: Namespace,
-        start_ts: int,
-        end_ts: int,
+        start_ts: int | None,
+        end_ts: int | None,
         cross_conversation: bool = False,
     ) -> list[dict[str, Any]]:
-        """Return every overlapping semantic summary in deterministic time order."""
+        """Return overlapping semantic summaries; None bounds mean unbounded."""
         raise NotImplementedError
 
     def get_catalog_raw_coverage(
         self,
         *,
         namespace: Namespace,
-        start_ts: int,
-        end_ts: int,
+        start_ts: int | None,
+        end_ts: int | None,
         cross_conversation: bool = False,
     ) -> dict[str, Any]:
         """Return compact accounting for covered, live, and broken raw lineage."""
+        raise NotImplementedError
+
+    def get_catalog_keyword_pools(
+        self,
+        *,
+        namespace: Namespace,
+        memory_ids: tuple[str, ...],
+        cross_conversation: bool = False,
+    ) -> dict[str, list[str]]:
+        """Union each catalog node's own tags and authorized exact source tags.
+
+        Use existing entity_anchors/topic_terms only. Operation/material and
+        explicit/never source tags must not enter ordinary catalog search.
+        Missing source metadata contributes no terms; a summary's own tags
+        remain usable. Implementations must reflect current stored truth.
+        """
         raise NotImplementedError
 
     @abstractmethod
