@@ -8,3 +8,15 @@ build/
 *.egg-info/
 .claude/settings.json
 .claude/settings.local.json
+
+# 视频/演示资产:Remotion 工程与媒体文件,体积大且与库本体无关,不随开源发布
+docs/video_assets/
+
+# 编辑器与系统垃圾
+.DS_Store
+Thumbs.db
+desktop.ini
+~$*
+*.swp
+.idea/
+.vscode/

@@ -4,6 +4,8 @@ include COMMERCIAL.md
 include README.md
 include pyproject.toml
 recursive-include docs *.md
+# 演示用 Remotion 工程:体积大且与库本体无关,不随 sdist 发布(git 侧见 .gitignore)
+prune docs/video_assets
 recursive-include examples *.py
 recursive-include tests *.py
 global-exclude __pycache__/*
