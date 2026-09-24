@@ -3,11 +3,43 @@
 from __future__ import annotations
 
 import unittest
+import json
 
 from memcore import StreamingSpeechParser, build_chat_output_contract_prompt, parse_chat_output, segment_speech
 
 
 class SpeechSegmenter(unittest.TestCase):
+    def test_pairs_survive_soft_limit_newlines_and_every_stream_boundary(self) -> None:
+        pairs = list(zip("([{（【《「『“‘〈〔〖〘〚［｛｟«‹<", ")] }）】》」』”’〉〕〗〙〛］｝｠»›>".replace(" ", "")))
+        pairs += [('"', '"'), ("'", "'"), ("`", "`"), ("```", "```")]
+        for opener, closer in pairs:
+            speech = f"{opener}Long English, with words!\nAnd more words?{closer}结束。下一句。"
+            expected = [speech.split("下一句")[0].replace("\n", " "), "下一句。"]
+            self.assertEqual(segment_speech(speech, max_chars=12), expected, opener)
+            wire = json.dumps({"speech": speech}, ensure_ascii=False)
+            for boundary in range(len(wire) + 1):
+                parser = StreamingSpeechParser(mode="memcore_json", max_segment_chars=12)
+                events = parser.feed(wire[:boundary]) + parser.feed(wire[boundary:]) + parser.finish()
+                self.assertEqual(
+                    [e["text"] for e in events if e["type"] == "speech_segment"], expected, (opener, boundary)
+                )
+
+    def test_nested_quotes_apostrophes_and_unclosed_source(self) -> None:
+        cases = [
+            ("她说：\"看《书里[还有'nested!']》吧。\"结束。", ["她说：\"看《书里[还有'nested!']》吧。\"结束。"]),
+            ("Don't worry. John's here.", ["Don't worry.", "John's here."]),
+            ("‘Don’t worry! It’s fine.’结束。", ["‘Don’t worry! It’s fine.’结束。"]),
+            ('完成。"Next! Still quoted?"结束。', ["完成。", '"Next! Still quoted?"结束。']),
+            ("2 < 3。下一句。", ["2 < 3。", "下一句。"]),
+            ("[原文本来未闭合，继续输出。", ["[原文本来未闭合，继续输出。"]),
+            ("很长的词语" * 50, ["很长的词语" * 50]),
+        ]
+        for speech, expected in cases:
+            self.assertEqual(segment_speech(speech), expected)
+            parser = StreamingSpeechParser(mode="plain")
+            events = [event for char in speech for event in parser.feed(char)] + parser.finish()
+            self.assertEqual([e["text"] for e in events if e["type"] == "speech_segment"], expected)
+
     def test_chinese_punctuation_cluster_stays_together(self) -> None:
         self.assertEqual(segment_speech("哈啊？！真的吗。"), ["哈啊？！", "真的吗。"])
 
@@ -174,7 +206,8 @@ class ChatOutputPrompt(unittest.TestCase):
         self.assertIn('include_explicit=true, kind_patterns=["material.*"]', prompt)
         self.assertNotIn("confidence", prompt)
         self.assertIn("准确名称或别名", prompt)
-        self.assertIn("动作、关系、属性或主题短词", prompt)
+        self.assertIn("优先保留具体、便于检索的名词和主题短语", prompt)
+        self.assertIn("两组词去重", prompt)
         self.assertNotIn("speech_segments", prompt)
 
 

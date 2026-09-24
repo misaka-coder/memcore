@@ -11,6 +11,7 @@ from .segmenter import (
     _consume_sentence_tail,
     _is_sentence_end,
     _merge_short_segments,
+    _protected_span_boundaries,
     _soft_cut,
 )
 
@@ -317,20 +318,21 @@ def _split_stream_segments(
     flush: bool,
     speech_closed: bool = False,
 ) -> tuple[list[str], str]:
+    protected = _protected_span_boundaries(text)
     raw: list[str] = []
     start = 0
     cut_end = 0
     i = 0
     while i < len(text):
         char = text[i]
-        if char == "\n":
+        if char == "\n" and not protected[i]:
             _append_raw(raw, text[start:i])
             start = i + 1
             cut_end = start
             i = start
             continue
-        if _is_sentence_end(text, i):
-            end = _consume_sentence_tail(text, i)
+        if _is_sentence_end(text, i, protected=protected):
+            end = _consume_sentence_tail(text, i, protected=protected)
             if end >= len(text) and not (flush or speech_closed):
                 break
             _append_raw(raw, text[start:end])
@@ -339,7 +341,7 @@ def _split_stream_segments(
             i = start
             continue
         if i - start + 1 >= max_chars:
-            cut = _soft_cut(text, start, i + 1, min_chars=min_chars)
+            cut = _soft_cut(text, start, i + 1, min_chars=min_chars, protected=protected)
             if cut > start:
                 _append_raw(raw, text[start:cut])
                 start = cut

@@ -9,7 +9,6 @@ import re
 from typing import Any
 
 _END_PUNCT = set("。！？!?")
-_CLOSERS = set("\"'”’)]}）】》」』")
 _OPEN_TO_CLOSE = {
     "(": ")",
     "[": "]",
@@ -21,7 +20,19 @@ _OPEN_TO_CLOSE = {
     "『": "』",
     "“": "”",
     "‘": "’",
+    "〈": "〉",
+    "〔": "〕",
+    "〖": "〗",
+    "〘": "〙",
+    "〚": "〛",
+    "［": "］",
+    "｛": "｝",
+    "｟": "｠",
+    "«": "»",
+    "‹": "›",
+    "<": ">",
 }
+_CLOSERS = set(_OPEN_TO_CLOSE.values()) | set("\"'`")
 _ABBREVIATIONS = {
     "e.g",
     "i.e",
@@ -57,25 +68,26 @@ def segment_speech(
         return []
     min_chars = max(1, int(min_chars))
     max_chars = max(min_chars, int(max_chars))
+    protected = _protected_span_boundaries(normalized)
 
     raw: list[str] = []
     start = 0
     i = 0
     while i < len(normalized):
         char = normalized[i]
-        if char == "\n":
+        if char == "\n" and not protected[i]:
             _append_raw(raw, normalized[start:i])
             start = i + 1
             i += 1
             continue
-        if _is_sentence_end(normalized, i):
-            end = _consume_sentence_tail(normalized, i)
+        if _is_sentence_end(normalized, i, protected=protected):
+            end = _consume_sentence_tail(normalized, i, protected=protected)
             _append_raw(raw, normalized[start:end])
             start = end
             i = end
             continue
         if i - start + 1 >= max_chars:
-            cut = _soft_cut(normalized, start, i + 1, min_chars=min_chars)
+            cut = _soft_cut(normalized, start, i + 1, min_chars=min_chars, protected=protected)
             if cut > start:
                 _append_raw(raw, normalized[start:cut])
                 start = cut
@@ -100,9 +112,9 @@ def _clean_segment(value: Any) -> str:
     return " ".join(str(value or "").replace("\r\n", "\n").replace("\r", "\n").splitlines()).strip()
 
 
-def _is_sentence_end(text: str, index: int) -> bool:
+def _is_sentence_end(text: str, index: int, *, protected: list[bool] | None = None) -> bool:
     char = text[index]
-    if _is_inside_protected_span(text, index):
+    if (protected if protected is not None else _protected_span_boundaries(text))[index]:
         return False
     if char in _END_PUNCT:
         return True
@@ -128,8 +140,8 @@ def _is_period_sentence_end(text: str, index: int) -> bool:
     return True
 
 
-def _is_inside_protected_span(text: str, index: int) -> bool:
-    """Return whether ``index`` sits inside paired title/quote/bracket text.
+def _protected_span_boundaries(text: str) -> list[bool]:
+    """Scan once per pending text, preserving nested title/quote/bracket state.
 
     Inner punctuation in values such as ``《孤独摇滚！》`` or ``“好吧。”`` is
     not an outer delivery boundary.  This is intentionally syntax-oriented;
@@ -137,26 +149,52 @@ def _is_inside_protected_span(text: str, index: int) -> bool:
     """
 
     stack: list[str] = []
-    ascii_quote_open = False
     escaped = False
-    for char in text[:index]:
+    boundaries: list[bool] = []
+    code_end = 0
+    for pos, char in enumerate(text):
+        boundaries.append(bool(stack))
+        if pos < code_end:
+            continue
+        previous = text[pos - 1] if pos else ""
+        following = text[pos + 1] if pos + 1 < len(text) else ""
         if escaped:
             escaped = False
             continue
         if char == "\\":
             escaped = True
             continue
-        if char == '"':
-            ascii_quote_open = not ascii_quote_open
+        if char == "`":
+            end = pos + 1
+            while end < len(text) and text[end] == "`":
+                end += 1
+            delimiter = text[pos:end]
+            code_end = end
+            if stack and stack[-1] == delimiter:
+                stack.pop()
+            elif not stack or not stack[-1].startswith("`"):
+                stack.append(delimiter)
             continue
-        if ascii_quote_open:
+        if stack and stack[-1].startswith("`"):
             continue
-        if char in _OPEN_TO_CLOSE:
-            stack.append(_OPEN_TO_CLOSE[char])
+        # Apostrophes inside words (including curly contractions) are not quotes.
+        if char in "'’" and previous.isascii() and previous.isalnum() and following.isascii() and following.isalnum():
             continue
         if stack and char == stack[-1]:
             stack.pop()
-    return ascii_quote_open or bool(stack)
+            continue
+        if char in "\"'":
+            # Possessives and inch marks outside an open quote.
+            if previous.isascii() and previous.isalnum():
+                continue
+            stack.append(char)
+            continue
+        if char == "<" and (not following or following.isspace() or following == "=" or previous.isalnum()):
+            continue
+        if char in _OPEN_TO_CLOSE:
+            stack.append(_OPEN_TO_CLOSE[char])
+    boundaries.append(bool(stack))
+    return boundaries
 
 
 def _is_numbered_list_marker(text: str, index: int) -> bool:
@@ -198,22 +236,27 @@ def _token_ending_at(text: str, index: int) -> str:
     return text[start : index + 1]
 
 
-def _consume_sentence_tail(text: str, index: int) -> int:
+def _consume_sentence_tail(text: str, index: int, *, protected: list[bool] | None = None) -> int:
+    protected = protected if protected is not None else _protected_span_boundaries(text)
     end = index + 1
     while end < len(text) and (text[end] in _END_PUNCT or text[end] in ".…" or text[end] in _CLOSERS):
+        if text[end] in _CLOSERS and protected[end + 1]:
+            break
         if text[end] == "." and not _is_period_sentence_end(text, end):
             break
         end += 1
     return end
 
 
-def _soft_cut(text: str, start: int, end: int, *, min_chars: int) -> int:
+def _soft_cut(text: str, start: int, end: int, *, min_chars: int, protected: list[bool] | None = None) -> int:
+    protected = protected if protected is not None else _protected_span_boundaries(text)
     window = text[start:end]
     candidates = [match.end() for match in re.finditer(r"[，,；;、\s]", window)]
     for offset in reversed(candidates):
-        if offset >= min_chars:
+        if offset >= min_chars and not protected[start + offset - 1]:
             return start + offset
-    return end if len(window) >= min_chars else start
+    # Length is a soft delivery target, never a reason to split a word or pair.
+    return start
 
 
 def _merge_short_segments(raw: list[str], *, min_chars: int) -> list[str]:
