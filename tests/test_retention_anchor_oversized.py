@@ -25,7 +25,6 @@ from memcore import (
     SQLiteMemoryStore,
     TimelineEntryInput,
     TurnRole,
-    build_action_entry,
     build_observation_entry,
     MAX_OPERATION_RETENTION_ANCHOR_BYTES,
 )
@@ -112,7 +111,11 @@ class OversizedAnchorNonFatalTests(unittest.TestCase):
         mem, store = _memory()
         try:
             _open_turn(mem)
-            big = {"operation": "read_timeline", "cursor": "c-" + ("9" * 9000), "covered_ids": ["id-%05d" % i for i in range(2000)]}
+            big = {
+                "operation": "read_timeline",
+                "cursor": "c-" + ("9" * 9000),
+                "covered_ids": ["id-%05d" % i for i in range(2000)],
+            }
             self.assertGreater(_anchor_bytes(big), MAX_OPERATION_RETENTION_ANCHOR_BYTES)
 
             action, observation = _host_style_pair("read_timeline", "call-1", "m1", 101, "timeline rows", big)
@@ -150,7 +153,11 @@ class OversizedAnchorNonFatalTests(unittest.TestCase):
         mem, store = _memory()
         try:
             _open_turn(mem, turn_id="turn-2", ts=200)
-            big = {"operation": "read_timeline", "cursor": "c-" + ("9" * 9000), "covered_ids": ["id-%05d" % i for i in range(1500)]}
+            big = {
+                "operation": "read_timeline",
+                "cursor": "c-" + ("9" * 9000),
+                "covered_ids": ["id-%05d" % i for i in range(1500)],
+            }
             pairs = [
                 _host_style_pair("web_search", "call-p1", "p1", 201, "search rows", {"cursor": "c1"}),
                 _host_style_pair("open_memory", "call-p2", "p2", 203, "card content", big),

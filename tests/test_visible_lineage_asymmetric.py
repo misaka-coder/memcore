@@ -15,7 +15,6 @@ from __future__ import annotations
 import unittest
 
 from memcore import (
-    EntryOrigin,
     HashedEmbeddingProvider,
     InMemoryVectorIndex,
     LLMClient,
@@ -25,8 +24,6 @@ from memcore import (
     MemorySystem,
     Namespace,
     SQLiteMemoryStore,
-    TimelineEntryInput,
-    TurnRole,
 )
 from memcore.index.entry_builder import build_semantic_entry, build_summary_entry
 from memcore.index.metadata_filters import INDEX_SCHEMA_KEY, INDEX_SCHEMA_VERSION
@@ -38,7 +35,9 @@ class NoopLLM(LLMClient):
         return LLMResult(ok=True, data={}, attempts=1)
 
 
-def _memory(*, user: str = "user", conversation: str = "c1") -> tuple[MemorySystem, SQLiteMemoryStore, InMemoryVectorIndex]:
+def _memory(
+    *, user: str = "user", conversation: str = "c1"
+) -> tuple[MemorySystem, SQLiteMemoryStore, InMemoryVectorIndex]:
     store = SQLiteMemoryStore(":memory:")
     embedding = HashedEmbeddingProvider()
     index = InMemoryVectorIndex(embedding=embedding)
@@ -354,7 +353,7 @@ class LineageClosureDirectionTests(unittest.TestCase):
         mem, store, _index = _memory()
         try:
             raw = mem.record_user_turn("我欠阿姆的一笔钱还没还", timestamp=1000, source_id="debt-raw")
-            summary = store.add_summary(
+            store.add_summary(
                 namespace=mem.namespace,
                 record={
                     "summary_id": "debt-summary",

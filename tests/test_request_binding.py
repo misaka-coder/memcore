@@ -28,11 +28,16 @@ class RequestBindingContractTests(unittest.TestCase):
         )
 
         self.assertTrue(result.ok)
-        self.assertEqual([item.payload["content"] for item in result.messages], ["question", "attachment", "tool result"])
-        self.assertEqual([(group.turn_id, group.relation) for group in result.groups], [
-            ("turn-active", "active"),
-            ("legacy.material", "standalone"),
-        ])
+        self.assertEqual(
+            [item.payload["content"] for item in result.messages], ["question", "attachment", "tool result"]
+        )
+        self.assertEqual(
+            [(group.turn_id, group.relation) for group in result.groups],
+            [
+                ("turn-active", "active"),
+                ("legacy.material", "standalone"),
+            ],
+        )
         self.assertEqual(result.active_group.request_indexes, (0, 2))
         self.assertEqual(result.groups[1].request_indexes, (1,))
 

@@ -22,7 +22,6 @@ from memcore import (
     DEEPSEEK_PROFILE,
     OPENAI_PROFILE,
     OPENAI_RESPONSES_PROFILE,
-    Actor,
     EntryOrigin,
     HashedEmbeddingProvider,
     InMemoryVectorIndex,
@@ -32,7 +31,6 @@ from memcore import (
     MemorySystem,
     Namespace,
     PROJECTION_VERSION,
-    ProjectionMessageInput,
     ProjectionStatus,
     SQLiteMemoryStore,
     TimelineEntryInput,
@@ -331,11 +329,7 @@ class PathEvidenceProtectionTests(PathEvidenceBase):
         self.assertEqual(clean, source)
 
     def test_literal_secret_is_redacted_without_destroying_surrounding_evidence(self) -> None:
-        source = (
-            "before = 'keep this line'\n"
-            "token = 'abcdefghijklmnopqrstuvwxyz123456'\n"
-            "after = response.json()\n"
-        )
+        source = "before = 'keep this line'\ntoken = 'abcdefghijklmnopqrstuvwxyz123456'\nafter = response.json()\n"
         clean, status = sanitize_timeline_value(source)
         self.assertEqual(status, ProjectionStatus.SKIPPED_UNSAFE)
         self.assertIn("before = 'keep this line'", clean)
@@ -447,7 +441,7 @@ class PathEvidenceProtectionTests(PathEvidenceBase):
         self.assertEqual(clean, text)
 
     def test_settled_compact_card_has_no_backing_path(self) -> None:
-        handle = self.mem.begin_turn(
+        self.mem.begin_turn(
             stimuli=[
                 _stimulus(
                     "source: attachment\nfile_id: file_1\nfilename: photo.jpg",
@@ -471,7 +465,9 @@ class PathEvidenceProtectionTests(PathEvidenceBase):
 class LegacyPathProjectionMigrationTests(PathEvidenceBase):
     """Fabricate V2-frozen marker rows, then migrate and verify."""
 
-    def _fabricate_legacy_action_row(self, *, store, turn_id: str, projection_id: str, source_id: str, index: int) -> None:
+    def _fabricate_legacy_action_row(
+        self, *, store, turn_id: str, projection_id: str, source_id: str, index: int
+    ) -> None:
         legacy_arguments = json.dumps(
             {"command": "Get-ChildItem '[local path omitted from persistent history]'"},
             ensure_ascii=False,
@@ -482,7 +478,11 @@ class LegacyPathProjectionMigrationTests(PathEvidenceBase):
             "role": "assistant",
             "content": None,
             "tool_calls": [
-                {"id": "legacy-call", "type": "function", "function": {"name": "exec_run", "arguments": legacy_arguments}}
+                {
+                    "id": "legacy-call",
+                    "type": "function",
+                    "function": {"name": "exec_run", "arguments": legacy_arguments},
+                }
             ],
         }
         with store._conn:
@@ -574,7 +574,11 @@ class LegacyPathProjectionMigrationTests(PathEvidenceBase):
             source_id="mig-turn-action",
             index=1,
         )
-        before = dict(self.store._conn.execute("SELECT * FROM prompt_projections WHERE projection_id = ?", ("legacy-proj",)).fetchone())
+        before = dict(
+            self.store._conn.execute(
+                "SELECT * FROM prompt_projections WHERE projection_id = ?", ("legacy-proj",)
+            ).fetchone()
+        )
 
         report = self.mem.migrate_legacy_path_projections()
         self.assertEqual(report["status"], "ok")
@@ -582,7 +586,11 @@ class LegacyPathProjectionMigrationTests(PathEvidenceBase):
         self.assertEqual(report["version_advanced_only"], 0)
         self.assertEqual(report["preserved_without_raw_source"], 0)
 
-        row = dict(self.store._conn.execute("SELECT * FROM prompt_projections WHERE projection_id = ?", ("legacy-proj",)).fetchone())
+        row = dict(
+            self.store._conn.execute(
+                "SELECT * FROM prompt_projections WHERE projection_id = ?", ("legacy-proj",)
+            ).fetchone()
+        )
         self.assertEqual(int(row["projection_version"]), PROJECTION_VERSION)
         restored = json.loads(row["payload_json"])["tool_calls"][0]["function"]["arguments"]
         self.assertEqual(json.loads(restored)["command"], WINDOWS_PATH_COMMAND)
@@ -593,7 +601,11 @@ class LegacyPathProjectionMigrationTests(PathEvidenceBase):
         self.assertEqual(second["version_advanced_only"], 0)
         self.assertEqual(second["settled_rebuilt"], 0)
 
-        after = dict(self.store._conn.execute("SELECT * FROM prompt_projections WHERE projection_id = ?", ("legacy-proj",)).fetchone())
+        after = dict(
+            self.store._conn.execute(
+                "SELECT * FROM prompt_projections WHERE projection_id = ?", ("legacy-proj",)
+            ).fetchone()
+        )
         self.assertEqual(after["payload_json"], row["payload_json"])
         self.assertEqual(before["source_ids_json"], row["source_ids_json"])
 
@@ -664,7 +676,7 @@ class LegacyPathProjectionMigrationTests(PathEvidenceBase):
 
     def test_unaffected_rows_stay_byte_identical(self) -> None:
         self._build_turn_with_raw_sources("byte-turn")
-        projection = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)
+        self.mem.build_context_projection(provider_profile=OPENAI_PROFILE)
         self._fabricate_legacy_action_row(
             store=self.store,
             turn_id="byte-turn",
@@ -698,7 +710,11 @@ class LegacyPathProjectionMigrationTests(PathEvidenceBase):
         report = self.mem.migrate_legacy_path_projections()
         self.assertEqual(report["migrated"], 0)
         self.assertEqual(report["preserved_without_raw_source"], 1)
-        row = dict(self.store._conn.execute("SELECT * FROM prompt_projections WHERE projection_id = ?", ("ghost-proj",)).fetchone())
+        row = dict(
+            self.store._conn.execute(
+                "SELECT * FROM prompt_projections WHERE projection_id = ?", ("ghost-proj",)
+            ).fetchone()
+        )
         self.assertEqual(int(row["projection_version"]), 2)
         self.assertIn("local path omitted", row["payload_json"])
 
@@ -712,7 +728,11 @@ class LegacyPathProjectionMigrationTests(PathEvidenceBase):
             index=1,
         )
         settlement_id = f"settle-turn:{OPENAI_PROFILE}"
-        marker_payload = {"role": "tool", "tool_call_id": "legacy-call", "content": "[local path omitted from persistent history]"}
+        marker_payload = {
+            "role": "tool",
+            "tool_call_id": "legacy-call",
+            "content": "[local path omitted from persistent history]",
+        }
         with self.store._conn:
             self.store._conn.execute(
                 """
@@ -779,7 +799,11 @@ class LegacyPathProjectionMigrationTests(PathEvidenceBase):
             index=1,
         )
         settlement_id = f"noop-turn:{OPENAI_PROFILE}"
-        marker_payload = {"role": "tool", "tool_call_id": "legacy-call", "content": "[local path omitted from persistent history]"}
+        marker_payload = {
+            "role": "tool",
+            "tool_call_id": "legacy-call",
+            "content": "[local path omitted from persistent history]",
+        }
         with self.store._conn:
             self.store._conn.execute(
                 """
@@ -884,9 +908,7 @@ class LegacyPathProjectionMigrationTests(PathEvidenceBase):
             """,
             ("marker-only-turn", OPENAI_PROFILE),
         ).fetchall()
-        current_full_hash = stable_projection_hash(
-            [json.loads(str(row["payload_json"] or "{}")) for row in full_rows]
-        )
+        current_full_hash = stable_projection_hash([json.loads(str(row["payload_json"] or "{}")) for row in full_rows])
         settlement_id = f"marker-only-turn:{OPENAI_PROFILE}"
         marker_payload = {
             "role": "tool",
@@ -1126,7 +1148,11 @@ class LegacyPathProjectionMigrationTests(PathEvidenceBase):
         report = self.mem.migrate_legacy_path_projections(dry_run=True)
         self.assertEqual(report["status"], "dry_run")
         self.assertEqual(report["migrated"], 1)
-        row = dict(self.store._conn.execute("SELECT * FROM prompt_projections WHERE projection_id = ?", ("dry-proj",)).fetchone())
+        row = dict(
+            self.store._conn.execute(
+                "SELECT * FROM prompt_projections WHERE projection_id = ?", ("dry-proj",)
+            ).fetchone()
+        )
         self.assertEqual(int(row["projection_version"]), 2)
         self.assertIn("local path omitted", row["payload_json"])
 
