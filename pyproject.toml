@@ -9,9 +9,10 @@ description = "Domain-agnostic layered memory core with unified timelines, layer
 readme = "README.md"
 requires-python = ">=3.10"
 keywords = ["memory", "llm", "retrieval", "rag", "embeddings", "long-term-memory", "agents"]
-license = "LicenseRef-Proprietary"
+license = "AGPL-3.0-only OR LicenseRef-Commercial"
 license-files = ["LICENSE"]
-# 专有许可,默认保留所有权利;商用需单独授权(见 LICENSE / README「授权」)。
+# 双许可证:开源侧 AGPL-3.0-only,闭源/SaaS 商用需单独商业授权
+# (见 LICENSE / COMMERCIAL.md / README「授权」)。
 # tzdata: time anchoring resolves IANA timezones via zoneinfo; Windows lacks a system tz db.
 # Heavy backends (chroma / sentence-transformers) stay optional extras.
 dependencies = ["tzdata"]
