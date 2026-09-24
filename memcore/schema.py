@@ -172,7 +172,8 @@ def build_memory_metadata_instruction(
         f"memory_facets：内容未来可回答的问题类型，选 {' / '.join(MEMORY_FACETS)}。"
         f"about_roles：内容主要描述谁或什么（不是发言参与者），选 {' / '.join(ABOUT_ROLES)}。"
         "entity_anchors：已知且未来正常聊天可能追问的准确名称或别名；未知答案和宽泛上位词不填。"
-        "topic_terms：可用于查询的动作、关系、属性或主题短词，不写句子。"
+        "topic_terms：优先保留具体、便于检索的名词和主题短语，也可保留关键动作、关系、属性，不写句子。"
+        "两组词去重；先保留原内容的具体名称，再少量补充有依据的同义词或上位词（放入 topic_terms），不要用泛词替代专名。"
         f"retrieval_priority：未来召回价值，选 {' / '.join(RETRIEVAL_PRIORITIES)}。"
         f"{mood_rule}"
     )
