@@ -9,7 +9,7 @@ memcore 不替宿主写完整人格 prompt,但建议把下面这些规则拼到�
 ```text
 你可以看到 memcore 提供的可见三层记忆,并可使用记忆工具:
 - retrieve_for_turn: 按语义/关键词/metadata 模糊检索长期或历史记忆,并排除当前 prompt 已经可见的记忆与本轮消息。
-- browse_memory: 按确定时间范围浏览紧凑摘要目录；适合“这几天聊了什么”这类宽范围概览，不直接拉取整段群聊原文。
+- browse_memory: 按日期或已知名称、主题词浏览摘要目录；keywords 可不带日期。返回标题、时间、摘要标签、matched_terms 和保留原词条的 keyword_hits，按需打开正文。
 - open_memory: 按一个 memory_id 打开卡片、完整摘要正文或精确来源证据，也可用 memory_ids 一次按顺序打开多条 card/content。来源页默认完整展示对话/事件，只把工具、Skill、材料正文压成带 source_id 和调用关联的可重载轨迹；sources 每次只打开一个 ID，因为每棵来源树有独立 cursor。摘要够用就不要继续展开 raw，需要某条工具正文时再打开该 source_id，确实要看整段工具证据时才显式选择 full/tools 投影。
 - read_timeline: 按 ISO 或本地 `start_at/end_at` 精确到小时/分钟读取原始对话，无需计算 epoch；也可按旧日期/粗时段读取，或用 retrieve 返回的 raw source_id 读取前后完整轮次。结果可能按完整轮次无损分页，不会静默截断。
 - load_material: 若宿主支持图片/文件,按 file_id 读取当前可用的原文件、OCR、视觉描述、文档 chunks 或清理状态。
@@ -84,8 +84,8 @@ memcore 会把 raw、summary、semantic、timeline 渲染成带日期和星期�
 retrieve_for_turn(query, entity_anchors?, topic_terms?, source_layers?, memory_facets?, about_roles?, time_hint?, within_memory_id?)
 用于模糊检索。query 始终参与检索；准确且已知的实体使用 entity_anchors，正在询问的未知人物/答案不能先猜成 anchor；动作、关系、属性和主题使用 topic_terms。已知具体时间时可传 time_hint={start_at,end_at}，使用与 read_timeline 相同的本地/ISO 时间规则，并在相似度计算前硬过滤；memory_facets/about_roles 也会在评分前裁剪候选。已经通过 browse_memory/open_memory 选中一段记忆时，可传该 memory_id 作为 within_memory_id，只在该节点及其精确来源中继续模糊搜索；段内为空不会自动搜索其它历史。结果按命中位置返回 navigation：摘要层给 memory_id，raw 层给 source_id，并统一返回本地 ISO 时间、评分前候选数和 lineage scope；命中只是 raw-first 排名靠前结果，不表示全库只有这些记录。片段够用就直接回答；需要完整摘要用 open_memory(content)；摘要主题正确但只缺具体细节时，优先用该 memory_id + source_layers=[raw] 做段内检索；确实需要整棵来源或逐条原证据时才用 open_memory(sources)；raw 只有缺相邻对话时才用 source_id 扩窗。已有有效命中后不要只换同义词继续检索；只有做段内细查，或新增已知实体、时间、检索目标实质变化时才再次调用。
 
-browse_memory(time_range? / date_from?, date_to?, node_types?, cursor?)
-用于宽范围历史概览。返回的是完整卡片页和 coverage，不是 Top-K，也不是截断 raw。page_complete=false 时下一次只传 cursor。
+browse_memory(keywords?, keyword_match?, time_range? / date_from?, date_to?, node_types?, cursor?)
+已知名称或具体主题时可传 keywords，不必猜日期；按“已存标签包含查询词”单向匹配摘要及其来源标签。存有“文旅答辩项目”时，查询“文旅”或“答辩”都能命中；反过来，只有“文旅”不能命中更长的“文旅答辩项目”。精确和包含命中同时返回。any 命中任一查询词，all 要求每个查询词都有匹配标签，同一标签可以满足多个词。卡片的 entity_anchors/topic_terms 是摘要展示词，matched_terms 是命中的查询词；keyword_hits 为每个查询词返回一个已存原词条，优先精确词条，否则取第一个包含词条。它们是线索，不能证明人物关系或同一事件，需证据时打开正文/来源。无命中不等于从未讨论，可改用模糊检索。coverage 描述过滤前的历史覆盖。page_complete=false 时只传 cursor；若返回 catalog_changed_restart_required，按原条件重新查询。
 
 open_memory(memory_id? / memory_ids?, view?, detail?, projection?, cursor?)
 用于打开已选节点。多个相关节点或 `[compact_reloadable]` 工具结果需要 card/content 时优先一次传 memory_ids，结果保持请求顺序并逐项给 status/reason；不要因一个 ID 失败而忽略其它成功正文。card 只看目录信息；content 看完整摘要或单条 raw；sources 返回精确子证据并保持完整逻辑单元，且只接受单个 memory_id。sources 默认 `projection=conversation`：对话/事件完整，operation/Skill/tool/material 只返回 kind、source_id、correlation_id、状态和小型锚点，不复制大型输入/结果正文。紧凑轨迹已足够理解“调用过什么、哪次请求对应哪个结果、成功还是失败”；只有回答确实依赖工具正文时，才打开该 source_id 的 content，或显式使用 `projection=full/tools`。sources 分页未完成时下一次只传 cursor。
@@ -127,7 +127,7 @@ Python API/dispatcher 仍暂时接受旧 `read_entry(source_id, detail)`，但�
 推荐分层:
 
 1. `tool_use/tool_result`:当前轮工具调用的结构化通道。模型能区分工具结果和用户文本,也能关联结果属于哪次调用。
-2. operation entries:宿主把工具调用和模型实际看到的完整结果作为同一开放 turn 的 action/observation，用 `correlation_id` 关联，用于“刚才那个搜索结果/上次读的文件”类追问。结果不会在 final 后立刻换成 receipt，而是参与统一 token 生命周期，压缩后进入 operation digest；receipt 只作为可选 retention anchor。普通检索默认排除，只有显式授权与 kind pattern 才检索。
+2. operation entries:宿主把工具调用和模型实际看到的完整结果作为同一开放 turn 的 action/observation，用 `correlation_id` 关联，用于“刚才那个搜索结果/上次读的文件”类追问。默认 `full_until_raw_compaction` 保留完整投影直至统一 raw 压缩；可选 `compact_after_terminal` 在轮次成功结束后将符合门槛的旧结果投影为可回读卡片，SQLite 原文仍保留。之后统一 raw 压缩继续生成 operation digest；receipt 只作为可选 retention anchor，不能替代开放轮中模型实际看到的完整正文。普通检索默认排除，只有显式授权与 kind pattern 才检索。
 3. material entries:宿主可把图片/文件上传、解析状态、清理状态追加为当前 turn intermediate 或 typed standalone entry。只记录 file_id、文件名、类型和状态；文件本体与 OCR/视觉描述/文档 chunks 留在宿主存储。材料进入 operation 分区，普通检索默认排除。
 4. `render_prompt_context(ctx)`:memcore 的可见 raw/summary/semantic 记忆,用于长期连续性和可见上下文。
 5. `retrieve_for_turn/read_timeline/load_material`:需要更多记忆证据或材料内容时由模型主动调用。
@@ -168,7 +168,10 @@ output:
 这样工具使用与工具返回仍在同一条线性事件流里，但边界由 typed role 和调用 ID
 确定；工具身份不伪装成语义 metadata。
 
-材料引用写入 raw 时,优先使用 `record_material_reference(...)`;材料被容量策略或用户操作清理时,使用 `record_material_cleanup(...)`。这两个事件不会保存文件本体:
+不触发模型回复的独立材料事件，可使用 `record_material_reference(...)` 和
+`record_material_cleanup(...)`。如果材料触发回复，应作为 `begin_turn(...)` 的 stimulus；
+当前开放轮中新增的材料状态用 `append_entry(..., turn_id=...)` 写入 intermediate。
+以下 standalone 示例只保存材料锚点，不保存文件本体：
 
 ```python
 mem.record_material_reference(
@@ -235,7 +238,7 @@ derived_status: ocr_ready
 - `memory_facets`: 内容未来能回答哪类问题，从 `profile / preference / viewpoint / relationship / event / state / plan / decision / constraint / knowledge / procedure` 中选择。不确定就留空，不要猜一个大桶。
 - `about_roles`: 内容主要在陈述 `user / assistant / third_party / external` 中的谁或什么，不表示谁参加了对话，也不自动等于发言者。
 - `entity_anchors`: 只填问题和上下文中已经明确知道的准确名称、项目名和别名，如 `Fable / 雅可比猜想 / NVDA`；正在询问“是谁”的未知对象不是 anchor，不要猜测答案后填写，也不要机械补宽泛上位词。
-- `topic_terms`: 填动作、属性和辅助主题短词，如 `反例 / 风险 / 无糖`；不要写整句或短句。
+- `topic_terms`: 优先保留具体、便于检索的名词和主题短语，也可保留关键动作、关系、属性；不要写整句。两组词去重，先保留原内容的准确名称，再少量补充有依据的同义词或上位词，不用泛词替代专名。
 - `retrieval_priority`: 未来重新找回的价值，使用 `low / normal / high / critical`。它不决定是否入库，也不会让低值 raw 消失。
 - `mood_tags`: 只有 `enable_flavor=True` 时才写;关闭时必须空数组。
 

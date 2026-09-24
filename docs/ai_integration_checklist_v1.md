@@ -37,7 +37,29 @@ actual wire:
 
 - `canonical_user_assistant`;
 - `openai_chat`;
+- `openai_responses`;
+- `deepseek_chat`;
 - `anthropic_messages`.
+
+`canonical_user_assistant` is the provider-neutral storage/replay fallback.
+The other profiles supply provider-ready shapes; see the
+[provider support matrix](provider_support_matrix_v1.md).
+
+### MemCore-owned context or an existing Session
+
+Use `build_context_surface(provider_profile=..., current_source_id=...)` and
+`surface.messages` for the complete model-visible sequence. History, current
+input, and the active tool round already appear there; do not append duplicate
+raw context or current input. Keep aligned source/projection metadata for
+request freezing. See the
+[context contract](context_surface_contract_v1.md).
+
+For an existing compatible Session, use
+[`MemCoreContextSession.wrap(..., memory=mem)`](context_integration_quickstart_v1.md)
+and connect `session.input_callback`. Its MemorySystem conversation ID must
+match the Session ID. Validate the actual transport capture with
+`validate_provider_wire_capture(...)`; provider-shaped conformance alone is
+not proof of a working host request.
 
 ### Custom JSON, XML, tags, or nonstandard tool history
 
@@ -145,6 +167,14 @@ Hard rules:
   results may finish out of order but must retain their own call IDs.
 - `complete_turn()` must not run while an action is pending. Handle
   `pending_actions` and inspect `pending_correlations`.
+- For a new final, an explicit `provider_profile` requires the actual
+  `provider_projection` assistant message. Preserve its original content and
+  provider extension fields; store parsed speech separately as semantic text.
+  Build or freeze preceding history under the same profile before each model
+  request; an explicit final cannot skip unprojected earlier entries.
+- If the host completes after tools without a new response, use
+  `append_final=False` with empty text arguments and no `provider_projection`.
+  The profile may still select settlement; pending actions still block close.
 - On model, tool-loop, or delivery failure call `abort_turn()` in `finally`.
 - On startup, `recover_stale_open_turns(...)` is a crash-recovery supplement,
   not a substitute for immediate abort.
@@ -242,7 +272,8 @@ Hard cache rules:
   history;
 - when the host's real wire differs, freeze it with
   `record_request_projection(...)` before sending;
-- pass the actual provider profile to `complete_turn()` and compaction;
+- pass the actual provider profile and final message projection to
+  `complete_turn()`, and the same profile to compaction;
 - changing persona, system prompt, tool schema, or provider wire is an expected
   cache-prefix invalidation, not a MemCore retrieval failure.
 
@@ -294,6 +325,8 @@ Before claiming integration complete, verify with real host request construction
 - [ ] Parallel tool results do not cross correlation IDs.
 - [ ] Pending actions prevent final completion.
 - [ ] A successful final atomically stores speech and stimulus metadata.
+- [ ] An explicit final provider profile is paired with the actual assistant
+      message projection, including the original JSON content when applicable.
 - [ ] A failed final/tool/delivery path aborts the open turn.
 - [ ] Visible memory appears on the next normal turn.
 - [ ] `retrieve_for_turn` excludes current/prompt-visible lineage.
@@ -307,6 +340,9 @@ Before claiming integration complete, verify with real host request construction
 - [ ] Restart plus `reindex_all()` restores searchable records.
 - [ ] Stable-prefix request bytes remain unchanged across two equivalent text
       turns except for the appended dynamic tail.
+- [ ] If using Context Surface or a Session wrapper, the current input and tool
+      round appear once, and the final transport capture passes
+      `validate_provider_wire_capture(...)`.
 - [ ] If settlement is enabled, the open turn stays full, the next turn sees a
       reloadable card, and `open_memory(content)` restores the original result.
 - [ ] Cross-user/hard-namespace reads and writes are rejected.

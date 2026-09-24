@@ -212,7 +212,7 @@ There is no LLM verifier pass after deterministic retrieval.
 
 ## `browse_memory`
 
-Use a deterministic catalog for broad or high-density time ranges.
+Use a deterministic catalog for broad time ranges or known names/topics.
 
 ```python
 result = mem.browse_memory(
@@ -232,6 +232,8 @@ browse_memory(
     date_from="",
     date_to="",
     node_types=None,
+    keywords=None,
+    keyword_match="any",
     cross_conversation=False,
     page_size=50,
     cursor="",
@@ -240,13 +242,53 @@ browse_memory(
 
 Rules:
 
-- choose `time_range` or the `date_from/date_to` mode;
+- supply a time selector and/or nonempty `keywords`; choose `time_range` or
+  the `date_from/date_to` mode when time is known;
 - `date_to` is inclusive in date mode;
 - `node_types` defaults to `episodic`; available values are `episodic` and
   `semantic`;
 - cards are chronological SQLite range results, not semantic Top-K;
 - `page_size` counts complete cards and is bounded to `1..200`;
 - a continuation call sends only `cursor`.
+
+Keyword example (no date required):
+
+```python
+result = mem.browse_memory(
+    keywords=["GPT-SoVITS", "字幕"],
+    keyword_match="any",
+)
+```
+
+`keywords` is a read selector, not a new metadata write field. Each node's pool
+unions its own `entity_anchors/topic_terms` with the accepted tags of its exact
+raw sources. A semantic node also includes its child episode tags. This keeps
+summary-generated terms searchable even when raw annotations are absent, and
+preserves source terms omitted from the summary's display metadata. Ordinary
+catalog search does not absorb explicit/never or operation/material source tags.
+
+Matching uses **stored tag contains query term** after Unicode NFKC, whitespace
+collapse and casefold. A stored `文旅答辩项目` matches `文旅`, `答辩` and
+`文旅答辩`; a stored `文旅` does not match the longer query `文旅答辩项目`.
+Exact and substring matches participate in the same query, so an exact-match
+card does not suppress other cards with longer matching tags. Duplicates across
+both fields and sources collapse to one term. Punctuation remains meaningful
+(`C++` and `C#` stay distinct); there is no minimum query length or word-boundary
+rule. There is no BM25, embedding, automatic synonym expansion, or silent
+fallback in this selector. `any` requires at least one keyword; `all` requires
+every keyword in one node's pool, and one stored tag may satisfy several queries.
+That does **not** prove the terms belong to the same event or relation.
+Dates constrain the card's overlapping period, not each individual source tag.
+Use `open_memory(content/sources)` for evidence and `retrieve_for_turn` for fuzzy
+expressions or history with missing tags. An empty keyword result does not prove
+the topic was never discussed.
+
+Pools are derived from current SQLite metadata in batches without reading raw
+bodies. Existing databases require no tag migration, LLM backfill, or vector
+reindex. Metadata repairs and source/namespace deletion take effect on the next
+read; surviving summaries retain their own stored tags. A custom store must
+implement `get_catalog_keyword_pools` and support unbounded catalog time reads;
+unsupported keyword reads return `unavailable`, never an incomplete success.
 
 Important result fields:
 
@@ -263,10 +305,35 @@ page_complete / next_cursor
 Cards returned by the `MemorySystem` facade include both epoch
 `period_start_ts/period_end_ts` and model-readable local ISO
 `period_start_at/period_end_at` values.
+They also include deduplicated summary `entity_anchors/topic_terms`. Keyword
+results retain `matched_terms` (matched query terms) per card and add
+`keyword_hits`, for example `[{"query":"文旅","term":"文旅答辩项目"}]`.
+Each query has one stored witness: an exact normalized tag is preferred,
+otherwise the first matching stored tag in pool order. This is a compact witness,
+not an exhaustive list of all matching tags. Normalized `keywords/keyword_match`
+appear at the result level. The complete backend pool is not copied into the
+model result.
+
+Keyword cursors freeze selectors and a fingerprint of matching cards. If those
+results change between pages (including metadata repair or reinforcement), the
+continuation returns `invalid_filter/catalog_changed_restart_required`; repeat
+the original query to restart. Ordinary date-only cursors retain their existing
+stable-key continuation behavior. No persistent snapshot is created.
+
+Stores may override `get_retrieval_records` to batch scoped node reads. Its base
+implementation delegates to existing single-node reads, so third-party stores
+do not need a new implementation. Missing IDs are omitted; ambiguous IDs retain
+the single-read error. Batch `open_memory` preserves per-node failures by falling
+back to single reads when batch resolution fails.
 
 `coverage.complete=true` means every stored raw source in the requested range
 is accounted for. It does not claim the host was online or recording every
 real-world event.
+For keyword queries, `coverage.keyword_filtered=false`: coverage accounts for
+all stored history in the selected time/scope, not just keyword hits. Without a
+date, `requested_range.start_ts/end_ts` are null and ISO bounds are empty. A valid
+keyword query with no cards returns `empty/no_catalog_keyword_matches` even if
+coverage shows raw records in that scope.
 
 ## `open_memory`
 

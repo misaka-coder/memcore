@@ -27,12 +27,12 @@ config = MemoryConfig(
 | Value | Behavior |
 | --- | --- |
 | `full_until_raw_compaction` | 默认值。完整 action/observation 一直进入 provider 历史，直到统一 raw compaction 接替该 turn；不创建 settlement。 |
-| `compact_after_terminal` | turn 成功完成后，把足够大的 observation 正文替换成可回读紧凑卡片；action、final 和 SQLite 原文不变。 |
+| `compact_after_terminal` | turn 成功完成后，把足够大的 observation 正文替换成可回读紧凑卡片；action、已有 final 和 SQLite 原文不变。 |
 
 这些枚举值会持久化到 turn，并参与 settled hash。已发布值不得改名、删除、复用或
 改变语义；schema 升级只允许新增值。
 
-策略在 `begin_turn()` 时冻结。运行中改变 `MemoryConfig` 不会改变已经开始的 turn：
+策略与两个收益门槛都在 `begin_turn()` 时冻结。运行中改变 `MemoryConfig` 不会改变已经开始的 turn：
 
 ```python
 handle = mem.begin_turn(stimuli=[...])
@@ -44,7 +44,8 @@ assert handle.operation_projection_policy == "compact_after_terminal"
 
 ## 2. Complete lifecycle
 
-settlement 只在成功的 `complete_turn()` 之后发生。当前开放 turn 的每轮工具调用仍
+settlement 只在成功的 `complete_turn()` 之后发生，包括使用 `append_final=False`
+完成工具工作且没有新增回复的轮次。当前开放 turn 的每轮工具调用仍
 完整可见，因此多轮工具链不会因为压缩而丢失中间证据。
 
 ```python
@@ -60,18 +61,34 @@ exchange = mem.record_tool_exchange(
 )
 result_source_id = exchange["tool_result"]["source_id"]
 
+# 本轮下一次模型请求使用这份完整历史；新增动作/结果后再次构建。
+history = mem.build_context_projection(provider_profile="openai_chat")
+# ...宿主将 history.payloads 发给模型，并取得 raw_model_output / assistant_speech...
+
+# 本例的 final 是文本型 Chat Completion；保留实际返回的 content。
+# 若实际消息还含 provider 扩展字段，传入宿主保存的完整消息对象。
+final_message = {"role": "assistant", "content": raw_model_output}
 completed = mem.complete_turn(
     turn_id=handle.turn_id,
     semantic_text=assistant_speech,
     provider_output_raw=raw_model_output,
     provider_profile="openai_chat",  # pass the profile actually used by this turn
+    provider_projection=final_message,
 )
 assert completed.completed
 ```
 
-标准 profile wire value 是 `canonical_user_assistant`、`openai_chat` 和
-`anthropic_messages`。settlement 按 `(turn, provider_profile)` 冻结；动态模型/视觉
+provider-ready profile 包括 `openai_chat`、`openai_responses`、`deepseek_chat` 和
+`anthropic_messages`；`canonical_user_assistant` 用于中性存储/回放。
+支持范围与真实传输验收见 [provider 支持表](provider_support_matrix_v1.md)。
+settlement 按 `(turn, provider_profile)` 冻结；动态模型/视觉
 路由宿主应传本轮真正生成 final 的 profile，而不是只依赖全局默认值。
+带新增 final 时，显式 `provider_profile` 必须同时提供 `provider_projection`，
+只传 profile 会被拒绝。MemCore JSON 的投影保留原始 JSON content，
+`semantic_text` 则保存解析后的 speech；其它 provider 应保留自己的实际消息形状。
+提交 final 前，前面的可见 entry 必须已通过同 profile 的 `build_context_projection()`、
+`build_context_surface()` 或真实请求冻结流程进入投影账本；直接跳到 final 会违反
+追加顺序。应在每次模型请求前完成这一构建，而不是等到回复结束后补造历史。
 
 协议中立宿主应优先使用 `append_action()` / `append_observation()`。如果实际发给
 provider 的 action/result 形状不同于标准 adapter，在每次真实请求时使用
@@ -84,12 +101,27 @@ provider 的 action/result 形状不同于标准 adapter，在每次真实请求
 
 ## 3. What is compacted
 
-settlement 只考虑 prompt-visible observation 的文本正文：
+settlement 只考虑 prompt-visible observation 的文本正文。以下为默认门槛：
 
 - 正文 UTF-8 长度小于 256 bytes：`inline_full`；
-- 卡片不能至少比正文小 50%：`inline_full`（no-expansion）；
+- 卡片相对正文节省的字节比例不超过 50%：`inline_full`（no-expansion）；
 - 满足收益门槛：`compact_reloadable`；
 - 显式空正文保持原形状：`explicit_empty`。
+
+门槛可以由宿主配置，例如仅对至少 32 KiB 的正文尝试卡片化：
+
+```python
+config = MemoryConfig(
+    operation_projection_policy="compact_after_terminal",
+    operation_settlement_min_utf8_bytes=32_768,
+    operation_settlement_min_saved_ratio=0.5,
+)
+```
+
+字节门槛必须为正整数；收益比例必须为 `0 < ratio < 1` 的有限数，当前分类器
+使用的有效收益比例最高为 `0.99`。正文达到字节门槛后仍需通过收益检查，恰好
+节省有效比例时仍保留全文。这些值与策略一起冻结；修改配置只影响新 turn。
+UTF-8 字节收益不等于 provider token 或总费用收益。
 
 一个典型的 settled observation：
 
@@ -242,11 +274,17 @@ full_projection_hash
 settled_projection_hash
 token_count_quality
 fallback_reason
+settlement_min_utf8_bytes
+settlement_min_saved_ratio
+settlement_config_hash
 ```
 
 `token_count_quality="exact"` 只表示宿主注入的 `TokenCounter` 声明自己使用精确
 tokenizer；没有 counter 时为 `estimated`。不要把 UTF-8 bytes 冒充 provider billing
 tokens，也不要跨不同 tokenizer 直接比较绝对 token 数。
+
+三个 `settlement_*` 配置字段记录该轮冻结的实际门槛与配置 hash，可用于区分
+不同配置的观测结果；重启时不会用当前配置覆盖历史值。
 
 ## 9. Relationship to raw compaction
 
@@ -255,7 +293,7 @@ terminal settlement 与 raw/episodic/semantic compaction 是两个独立阶段�
 ```text
 open turn
   -> full action/result loop
-assistant final committed
+turn completed (with or without a new assistant final)
   -> optional settled provider projection
 later raw token pressure
   -> episodic summary + operation digest/retention anchors

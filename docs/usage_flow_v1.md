@@ -8,10 +8,11 @@ implementation modules for normal integration work.
 
 ## Package Role
 
-`memcore` is a reusable layered memory kernel. It owns:
+`memcore` is a reusable memory and context kernel. It owns:
 
 - typed turn recording for messages, events, actions, observations, materials, and finals;
 - visible prompt context construction;
+- provider-ready history, current-input, and active-tool-round projection;
 - fuzzy memory retrieval and exact timeline reading;
 - raw -> episodic -> semantic compaction;
 - metadata parsing helpers for final chat output;
@@ -52,9 +53,31 @@ For normal host integration, read these files in order:
 
 If you are changing `memcore` itself, also inspect nearby tests before editing.
 
+## Choose context ownership
+
+For host-owned prompt assembly, use `build_prompt_context()` and
+`render_prompt_context()` with the read tools, as shown in the
+[minimal chat example](../examples/minimal_chat_integration.py).
+The provider-ready example below uses
+`build_context_surface(provider_profile=..., current_source_id=...)` and its
+ordered `surface.messages`. Do not append the same current message,
+raw history, or tool round twice. See the
+[`Context Surface contract`](context_surface_contract_v1.md) and
+[`provider support matrix`](provider_support_matrix_v1.md).
+
+For an existing Session implementing `get_items/add_items/pop_item/clear_session`,
+[`MemCoreContextSession`](context_integration_quickstart_v1.md) wraps that
+session. Pass the configured `MemorySystem`, bind a matching conversation ID,
+and connect `session.input_callback`; the callback is required for authoritative
+context ownership. The host still owns model transport, tool execution, and
+maintenance scheduling. Validate the final transport capture with
+`validate_provider_wire_capture(...)` before claiming the integration is complete.
+
 ## Normal Chat Turn
 
-Use `MemorySystem` as the facade:
+Use `MemorySystem` as the facade. This example assumes a text-only OpenAI Chat
+Completion final; preserve the actual assistant message with any provider
+extension fields when the host uses a richer response shape:
 
 ```python
 handle = mem.begin_turn(
@@ -70,17 +93,19 @@ handle = mem.begin_turn(
 )
 cur = handle.stimuli[0].to_record()
 
-ctx = mem.build_prompt_context(current=cur)
-ctx_text = mem.render_prompt_context(ctx)
-
-# Put ctx_text into the final chat model prompt.
 # Expose wrappers around:
 # - mem.retrieve_for_turn(current=cur, ...)
 # - mem.browse_memory(...)
 # - mem.open_memory(...)
 # - mem.read_timeline(...)
 
-raw_model_output = call_chat_model(...)
+surface = mem.build_context_surface(
+    provider_profile="openai_chat",
+    current_source_id=cur["source_id"],
+)
+# The host adds its stable system/persona/tool rules. Refresh the surface after
+# each appended action/result batch before making another model request.
+raw_model_output = call_chat_model(history_messages=list(surface.messages))
 
 parsed = parse_chat_output(
     raw_model_output,
@@ -99,19 +124,21 @@ completed = mem.complete_turn(
     annotation_status="accepted_model",
     timestamp=now_ts2,
     provider_profile="openai_chat",  # the profile actually used for this final
+    provider_projection={"role": "assistant", "content": raw_model_output},
 )
 if not completed.completed:
     handle_memory_commit_error(completed)
     return
 
-mem.compact_due_background()
+mem.compact_due_background(provider_profile="openai_chat")
 ```
 
 `kind` 默认为 `message.assistant`。宿主若完成的是语音等 typed turn，可传
-`kind="message.assistant.voice"` 以及对应的小型结构化 `payload`。MemCore 不解释
-业务字段，但会在 provider projection 中把自然回复保留为顶层 `speech`，把非默认
-final 的 kind 和 payload 收进 `host_state`；默认文本 final 的既有纯文本投影不变。
-这个边界让模型既能看到打断/交付状态，又不会把内部状态对象误当成下一轮回复契约。
+`kind="message.assistant.voice"` 以及对应的小型结构化 `payload`。未显式提供 final
+投影时，标准 renderer 会把非默认 final 的自然回复保留为顶层 `speech`，把 kind
+和 payload 收进 `host_state`；默认文本 final 的纯文本投影不变。像上例这样提供
+实际 `provider_projection` 时，MemCore 保留宿主给出的消息形状；宿主应确保需要
+回放的打断/交付状态已经在实际消息中表达。
 
 For tests, scripts, or deterministic shutdown, use `compact_due_sync()`.
 For live chat, prefer `compact_due_background()` so summarization does not block
@@ -125,11 +152,21 @@ to recover turns abandoned by a process crash or forced shutdown. Recovery is
 atomic and conversation-scoped; it does not delete timeline entries or replace
 the immediate abort path.
 
-If the host dynamically selects a provider, pass the actual projection profile
-to `complete_turn(provider_profile=...)` so optional terminal settlement freezes
-the same wire profile, and pass it again to
-`compact_due_background(provider_profile=...)` for raw token planning. Omitting
-either keeps the configured `MemoryConfig.projection_profile` fallback.
+If the host dynamically selects a provider, pass both the actual profile and
+the actual final message to
+`complete_turn(provider_profile=..., provider_projection=...)`, so optional
+terminal settlement freezes the same wire profile. Passing only the profile
+with a new final is rejected. The final projection preserves the original JSON
+content when using MemCore JSON; `semantic_text` stores the parsed speech.
+Earlier visible entries must already have projections for that profile, built
+before each model request as above or frozen via `record_request_projection()`
+for a custom wire.
+Pass the same profile to `compact_due_background(provider_profile=...)` for raw
+token planning. Omitting both final projection arguments uses the standard
+final renderer; omitted maintenance/settlement profiles use the configured
+`MemoryConfig.projection_profile` fallback. The no-new-response exception is
+documented under `append_final=False` in the
+[write lifecycle reference](write_lifecycle_and_maintenance_api_v1.md).
 
 ## Required Host Pieces
 
@@ -182,6 +219,7 @@ Expose memory tools to the final chat model:
   tool without repeatedly issuing synonymous global searches.
 - `read_timeline(time_range={"start_at": ..., "end_at": ...}, projection="conversation")` for exact hour/minute questions without calculating epoch; legacy date fields remain available for whole-day/coarse-period reads, or use it for expanding a raw retrieval `source_id` into complete nearby turns. The default view keeps dialogue/events full and returns reloadable compact evidence for operations/materials.
 - `browse_memory(date_from=..., date_to=...)` for broad multi-day overviews. It returns compact chronological cards plus stored-history coverage instead of loading the whole raw range. Continue an incomplete page with only `cursor`.
+- `browse_memory(keywords=[...], keyword_match="any")` for known names or concrete topics, with optional dates. A deduplicated summary/source tag must contain the query term; matching is normalized, case-insensitive and one-way, without embedding calls. `all` requires a stored match for every query; one tag may satisfy several queries. Exact and substring matches are returned together. Cards expose summary tags, matched queries in `matched_terms`, and one stored witness per query in `keyword_hits`. These are clues to open, not proof of a relationship. If a keyword cursor reports `catalog_changed_restart_required`, repeat the original query.
 - `open_memory(memory_id=..., view="content")` opens one selected raw/episodic/semantic node; `view="sources"` follows exact lineage to child episode cards or complete raw logical units. Raw sources default to `projection="conversation"`, so dialogue/events remain complete while large operation/Skill/tool/material bodies become compact records containing type, call/result linkage, status, `source_id`, and small retained anchors. Use `projection="full"` or `"tools"`, or open one compact `source_id` as `content`, only when that body is actually needed. Use sources only when summary content is insufficient.
 - Provider-native dispatch always applies `MemoryConfig.native_timeline_page_token_budget` as a finite maximum. Omitted/zero uses that maximum; a smaller model request is honored and a larger one is capped. If `status=partial`, inspect selected/returned token and logical-unit counts, then either continue with `read_timeline(cursor=next_cursor)` only or use `browse_memory` for an overview. One oversized turn is returned whole and marked explicitly. The native result keeps the readable rendered `text` plus navigation metadata and omits the duplicate structured `messages` body. Trusted host/diagnostic code may still call `MemorySystem.read_timeline(page_token_budget=0)` directly for an unlimited read and receives both messages and text.
 - `read_entry(source_id=..., detail="full")` is a raw-only compatibility adapter. New integrations use `open_memory(view="content")`.

@@ -81,8 +81,8 @@ telemetry, not memory content.
 
 ## `MemoryConfig`
 
-All fields are validated during construction. Invalid values raise
-`ConfigError`; MemCore does not silently clamp them.
+Configuration constraints are checked during construction. Invalid constrained
+values raise `ConfigError`; construction does not clamp them into valid values.
 
 | Field | Default | Contract |
 | --- | ---: | --- |
@@ -105,23 +105,35 @@ All fields are validated during construction. Invalid values raise
 | `retrieval_min_dense_score` | `0.0` | Non-negative finite number. |
 | `retrieval_min_bm25_score` | `0.0` | Non-negative finite number. |
 | `retrieval_min_fused_score` | `0.0` | Non-negative finite number. |
+| `llm_timeout_s` | `30.0` | Positive finite number; timeout passed to each structured memory-model request. Host shutdown still requires cooperative cancellation. |
 | `llm_max_retries` | `2` | Positive integer; retry allowance for structured memory-model calls. Failed calls still must not commit empty memories. |
 | `visible_memory_scope` | `conversation` | Stable value `conversation` or `user`. Raw visibility remains conversation-local in both modes. |
 | `enable_flavor` | `False` | Enables the optional mood/flavor metadata layer. |
 | `enable_importance_decay` | `False` | When true, semantic visibility uses decayed importance rather than pure recency. |
 | `importance_half_life_days` | `90.0` | Positive number; importance decay half-life in days. Validated even when decay is disabled. |
 | `operation_projection_policy` | `full_until_raw_compaction` | Stable wire value described below. |
+| `operation_settlement_min_utf8_bytes` | `256` | Positive integer; observation bodies below this UTF-8 byte threshold stay full. Frozen when the turn begins. |
+| `operation_settlement_min_saved_ratio` | `0.5` | Finite number strictly between `0` and `1`; the card must save strictly more than the effective ratio to replace the body. The current classifier caps the effective ratio at `0.99` without changing the stored configuration. Frozen when the turn begins. |
 
 `operation_projection_policy` accepts only:
 
 - `full_until_raw_compaction`: keep full action/observation projection until the
   unified raw compactor processes the turn;
-- `compact_after_terminal`: after a successful final, freeze a deterministic
+- `compact_after_terminal`: after successful turn completion, freeze a deterministic
   reloadable compact projection while retaining full SQLite truth.
 
 These enum strings are persisted and enter settled hashes. Published values are
 stable wire values: do not rename, delete, reuse, or change their meaning. A
 future schema may add a new value but must keep historical values readable.
+
+The policy and both settlement thresholds are frozen together by `begin_turn()`.
+Changing configuration affects new turns only; existing turns and settled
+history retain their recorded values. Byte savings describe the observation
+projection, not provider token usage or total cost. See
+[`operation_projection_settlement_v1.md`](operation_projection_settlement_v1.md)
+for threshold examples, readback, and metrics, and
+[`provider_support_matrix_v1.md`](provider_support_matrix_v1.md) for supported
+projection profiles and transport validation.
 
 ## Namespace and actors
 
@@ -282,6 +294,66 @@ injected runtime intentionally does not close that shared runtime.
 Every value must be a string of at most 4000 characters. Invalid types or
 oversized slots raise `PromptError`. These slots cannot remove or replace the
 welded JSON, metadata, time-anchor, attribution, or anti-fabrication rules.
+
+## Configuration ownership and exposure boundaries
+
+MemCore is a library, not a service. Nothing here is a runtime control surface,
+and a host UI is not a configuration channel. Decide ownership by the question
+*who holds the information needed to judge this value* — not by how important the
+value feels.
+
+| Surface | Owner | When it is fixed | May a UI change it |
+| --- | --- | --- | --- |
+| `llm`, `embedding`, `store`, `index`, `runtime`, `TokenCounter`, `material_loader` | Host | Startup, injected into the constructor | No |
+| `Namespace(tenant_id/user_id/domain_id/conversation_id)`, `timezone` | Host | Startup | No |
+| `PromptOverrides` (`persona_text`, extra guidance slots) | Host | Startup or session setup | No |
+| Secrets (API keys, endpoint credentials) | Host | Startup, from host config | Never |
+| `MemoryConfig` mechanism thresholds | Host deploy config | Startup; `begin_turn()` freezes the settlement trio per turn | No |
+| Read parameters (`page_size`, `page_token_budget`, `time_range`, `projection`, `cross_conversation`, `view`, `cursor`) | Caller | Per call | Yes |
+
+Three constraints follow from this table.
+
+**Constructor-injected dependencies and identity are not knobs.** `llm`,
+`embedding`, `store`, `index`, `namespace`, and `timezone` are bound for the
+process lifetime. `timezone` anchors every relative-time resolution, and the
+namespace is the hard isolation key: exposing either would let a caller move
+between memory pools or shift displayed history away from the recorded truth.
+The write path stores absolute times; presentation must not alter how they are
+interpreted. A UI cannot and should not see which store, index, or embedding
+backend is behind these interfaces.
+
+**Mechanism thresholds are host deploy configuration, not end-user settings.**
+`episodic_visible_max` and `episodic_compact_trigger_count` form the `[Min, Max]`
+band that a prefix stays byte-stable inside; `raw_token_trigger` and
+`raw_token_batch_ratio` set the raw watermark. These values are coupled — lowering
+`episodic_compact_trigger_count` toward `episodic_visible_max` removes the
+append-only headroom the band exists to provide. A UI slider here does not
+tune the system, it disables the mechanism and then gets judged on the result.
+`operation_projection_policy` is a binary architectural decision that shapes
+how much long-lived context a product carries, not a preference. Keep all of
+these in host configuration files, applied at startup.
+
+**Read parameters are the only safe interactive surface.** `page_size`,
+`page_token_budget`, `time_range`, `projection`, `cross_conversation`, `view`,
+and `cursor` change what a single read returns. A wrong value narrows one page;
+it cannot corrupt the truth source, break prefix stability, or leak across
+namespaces. If a host builds an observation or debug UI, these are the controls
+it may expose — and they must stay read-only. Do not let such a UI call
+`begin_turn`, `complete_turn`, `append_action`, `append_observation`, or any
+maintenance API to manufacture state for display, because a demo built on
+synthetic writes is no longer evidence about the running system.
+
+For observability, a UI reads what MemCore already exposes: the results of
+`read_timeline`, `browse_memory`, `open_memory`, and `retrieve_for_turn`, plus
+`MemorySystem.settlement_metrics()`, `embedding_status()`, and
+`verify_embedding()`. Expose nothing beyond these without adding a read-only
+snapshot to the host, not to the kernel. Values shown should remain traceable to
+SQLite or to a documented metric; a UI must not invent its own indicators, since
+headline numbers are only credible when each carries the same measurement basis
+the API reports.
+
+Never place credentials, connection strings, local absolute paths, or raw
+database handles in any presentation layer, log line, or rendered output.
 
 ## Configuration exceptions
 

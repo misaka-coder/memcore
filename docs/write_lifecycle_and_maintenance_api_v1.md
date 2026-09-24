@@ -43,6 +43,13 @@ is required.
 
 ## Normal model-response turn
 
+In the example below, `actual_final_message` is the sanitized, provider-shaped
+assistant message preserved from the host's final response, including any
+provider extension fields needed for later replay. For a text-only OpenAI Chat
+Completion it can be `{"role": "assistant", "content": raw_model_output}`;
+when using MemCore JSON, keep the original JSON content in this projection
+and store `parsed.speech` separately as semantic text.
+
 ```python
 from memcore import EntryOrigin, TimelineEntryInput, TurnRole
 
@@ -60,7 +67,10 @@ handle = mem.begin_turn(
 current = handle.stimuli[0].to_record()
 
 try:
-    # Build prompt, run zero or more tool rounds, then parse one final reply.
+    # Build history before each model request; refresh after appending tool results.
+    history = mem.build_context_projection(provider_profile=actual_provider_profile)
+    # Send history.payloads with the host prompt, run any tool rounds, then parse
+    # the final response and preserve actual_final_message from that response.
     completed = mem.complete_turn(
         turn_id=handle.turn_id,
         semantic_text=parsed.speech,
@@ -68,6 +78,7 @@ try:
         memory_annotation=parsed.memory_metadata,
         annotation_status="accepted_model",
         provider_profile=actual_provider_profile,
+        provider_projection=actual_final_message,
     )
     if not completed.completed:
         handle_completion_state(completed)
@@ -135,7 +146,9 @@ handle = mem.begin_turn(
   and annotation targets are identical; a different retry raises
   `turn_idempotency_conflict`.
 - The current `operation_projection_policy` is frozen into the returned
-  `TurnHandle`; changing configuration later does not rewrite an open turn.
+  `TurnHandle` together with `operation_settlement_min_utf8_bytes` and
+  `operation_settlement_min_saved_ratio`; changing configuration later does
+  not rewrite an open turn.
 
 The returned `TurnHandle` contains `turn_id`, `namespace`, `status`, persisted
 `stimuli`, `annotation_target_ids`, `opened_at`, and the frozen projection
@@ -200,6 +213,7 @@ result = mem.complete_turn(
     trace_metadata=None,
     provider_profile="",
     provider_projection=None,
+    append_final=True,
 )
 ```
 
@@ -210,16 +224,33 @@ require an explicit `list[MemoryAnnotation]` covering every target exactly once.
 `accepted_model`, `accepted_host`, `missing`, `invalid`, `plain`, `fallback`, or
 `rejected`; derived/internal statuses are rejected as host input.
 
-`semantic_text` and `provider_output_raw` cannot both be empty. If
-`provider_profile` is supplied with a provider projection, both must describe
-the same profile. A raw projection dict requires `provider_profile`; a supplied
-`ProjectionMessageInput` must be an assistant message.
+With the default `append_final=True`, `semantic_text` and
+`provider_output_raw` cannot both be empty. When completing an open turn,
+an explicit `provider_profile` requires `provider_projection`; passing the
+profile alone raises `SchemaError("turn_completion_projection_payload_required")`.
+A raw projection dict requires `provider_profile`; a supplied
+`ProjectionMessageInput` must represent an assistant message, and its profile
+must match any explicit `provider_profile`. Preserve the actual final message
+rather than rebuilding it from the parsed user-visible speech.
+
+All preceding prompt-visible entries must already have projections for that
+profile before appending an explicit final projection. Build them with
+`build_context_projection()` or `build_context_surface()` as part of each
+model request, or freeze a custom wire with `record_request_projection()`.
+Skipping earlier entries can raise `SchemaError("projection_source_not_next_append")`;
+do not reconstruct a fictitious request after the response to bypass it.
+
+Omitting both projection arguments uses the standard final renderer. For
+`append_final=False`, both text arguments must be empty and
+`provider_projection` must be omitted; `provider_profile` may still select
+terminal settlement for the completed tool history. No final entry is created,
+and pending actions still prevent completion.
 
 `CompletionCommitResult.status` values:
 
 | Status | Meaning |
 | --- | --- |
-| `completed` | Final, annotations, visibility, and turn close committed. |
+| `completed` | Annotations, visibility, and turn close committed, with a final entry only when `append_final=True`. |
 | `already_completed` | Idempotent retry found an already closed turn. `completed` property is still true. |
 | `not_found` | The turn does not exist in this namespace. |
 | `pending_actions` | One or more action correlations have no observation; inspect `pending_correlations` and do not fake a final. |
@@ -315,6 +346,16 @@ annotations atomically rather than calling these methods as a parallel write
 path.
 
 ## Projection lifecycle
+
+For a complete provider-ready request, use
+`build_context_surface(provider_profile=..., current_source_id=...)`. It
+separates history, the current stimulus, and the active tool round;
+`surface.messages` returns them in request order with aligned source and
+projection metadata. Preserve that sequence rather than appending a second
+copy of the current message or rendered raw history. The full contract is in
+[`context_surface_contract_v1.md`](context_surface_contract_v1.md); existing
+Session integrations can use
+[`MemCoreContextSession`](context_integration_quickstart_v1.md).
 
 `build_context_projection(provider_profile=...)` returns the deterministic
 provider-visible message projection for the current conversation. The result
