@@ -162,9 +162,7 @@ def bind_request_projection_messages(
         if not isinstance(payload, Mapping):
             return RequestBindingResult("rejected", "request_binding_payload_required", (), (), None)
         source_ids = tuple(
-            str(item or "").strip()
-            for item in list(raw.get("source_ids") or ())
-            if str(item or "").strip()
+            str(item or "").strip() for item in list(raw.get("source_ids") or ()) if str(item or "").strip()
         )
         if not source_ids:
             return RequestBindingResult("rejected", "request_binding_source_ids_required", (), (), None)

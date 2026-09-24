@@ -156,15 +156,19 @@ def validate_provider_wire_capture(
     checks = [
         _check(
             "captured_message_count",
-            lambda: None
-            if len(captured) == len(expected)
-            else (_ for _ in ()).throw(AssertionError("provider_wire_message_count_mismatch")),
+            lambda: (
+                None
+                if len(captured) == len(expected)
+                else (_ for _ in ()).throw(AssertionError("provider_wire_message_count_mismatch"))
+            ),
         ),
         _check(
             "captured_context_byte_exact",
-            lambda: None
-            if canonical_json_bytes(captured) == canonical_json_bytes(expected)
-            else (_ for _ in ()).throw(AssertionError("provider_wire_context_mismatch")),
+            lambda: (
+                None
+                if canonical_json_bytes(captured) == canonical_json_bytes(expected)
+                else (_ for _ in ()).throw(AssertionError("provider_wire_context_mismatch"))
+            ),
         ),
     ]
     return ConformanceReport(tuple(checks))

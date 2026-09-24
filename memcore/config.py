@@ -174,19 +174,15 @@ class MemoryConfig:
             )
         self.operation_projection_policy = policy_value
 
-        if not isinstance(self.operation_settlement_min_utf8_bytes, int) or self.operation_settlement_min_utf8_bytes <= 0:
+        if (
+            not isinstance(self.operation_settlement_min_utf8_bytes, int)
+            or self.operation_settlement_min_utf8_bytes <= 0
+        ):
             raise ConfigError(
                 "operation_settlement_min_utf8_bytes must be a positive int, "
                 f"got {self.operation_settlement_min_utf8_bytes!r}"
             )
         ratio = self.operation_settlement_min_saved_ratio
-        if (
-            not isinstance(ratio, (int, float))
-            or not math.isfinite(float(ratio))
-            or not (0.0 < float(ratio) < 1.0)
-        ):
-            raise ConfigError(
-                "operation_settlement_min_saved_ratio must be > 0 and < 1, "
-                f"got {ratio!r}"
-            )
+        if not isinstance(ratio, (int, float)) or not math.isfinite(float(ratio)) or not (0.0 < float(ratio) < 1.0):
+            raise ConfigError(f"operation_settlement_min_saved_ratio must be > 0 and < 1, got {ratio!r}")
         self.operation_settlement_min_saved_ratio = float(ratio)
