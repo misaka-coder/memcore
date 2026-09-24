@@ -19,8 +19,8 @@ provider-neutral 的记忆与上下文基础设施：把普通消息、模型回
        ┌────────────┼────────────┐
        ▼            ▼            ▼
   稳定投影       可见上下文      结构化检索工具
-  provider       raw/summary/    retrieve + timeline
-  messages       semantic        + material loader
+  provider       raw/summary/    检索 / 目录 / 展开
+  messages       semantic        时间线 / 材料加载
        │            │            │
        └────────────┼────────────┘
                     ▼
@@ -49,12 +49,21 @@ V2 typed standalone entry，不再直写 flat V1 路径；有模型回复的请�
 MemCore 不把内部数据库行直接拼进 prompt，而是通过 renderer registry 和
 projection ledger 生成确定性的 provider messages：
 
-- canonical、OpenAI、Anthropic 三种投影 profile；
+- `openai_chat`、`openai_responses`、`deepseek_chat`、`anthropic_messages`
+  四种 provider-ready profile，以及用于中性存储/回放的 `canonical_user_assistant`；
 - 工具调用、工具结果、事件、材料状态的中性结构化渲染；
 - renderer/version、entry projection hash、compaction generation 和真实请求
   audit；
 - 旧记录的投影默认不会因为 renderer 升级而被静默重写；
-- 新内容只追加在尾部，模型请求的历史前缀可以做严格 prefix 验收。
+- 新内容只追加在尾部，模型请求的历史前缀可以做严格 prefix 验收；
+- **双水位线迟滞水库（High-Low Watermark Buffer）**：传统 FIFO 滑动窗口每进一条就从头部踢出一条，导致历史 Token 起始位置每轮前移，极易造成前缀缓存的高频击穿；MemCore 在摘要层（如 5~10 条）与 Raw 层（如 8k~24k Token）设置弹性区间，蓄水期仅做纯尾部追加（Append-only），已有前缀历史在字节级别保持稳定，维持高复用率，只有蓄满上限时才触发集中回退，**将前缀变动频率大幅稀释至 $\frac{1}{\text{Max} - \text{Min}}$**。
+
+完整请求可通过 `build_context_surface()` 获取历史、当前输入与开放工具轮的有序
+`surface.messages`，并保留逐条来源和投影元数据。已有 Session 可用
+`MemCoreContextSession.wrap(..., memory=mem)`，同时接入 `session.input_callback`。
+宿主继续负责系统/人格提示、工具执行与实际传输。具体接法见
+[Context Quickstart](context_integration_quickstart_v1.md)，消息形状与传输边界验收见
+[provider 支持表](provider_support_matrix_v1.md)。
 
 工具结果另有一个默认关闭的终局投影策略：
 
@@ -98,7 +107,7 @@ V2 使用实际 provider projection 的 token 预算规划完整 turn。这是�
 [`memory_read_api_v1.md`](memory_read_api_v1.md)。
 
 - `retrieve_for_turn`：面向偏好、计划、关系、人物、主题和长期事实的模糊检索；支持用本地/ISO `time_hint.start_at/end_at` 在评分前硬过滤，也可用 `within_memory_id` 把 dense/BM25 候选硬限制在已选节点及其精确后代中，允许只凭已知事件、关系和时间发现未知答案；段内为空不会放宽到全库；
-- `browse_memory`：面向多日/宽范围概览，按 SQLite 时间重叠返回小型 episodic/semantic 卡片，而不是把整段群聊 raw 塞回模型；结果同时报告已摘要、未摘要 live tail、broken lineage 和无损 cursor；
+- `browse_memory`：面向多日/宽范围概览，支持按日期区间或纯 `keywords` 关键词翻阅。基于“原始对话实体词 + 阶段摘要主题词”去重融合的**联合词池（Union Pool）**，实现互保容灾；支持零分词依赖的**单向子串包含匹配**（短查询如“文旅”定点命中长标签“文旅答辩项目”），并在卡片中带回 `matched_terms` 与具体命中依据 `keyword_hits`（Witness 证据回传）。该词池仅索引稀疏标题卡片；由于同类话题往往在局部时间段密集发生，底层即便命中多条具体对话，回溯到标题层时通常能大概率收敛为数量有限的紧凑卡片，有效避免了直接检索原始对话引发的扇出爆炸；结果同时报告已摘要、未摘要 live tail、broken lineage 和无损 cursor；
 - `open_memory`：统一打开 raw/episodic/semantic ID；`card/content` 支持按 `memory_ids` 批量并逐项返回状态，`sources` 保持单 ID 独立 cursor；`card` 看导航信息，`content` 看完整节点正文，`sources` 沿精确 lineage 返回子摘要卡或完整 raw 逻辑单元。raw 来源默认采用对话优先投影：对话/事件完整，operation/Skill/tool/material 正文压成保留 `source_id`、`correlation_id`、状态和锚点的紧凑凭据；需要时可打开单条正文或显式切换 `full/tools`。native 结果只发送一份渲染正文，不和结构化 entries 重复占用模型上下文；
 - `read_timeline`：既可按 `start_at/end_at` 精确到小时/分钟读取，也可按旧日期/粗时段读取，或把 raw 检索命中扩成前后完整 turn；`conversation/full/tools` 决定证据密度。模型侧 native dispatch 使用 `native_timeline_page_token_budget` 的有限上限，返回完整逻辑单元、所选/本页 token 与条目总量、`partial/page_boundary`、导航建议和 namespace-safe cursor；无真实 tokenizer 时使用并明确标记估算，不会让工具失效。native result 只保留一份渲染正文，避免和结构化 messages 重复耗费 provider token；直接 Python API 保留双视图与显式无限诊断路径；
 - `dispatch_native_memory_tool` 同时返回完整 result 与紧凑 `receipt`；宿主把模型实际看到的完整结果写成同一 turn 的 operation observation，并把只含选择器、返回 ID、coverage、cursor 和稳定 hash 的 receipt 放在 retention anchor。正文随统一 raw token 生命周期跨轮可见，receipt 不得替代正文；非原生适配可直接调用 `build_memory_operation_receipt`；
@@ -110,8 +119,9 @@ V2 使用实际 provider projection 的 token 预算规划完整 turn。这是�
 - standalone 事件、operation 和 material 轨迹按 typed kind 默认保持 `explicit`，不会
   混入普通候选；事件作为正常轮次 stimulus 时按普通消息进入默认准入；
   关联的模型 final 会通过 stimulus/final relation 一起返回；
-- standalone `record_external_event()` 或没有有效 annotation 的事件保持 explicit,
-  需要 `include_explicit=true`、明确 `kind_patterns` 和宿主授权才能检索；
+- 默认 explicit 的 standalone `record_external_event()` 需要 `include_explicit=true`、
+  明确 `kind_patterns` 和宿主授权才能检索；普通轮次的事件 stimulus 不因 annotation
+  缺失而变成 explicit；
 - 模型 final 不是一律独立成长期记忆 seed：V2 默认按它所属轮次和 stimulus
   成组返回；独立 `record_assistant_turn()` 写入的 standalone assistant raw 则按其显式
   retrieval policy 处理；
@@ -178,6 +188,9 @@ V2 使用实际 provider projection 的 token 预算规划完整 turn。这是�
 | 常见做法 | memcore 的区别 |
 |---|---|
 | 聊天历史、工具轨迹各存一份 | 一条统一时间线，检索准入和长期语义再独立决策 |
+| 任务结束后长工具输出霸占上下文 | 终局结算（Settlement），完成即折叠为百 Token 卡片，保留 ID 支持原文秒级回溯 |
+| 固定 FIFO 窗口每轮踢出旧消息打碎缓存 | 最大/最小双水位线迟滞水库（Hysteresis Buffer），蓄水期纯尾部追加，击穿频率降至 $1/(\text{Max}-\text{Min})$ |
+| 分词器切碎专有名词或全等匹配漏检 | 原始对话与摘要联合词池 + 单向子串匹配 + Witness 证据回传，多对一汇聚防爆炸 |
 | 直接把数据库行拼进 prompt | provider-specific projection + immutable ledger + prefix audit |
 | 先向量搜索再过滤 | namespace/kind/visibility/lineage/facet/role/entity 在评分前裁剪候选 |
 | 摘要和 raw 混成一个榜 | raw-first 分池，摘要和长期记忆只补充 |

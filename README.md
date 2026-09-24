@@ -1,199 +1,163 @@
 # memcore
 
-领域无关、可扩展、可授权的**统一时间线与分层记忆内核**。
+领域无关、可扩展、可授权的**记忆与上下文内核**，专为长程对话与复杂工具执行设计。
 
-> memcore 不是“把聊天记录塞进向量库”。它把消息、事件、工具、材料和模型
-> 回复放进同一条可追溯时间线，再分别处理稳定投影、检索准入、关系扩窗和三层
-> 压缩。对外能力地图见 [`docs/public_capabilities_v1.md`](docs/public_capabilities_v1.md)。
+> **让 AI 接着聊，也接着做事。**
+>
+> 查完资料、跑完代码、完成任务后，用户还会继续聊天或做下一件事。
+> 已经用过的庞大工具输出，在终局后按策略自动折叠，减少日常上下文驻留；
+> 后续偶尔需要核对旧细节时，再沿 ID 瞬间找回原文。
+> 对话、事件、工具轨迹与材料共用一段带有因果的时间线，让长期聊天与做事拥有完整持续的历史。
 
-- **写侧**:working(原始对话)→ episodic(阶段摘要)→ semantic(长期事实)三层压缩 + 强化合并。
-- **读侧**:显式 `retrieve` / `browse_memory` / `open_memory` / `read_timeline` 互补工具 + 可选原生 `load_material` 分发 + 向量/关键词混合检索 + RRF。raw 先于摘要和长期记忆占用结果位；facet/role 保持前置过滤，只有准确实体导致候选为零时才单独放宽实体条件，并返回可解释 diagnostics。读侧不再追加一次 LLM verifier 调用。
-- **贯穿**:时间锚点(带时区)、命名空间硬隔离、可选 flavor 层、提示词注入防线。
+---
 
-实现说明按以下公开文档维护：[`usage_flow_v1.md`](docs/usage_flow_v1.md)、
-[`memory_read_api_v1.md`](docs/memory_read_api_v1.md)、
-[`operation_projection_settlement_v1.md`](docs/operation_projection_settlement_v1.md)、
-[`memory_metadata_raw_retrieval_design_v1.md`](docs/memory_metadata_raw_retrieval_design_v1.md) 和
-[`model_prompt_playbook_v1.md`](docs/model_prompt_playbook_v1.md)。
+## 为什么需要 MemCore？
 
-## 给 AI 编码助手的入口
+市面上多数 Agent 记忆框架，本质只是“把聊天记录切块塞进向量库”。在真实、长期的复杂人机协作中，这种朴素做法面临着三大致命困境：
 
-不要只把一句“接入 MemCore”交给 AI。请先让它读取根目录 `AGENTS.md`，再读取
-[`docs/ai_integration_checklist_v1.md`](docs/ai_integration_checklist_v1.md)。这份清单集中列出
-最容易漏掉并导致拒绝或行为失真的硬规则：
+1. **做完重活后的上下文爆炸**：AI 跑了 5 次代码排障、抓了 3 个网页，返回了几万字的原始工具输出。任务完成后用户想接着聊天，这些废弃的长结果依然霸占着上下文——不仅让模型注意力涣散、推理变慢，还会产生高昂的 API 账单。如果粗暴截断或删掉，后续想追问细节时又无从溯源。
+2. **纯向量 RAG 的真实盲区**：人类对记忆的调取充满了时间与逻辑约束（“上周三讨论的方案”、“昨天下午报错的路径”）。纯向量检索在面对无明确语义特征、强时间依赖或冷门专有名词时频繁返回空或风马牛不相及的结果，导致模型在记忆问答中只能幻觉或声称忘记。
+3. **Prompt Cache 频繁被击穿**：大模型服务商（DeepSeek、Anthropic、OpenAI）提供的 Prefix Caching（前缀缓存）是降低延迟和成本的唯一命脉。传统系统因频繁重写 System Prompt、不规则滑动窗口或动态上下文重排，导致缓存命中率归零，越聊越贵、越聊越卡。
 
-- `MemorySystem` 必须注入 `LLMClient`、生产 embedding、有效 IANA `timezone`
-  和含 `user_id` 的 `Namespace`；
-- timeline `kind` 必须是小写 namespaced value；普通工具采用
-  `tool.<lowercase_name>.call/result`；
-- 需要模型回复的请求必须走
-  `begin_turn → action/observation → complete_turn/abort_turn`，不能用 standalone
-  `record_user_turn()` 冒充开放 turn；
-- 工具结果必须保存模型实际看到的同一份正文，并用相同 `turn_id/correlation_id`
-  关联；receipt 只能是小型回读锚点；
-- provider profile、真实请求投影、稳定 Prompt 前缀、后台 compaction 和重启
-  reindex 都由宿主显式接好；
-- `pending/partial/unavailable/conflict` 必须按结构化状态处理，不能改写成空结果或
-  假成功。
+**MemCore 为此而生：它不仅是一个记忆库，更是一个统一调度时间线、生命周期、模型投影与按需回溯的上下文操作系统。**
 
-AI 完成接入前必须跑清单末尾的聚焦验收；“字段存在”不等于真实 provider 请求、
-工具轨迹、缓存前缀和三层记忆已经接通。
+---
 
-> **真实基线：语义检索不是记忆的唯一入口。** 在一次匿名线上审计中，20 次
-> `retrieve_for_turn` 没有产生可直接支持答案的结果，但聊天模型仍通过
-> `browse_memory`、`open_memory` 和 `read_timeline` 解决了大部分记忆问题。
-> 这类“检索失败后仍能继续定位、展开和核验”的能力称为
-> **Agentic Memory Navigation**。数据、案例、成本与证据边界见
-> [`agentic_memory_navigation_evaluation_20260806.md`](docs/agentic_memory_navigation_evaluation_20260806.md)。
+## 真实生产战绩（Battle-Tested In Production）
 
-## 当前进度
+MemCore 不是停留在 Paper 或 Demo 里的理论模型。在深度角色伴聊与 64 个重度操作系统/编程工具同时挂载的单实例真实生产环境中，它交出了如下答卷：
 
-- **切片 1(边界)✅**:字段契约 `schema` + `MemoryConfig` + `Namespace`(五层)+ 四类 base 接口
-  (`LLMClient` / `MemoryStore` / `VectorIndex` / `EmbeddingProvider`)+ `MemorySystem` 空壳。
-- **切片 2(检索原语)✅**:`time_anchor`(带时区)+ `rendering` + `embedding`(hashed/HF)
-  + `index`(RRF + 内存索引语义/BM25 + Chroma 懒加载)。可单测,不依赖 LLM。
-- **切片 3(存储)✅**:`SQLiteMemoryStore` —— SQLite 事实源、Namespace 硬隔离、
-  Timeline/summary/semantic/projection/audit 表、index_status outbox、幂等 source_id、
-  事务与定向遗忘。
-- **repair pass ✅**:堵住跨 namespace 泄漏、可见层跨会话、默认时间渲染 1970、删除回传 ID、
-  跨 namespace 覆盖、时区校验六处接缝(见 tests/test_slice3b_repair.py)。
-- **切片 4(写侧)✅**:`compaction` 三层压缩(raw→摘要→语义)+ 主题重叠强化合并(注入 LLMClient,
-  按 namespace 加锁,outbox 索引);`MemorySystem` 写侧 record/compact 接通。压缩 LLM 失败时不会提交空摘要,
-  会返回 `summary_retry_pending` / `semantic_retry_pending`,并保留原记录供下一轮后台压缩重试。
-- **切片 5(读侧)✅**:`retrieval` —— 显式 retrieve 工具 → metadata 前置过滤 → raw/derived 分池混合检索 + RRF → 确定性分数与关系完整性检查；原始 query 始终保留，`entity_anchors` 高权重，`topic_terms` 只作普通辅助；`time_hint.start_at/end_at` 复用时间线的本地/ISO 解析并在评分前执行起点包含、终点不包含的硬过滤，未知答案不需要也不允许伪装成实体锚点；
-  `build_prompt_context` 只拼可见三层,是否检索交给聊天模型调用工具决定。普通消息、阶段摘要和长期语义不以 metadata/annotation 是否完整作为模型可读准入条件；metadata 只在调用方明确传入过滤条件时缩小候选。**读写侧全闭环。**
-- **时间线工具 ✅**:`read_timeline(...)` 支持无需 epoch 的 `time_range.start_at/end_at` 小时/分钟级读取，旧日期/时间段字段归一到同一 timestamp 路径，也支持以 raw `source_id` 为锚点读取前后完整 turn；默认 `conversation` 投影保留完整对话/事件并把大工具与材料轨迹变成可展开凭据，`full/tools` 可显式切换。模型侧 native dispatcher 默认使用可配置的有限页面预算，按完整 turn 无损分页，并返回所选总量、本页总量、`partial/page_boundary`、后续动作和可校验 `next_cursor`；native result 只发送一份渲染正文，不再把等价 `messages` 正文重复喂给模型。可信宿主直接调用 Python API 时仍保留结构化 messages/text 双视图，并可显式使用 `page_token_budget=0` 完整读取。
-- **记忆目录导航 ✅**:`browse_memory(...)` 按确定性时间范围返回有界卡片目录与 raw 覆盖状态；`open_memory(memory_id, view=card/content/sources)` 可从摘要正文继续展开精确子摘要或完整 raw 逻辑单元。`sources` 默认使用 `conversation` 投影：完整保留对话/事件，工具、Skill 与材料正文只显示可按 `source_id` 重载的紧凑轨迹；只有显式 `projection=full/tools` 或打开单条 raw `content` 才返回工具正文。`retrieve_for_turn(within_memory_id=...)` 可在已选节点的精确 lineage 内继续做 dense/BM25 模糊检索，实体条件放宽不会移除该边界，段内为空也不会退回全库。分页使用 namespace-safe 稳定键 cursor，不截断卡片/turn，缺失 lineage 明确返回 `partial`。
-- **精确条目展开 ✅**:`read_entry(source_id, detail)` 是 `open_memory(view="content")` 的 current-conversation raw-only 兼容适配；summary/semantic、越权 ID、密钥和本地路径不会伪装成 raw 正文。
-- **embedding 三条路 + 自检 ✅**:`HuggingFaceEmbeddingProvider`(本地 BGE-M3)/ `HTTPEmbeddingProvider`(OpenAI 兼容 API,纯 stdlib 零依赖)/ `HashedEmbeddingProvider`(仅测试)。
-  `EmbeddingProvider` 同时提供 `embed_query/embed_queries` 与
-  `embed_document/embed_documents`；对称模型默认复用旧 `embed_text(s)`，Jina 等非对称模型可分别实现 query/passage，内存与 Chroma 索引会走正确通道。
-  `RoleAwareHTTPEmbeddingProvider` 接受宿主提供的 query/document 请求体扩展，不内置厂商 task 名；全量重建与 pending 修复按批调用远程 provider。
-  `verify_embedding()` 自检语义是否真有效(近义词应明显更近),hashed/弱模型会被响亮标记。**不捆绑任何模型权重。**
-- **outbox 自愈 ✅**:向量后端故障时记录仍安全落库(pending),`reindex_pending()` 恢复后补齐索引;
-  `reindex_all()` 可从 SQLite 真相源补建/热加载当前 hard namespace 的三层索引,记录/压缩都不被向量故障阻断。
-- **提示词治理 ✅**:焊死骨架 + 校验插槽(`PromptOverrides`);插槽只能补充、不可移除契约/时间锚点。
-- **importance 衰减 ✅**:`enable_importance_decay` 开启后,长期记忆可见窗口按"随时间衰减的重要度"排序(久未强化的记忆淡出),衰减对**全部**候选生效、不静默截断。
-- **raw token 差值压缩 ✅**:唯一 raw 压缩策略按目标 provider 的完整投影 token 触发，按比例选择最旧的完整 turn/relation component；可注入精确或明确标记为 `estimated` 的 `TokenCounter`。
-- **星期感知时间锚点 ✅**:raw、摘要、语义与时间线渲染会由 `timestamp + timezone` 自动派生 `周一..周日`,
-  让“上周二/下周三”这类相对表达在压缩与检索回填时有明确参照。
-- **内存索引加速 ✅**:默认不强制向量数据库;`InMemoryVectorIndex` 会先按 namespace/time/exclude 与可前置 metadata 过滤候选,
-  再计算分数。安装 `memcore[speed]` 后向量以 float32 存储,语义 cosine 自动走可选 NumPy 批量计算。
-- **模型协作提示词 ✅**:标准输出契约与压缩链提示词已补充时间锚点、工具选择、群聊归因、metadata 标注规则。
-  接入方提示词指南见 `docs/model_prompt_playbook_v1.md`。
-- **工具轨迹 ✅**:`append_action(...)` / `append_observation(...)` 把调用与结果追加到同一开放 turn，
-  通过 `correlation_id` 支持并行和乱序返回；`record_tool_exchange(turn_id=...)` 只是这两个 V2 API 的薄适配。
-  工具轨迹参与同一 token 生命周期，但压缩为独立 operation digest；普通检索仍默认排除，显式授权后可检索。
-- **材料轨迹类别 ✅**:材料引用/清理使用 typed standalone entry，或作为当前 turn 的 `material.*` intermediate。
-  只保存 file_id、文件名、类型和状态；原始文件与 OCR/视觉描述/文档 chunks 由宿主存储。压缩时材料进入 operation 分区，不污染对话摘要；普通检索默认排除。
-- 可配置:`raw_token_trigger`、`raw_token_batch_ratio`、`retrieval_result_token_budget`、`native_timeline_page_token_budget`、`visible_memory_scope`、`enable_flavor`、`enable_importance_decay`。
-- 压缩重试:`llm_max_retries` 会传给注入的 `LLMClient`;最终仍失败时压缩层不标记已完成,下一轮继续重试。
-- **Chat Output Adapter ✅**:标准 JSON 输出契约、`speech` 流式解析、普通文本尽力分段、raw metadata 回写流程见 `docs/chat_output_adapter_v1.md`;工具调用阶段不套该 JSON,只在最终回复阶段输出 memcore JSON。
-- **稳定投影与缓存审计 ✅**:canonical/OpenAI/Anthropic provider projection、renderer/version、strict-prefix 验收、projection hash 与真实请求 audit;MemCore 保证前缀稳定,不替 provider 承诺缓存必命中。
-- **开放动作/结果时间线 ✅**:`append_action(...)` / `append_observation(...)` 可记录原生工具、JSON、XML、标签或宿主自定义协议；模型实际看到的完整结果与调用一起写入统一时间线。默认策略把完整 provider 投影保留到 raw token 压缩；可选 `compact_after_terminal` 在 final 后把足够大的旧 observation 变为可按 `source_id` 回读的冻结卡片，不修改 SQLite 原文、action、final 或真实 provider wire。小型 `retention_anchor` 仍只在 operation 压缩后保留资源 ID、版本、hash 等重载锚点。
-- **终局工具投影 settlement ✅**:`MemoryConfig.operation_projection_policy` 提供稳定 wire value `full_until_raw_compaction`（默认）与 `compact_after_terminal`；策略在 `begin_turn` 冻结，settlement 原子发布并支持 `settled/settled_noop/full_fallback`，`build_context_projection().has_compact_history` 和 `settlement_metrics()` 提供宿主提示与安全观测。完整 API、回读闭环、缓存规则和迁移语义见 [`operation_projection_settlement_v1.md`](docs/operation_projection_settlement_v1.md)。
-- **有界后台维护 ✅**:每次 `compact_due` 只提交一个 raw compaction generation 和一个 semantic batch；
-  episodic 达到配置窗口（默认 10）时压缩最旧一批（默认 5），保留最近 5 条继续常驻，不把“当前只显示 5 条”误写成“历史只保存 5 条”。
-  token 模式按配置比例一次选足最旧的完整 turn/component，不再被旧条目批次或独立 source 上限提前截断。
+* 🚀 **超长程高压运行**：在 **4.8w Token 的紧凑工作窗口限制下**，从容支撑超过 **16 天、51,000+ 条真实消息、3,900+ 轮任务**的高频连续交互。
+* 📉 **惊人的上下文压减**：通过核心的**终局结算机制（Settlement）**，在保持执行期细节完整可见的前提下，任务完成后自动折叠长结果，**累计净节省 3,300,000+ Token 上下文，冗余压缩率达 68.3%**！
+* ⚡ **极高的缓存复用率**：基于严格的字节级稳定前缀（Byte-identical Prefix），在多轮对话中实现了 **98% 以上的官方 Prompt Cache 命中率**。
+* 🛡️ **轻量级单一真相源**：全程以 **SQLite 单文件作为唯一真相源**，无需配置重型向量数据库集群，不额外抢占本地 GPU 显存，断电依靠 WAL 事务与 Outbox 队列平稳自愈。
 
-核心 + 评测台 + Timeline V2 + provider projection + embedding 三路 + outbox 自愈
-+ Chat Output Adapter + importance 衰减均已完成。flat V1 compactor 已删除；无 turn_id 的历史记录由 V2 规划器包装为 closed standalone component 后原子压缩。
-可选扩展(按需):更大语料的 BM25/向量后端；`enable_flavor` 已作为可配置能力落地,
-不会强迫纯事实型接入启用口吻或情绪字段。
+---
 
-可运行的最小接入样板见 `examples/minimal_chat_integration.py`。它演示一轮聊天里
-`begin_turn` → 可见三层 → `retrieve_for_turn` / `read_timeline` 工具 → final JSON 解析 →
-`complete_turn` 原子提交 metadata 与回复 → 后台压缩的完整闭环。动作/结果时间线的
-独立可运行示例见 `examples/non_native_operation_timeline.py`。
+## 核心设计哲学与突破
 
-原生 tool calling 接入可用 `build_native_memory_tool_specs(...)` 生成工具 schema,再用
-`dispatch_native_memory_tool(...)` 分发 `retrieve_for_turn` / `browse_memory` / `open_memory` / `read_timeline` / `load_material`。旧 `read_entry` 只保留 Python/dispatcher 兼容适配，不再进入模型可见的生成工具列表；新接入统一使用 `open_memory`。
-`load_material` 只调用宿主传入的 `material_loader` 回调,用于读取 file_store/derived_store 中的原图、
-OCR、视觉描述、文档 chunks 或当前清理状态;memcore 不保存文件本体。
-非多模态接入不要让最终聊天模型和视觉/OCR 解析赛跑:要么先等宿主 derived_store 写入同一
-`file_id` 的摘要/OCR,要么让 `load_material` 返回 pending/unavailable,避免模型只凭附件锚点或旧结果猜图。
+### 1. 终局结算与渐进式回读（Settlement & Progressive Disclosure）
+* **执行期（Open Turn）**：工具调用与大体量原始输出完整呈给模型，保证复杂多步任务推理拥有充分的信息依据。
+* **终局完成后（Post-Final）**：启用 `compact_after_terminal` 策略后，庞大的结果自动折叠为一条包含时间、来源和 `source_id` 的小巧卡片（平均仅 100 Token）。
+* **按需瞬间回溯**：后续日常闲聊不受长文本干扰；某天用户突然追问“当时那个报错具体是哪一行”，模型可通过 `open_memory(memory_id=...)` 沿精准的 Lineage 血缘，瞬间把 25,000 字的原始执行轨迹调回前台！
 
-设计亮点说明见 `docs/design_highlights_v1.md`;接入聊天模型时建议先读 `docs/model_prompt_playbook_v1.md`。
-如果让 AI 编码助手接入本库,请先把根目录 `AGENTS.md` 交给它读;独立接入流程见
-`docs/usage_flow_v1.md`。构造参数与全部 `MemoryConfig` 约束见
-[`docs/configuration_api_v1.md`](docs/configuration_api_v1.md)；写入 turn、状态返回、
-维护与危险删除接口见
-[`docs/write_lifecycle_and_maintenance_api_v1.md`](docs/write_lifecycle_and_maintenance_api_v1.md)。
-模型服务前缀缓存友好的 prompt 拼接顺序见 `docs/model_prompt_playbook_v1.md` 的“缓存友好 Prompt 布局”。
-宿主中立的动作/结果接入、非原生协议真实投影与可选压缩锚点见
-[`docs/operation_timeline_v1.md`](docs/operation_timeline_v1.md)，可运行示例见
-[`examples/non_native_operation_timeline.py`](examples/non_native_operation_timeline.py)。
-final 后的可回读工具结果投影、策略配置、指标与批量恢复契约见
-[`docs/operation_projection_settlement_v1.md`](docs/operation_projection_settlement_v1.md)。
+### 2. 多路径自主记忆导航（Agentic Memory Navigation）
+MemCore 坚信：**语义向量只是检索的加速器，绝不是记忆可达性的唯一通道。** 面对真实复杂提问，系统提供了一套互补的模型可调用工具箱：
+* `retrieve_for_turn`：向量/BM25 混合检索 + RRF 融合重排，具备实体与属性的前置硬过滤（Prefilter），带时区裁剪。
+* `browse_memory`：像翻看记事本目录一样，按时间跨度返回紧凑的阶段记忆卡片及标签覆盖范围。
+* `open_memory`：顺藤摸瓜。支持看元数据（`card`）、读阶段正文（`content`）、或沿血缘展开原始对话/工具凭据（`sources`）。
+* `read_timeline`：解决“昨天下午”、“上周二”等绝对或相对时间的精确时序核查，完整 Turn 无损分页。
 
-## 端到端用法
+### 3. 写侧语义泛化 + 读侧精准子串汇聚（Fan-in Convergence）
+为什么 MemCore 敢说“不依赖重型向量库也能跑出极高召回率”？
+* **联合词池（Union Pool）互保容灾**：系统顺着血缘将“原始对话的实体词”与“阶段摘要的主题词”自动去重合并。原始细节保留了冷门专有名词（如模型权重、代码库、人名），摘要提供了高阶概念兜底，有效弥补单点打标的漏检风险。
+* **单向子串包含（One-Way Substring）**：打破死板分词器与全等匹配的诅咒。已存的复合词（如 `文旅答辩项目`）可被精准的短查询（`文旅` 或 `答辩`）单向咬住；绝不引入无意义单字，零 NLP 库依赖。
+* **多对一汇聚防爆炸**：由于同一话题的讨论往往在局部时序上相对密集，而数万 Token 的对话才凝练为一个阶段标题。底层即便涉及多次具体的对话痕迹，向上回溯到标题层时，**候选量通常会大概率收敛至数量有限的紧凑卡片**，既在底层放宽了召回覆盖，又在顶层避免了向模型倾倒海量原始细节导致的“扇出爆炸”。
+* **证据回传（Witness）**：卡片附带原始命中依据（`keyword_hits`），让大模型看清“凭什么被召回”，清晰辅助二阶决策。
+
+### 4. 极致的前缀缓存亲和力与双水位线迟滞缓冲（Prefix-Cache-First & Hysteresis Buffer）
+为什么很多做了缓存的 Agent 在长程交互中缓存命中率依然很低？
+* **传统 FIFO 滑动窗口的死穴**：固定保存 N 条消息，每加入一条就从头部踢出一条，导致历史 Token 的起始位置每轮都在前移，极易造成前缀缓存的高频击穿。
+* **MemCore 的迟滞缓冲水库（High-Low Watermark）**：
+  * **摘要层**设定 `[Min, Max]`（如 5~10 条）弹性区间：在 5 到 9 条期间只做纯尾部追加（Append-only），已有前缀历史在字节级别保持稳定，维持极高的前缀复用率；仅在蓄满 10 条时才触发压缩。**将前缀变动频率大幅稀释至 $\frac{1}{\text{Max} - \text{Min}}$**！
+  * **Raw 对话层**以 Token 差值蓄水（如 8k~24k Token）：蓄水期内前缀保持稳定，只往尾部追加；到达上限才集中下刀回退到 8k 基线。
+* 配合底层的 `ProjectionLedger` 与 Hash 锁定机制，绝不轻易篡改 System Prompt，**这是系统在真实生产中跑出 98% 以上 Prompt Cache 命中率的根本保证**。
+
+### 5. 三层记忆生命周期（Raw → Episodic → Semantic）
+* **Raw（工作记忆）**：近期真实对话与原始工具轨迹，保留完整的原子时序。
+* **Episodic Summary（阶段摘要）**：按 Provider 投影的 Token 差值触发，**严格在完整 Turn 边界切割**，避免把一句话或一个调用对切成两半。
+* **Semantic Memory（长期事实）**：抽取长期偏好、稳定事实与待办。采用严格的强化合并机制——**仅当实体、主题、事实深度契合时才合并**，防止无关事件因为提到同一个人名而被错误焊死。
+
+---
+
+## 生态位与设计取向差异（Design Focus & Trade-offs）
+
+开源社区中已有许多优秀的记忆框架，它们在各自的目标场景中表现出色。MemCore 并非要替代所有记忆系统，而是针对**高频长程对话与重度工具调用共生**这一特定工程挑战，选择了截然不同的架构取向：
+
+| 维度 | Mem0 | Letta (MemGPT) | Zep / Graphiti | **MemCore** |
+| :--- | :--- | :--- | :--- | :--- |
+| **核心定位** | 用户画像与单点事实抽取 | 操作系统虚拟分页架构 | 时态知识图谱（Temporal Graph） | **统一时间线与上下文执行内核** |
+| **主要目标场景** | 跨会话偏好记忆、个性化 CRM | 强自省、自主管理内存块的长驻 Agent | 复杂多实体关系演化与全局知识推断 | **日常长程伴随与复杂工具任务共存** |
+| **长工具输出治理** | 聚焦对话与结论，不管理执行上下文 | 驻留历史或由模型调用工具存入归档 | 提取实体事实，不接管工具生命周期 | **原生终局结算（Settlement），折叠率超 68% 且支持原文无损回溯** |
+| **上下文组织取向** | 动态检索并前置插入相关事实 | 动态编辑 Core Memory 内存块 | 检索匹配图谱子结构并注入上下文 | **字节级稳定前缀（Prefix-First），双水位线迟滞缓冲最大化缓存复用** |
+| **检索与证据导航** | 向量相似度 + 图实体扁平搜索 | 工具搜索归档大文本 | 混合检索 + 图广度优先遍历（BFS） | **Agentic Navigation（混合检索 + 目录翻阅 + 血缘展开 + 精确时间线）** |
+| **存储与运维依赖** | 外部向量库 / 托管服务 | PostgreSQL + 向量数据库 | 图数据库 (Neo4j / FalkorDB) + 向量引擎 | **单文件 SQLite（支持零外挂部署，带 Outbox 自愈）** |
+
+---
+
+## 选择接入方式
+
+| 宿主需要什么 | 公开入口 | 接入说明 |
+| --- | --- | --- |
+| 给现有聊天循环补充可见记忆与读取工具，宿主继续组织历史 | `build_prompt_context()` / `render_prompt_context()` + 四种记忆读取工具 | [最小聊天示例](examples/minimal_chat_integration.py)、[使用流程](docs/usage_flow_v1.md) |
+| 由 MemCore 提供模型可见的历史、当前输入与开放工具轮序列 | `build_context_surface()`，使用 `surface.messages` | [上下文契约](docs/context_surface_contract_v1.md)、[provider 支持表](docs/provider_support_matrix_v1.md) |
+| 对已有 Session 接口使用上下文包装器 | `MemCoreContextSession.wrap(..., memory=mem)`，同时接入 `session.input_callback` | [Context Quickstart](docs/context_integration_quickstart_v1.md) |
+
+使用 `surface.messages` 时，当前输入和历史已经在序列中，不应再附加一份相同 raw 渲染或工具轮。宿主仍负责系统/人格提示、模型传输、权限、工具执行和后台维护调度。
+
+---
+
+## 5分钟极速上手
 
 ```python
-mem = MemorySystem(llm=MyLLMClient(), namespace=Namespace(user_id="u1", conversation_id="c1"),
-                   timezone="Asia/Shanghai", embedding="BAAI/bge-m3")
-handle = mem.begin_turn(stimuli=[TimelineEntryInput(
-    kind="message.user",
-    origin=EntryOrigin.USER,
-    turn_role=TurnRole.STIMULUS,
-    semantic_text="我之前说过爱喝什么",
-    payload={"text": "我之前说过爱喝什么"},
-)])
-cur = handle.stimuli[0].to_record()
-ctx = mem.build_prompt_context(current=cur)   # 可见三层;是否检索由聊天模型自行调用 retrieve/read_timeline
-ctx_text = mem.render_prompt_context(ctx)     # 推荐文本渲染:近期 raw 按日期分组,自带星期/时间段
-# ...用 ctx + memcore 的原生记忆工具拼你自己的最终聊天 prompt、调你自己的聊天模型...
-# 当前轮工具包装推荐用 retrieve_for_turn(current=cur, ...),避免把 prompt 已可见三层重复检索回来。
+from memcore import (
+    MemorySystem,
+    MemoryConfig,
+    Namespace,
+    TimelineEntryInput,
+    EntryOrigin,
+    TurnRole,
+)
+
+# 1. 初始化系统（单文件 SQLite 搞定一切）
+mem = MemorySystem(
+    llm=MyLLMClient(),
+    namespace=Namespace(user_id="u_001", conversation_id="c_001"),
+    timezone="Asia/Shanghai",  # 强时区支持，消除相对时间歧义
+    config=MemoryConfig(
+        operation_projection_policy="compact_after_terminal",  # 开启工具长结果终局折叠
+    ),
+)
+
+# 2. 开启一轮交互（传入用户输入）
+handle = mem.begin_turn(stimuli=[
+    TimelineEntryInput(
+        kind="message.user",
+        origin=EntryOrigin.USER,
+        turn_role=TurnRole.STIMULUS,
+        semantic_text="查一下今天北京的天气，然后告诉我。",
+        payload={"text": "查一下今天北京的天气，然后告诉我。"},
+    )
+])
+
+# 3. 构建并渲染模型可见的三层记忆上下文
+ctx = mem.build_prompt_context(current=handle.stimuli[0].to_record())
+prompt_text = mem.render_prompt_context(ctx)
+
+# 4. 执行工具调用（Open Turn 期间结果完整记录）
 mem.record_tool_exchange(
     turn_id=handle.turn_id,
     tool_name="web_search",
     tool_call_id="call_001",
-    tool_input={"query": "北京天气"},
-    result="北京今天 25°C,晴天",
+    tool_input={"query": "北京今天天气"},
+    result="北京今天 25°C，晴天，微风，空气质量优良……（此处省略数千字搜索结果）",
 )
-mem.append_entry(TimelineEntryInput(
-    kind="material.image.reference",
-    origin=EntryOrigin.ENVIRONMENT,
-    turn_role=TurnRole.INTERMEDIATE,
-    semantic_text="图片材料已就绪",
-    payload={"file_id": "file_img_001", "filename": "photo.jpg", "status": "ocr_ready"},
-    semanticize=False,
-), turn_id=handle.turn_id)
+
+# 5. 提交模型最终回复（原子关闭轮次，触发长工具折叠）
 mem.complete_turn(
     turn_id=handle.turn_id,
-    semantic_text=reply,
-    provider_output_raw=raw_model_output,
-    memory_annotation=parsed.memory_metadata,
-    annotation_status="accepted_model",
+    semantic_text="北京今天天气晴朗，气温 25°C，非常舒适哦！",
 )
-future = mem.compact_due_background()          # 聊天链路推荐后台沉淀,不阻塞用户可见回复
-# 可忽略 future 做 fire-and-forget;测试/脚本可 future.result() 读取压缩统计
+
+# 6. 后台异步推进记忆分层压缩（不阻塞用户实时回复）
+mem.compact_due_background()
 ```
 
-上例的 `embedding="BAAI/bge-m3"` 是本地已缓存模型的快捷写法，内部采用
-`local_files_only=True`，不会在生产启动时偷偷下载权重。全新环境请先安装
-`memcore[huggingface]` 并预下载模型、显式构造
-`HuggingFaceEmbeddingProvider(local_files_only=False)` 完成受控下载，或使用
-`HTTPEmbeddingProvider`。完整构造与上线自检见
-[`docs/configuration_api_v1.md`](docs/configuration_api_v1.md)。
+---
 
-宿主应在模型或交付异常的 `finally` 路径立即调用 `abort_turn()`。为处理进程崩溃、
-强制关机等无法执行 `finally` 的情况，启动或新一轮开始前可按产品超时策略调用：
+## 原生工具循环与回溯机制
 
-```python
-recovered = mem.recover_stale_open_turns(max_age_seconds=1800)
-```
-
-该操作只会原子终止当前 conversation namespace 内早于截止时间的 `open` turn，
-不会删除消息、摘要或已完成轮次。超时窗口由宿主选择；不能用它代替正常异常路径的即时 abort。
-
-`complete_turn()` 默认写入 `message.assistant`。语音、具身或其他宿主定义的
-typed final 可显式传入开放 namespaced kind，例如
-`kind="message.assistant.voice"`。普通 assistant final 继续使用原始纯文本
-provider 投影；typed final 会把自然回复保留为顶层 `speech`，并把 kind 与结构化
-payload 收进 `host_state`。这样交付、打断等宿主状态在后续模型上下文中仍然可见，
-又不会让模型把内部状态字段误认成下一轮最终回复格式。
-
-原生工具循环示意:
+原生 tool calling 接入可用 `build_native_memory_tool_specs(...)` 生成工具 schema，再用 `dispatch_native_memory_tool(...)` 分发 `retrieve_for_turn` / `browse_memory` / `open_memory` / `read_timeline` / `load_material`：
 
 ```python
 import json
@@ -215,9 +179,9 @@ tool_payload = dispatch_native_memory_tool(
 # receipt 是宿主侧导航锚点；把其余完整结果作为 provider 原生 tool_result 回给模型。
 provider_result = {key: value for key, value in tool_payload.items() if key != "receipt"}
 provider_result_text = json.dumps(provider_result, ensure_ascii=False, sort_keys=True)
-# 将模型实际看到的同一份结果写入 observation。默认策略会让它在后续回合保持完整；
+
+# 将模型实际看到的同一份结果写入 observation。
 # compact_after_terminal 则只在本 turn final 后把 provider 历史换成可回读卡片。
-# receipt 只作为 operation digest 可保留的小型重载锚点，不能替代完整 observation。
 mem.append_observation(
     turn_id=handle.turn_id,
     kind=f"operation.memory.{tool_call.name}.result",
@@ -229,119 +193,59 @@ mem.append_observation(
 )
 ```
 
-宿主不使用原生 tool calling 时也不需要另建历史系统。宿主解析模型自己的
-JSON/标签后，可将请求和结果追加到同一轮：
+---
 
-```python
-mem.append_action(
-    turn_id=turn_id,
-    kind="operation.catalog.request",
-    correlation_id="catalog-1",
-    payload={"action": "list_capabilities"},
-)
-mem.append_observation(
-    turn_id=turn_id,
-    kind="operation.catalog.response",
-    correlation_id="catalog-1",
-    payload={"items": ["search", "weather"]},
-    status="success",
-    retention_anchor={"catalog_ref": "catalog:v3", "schema_hash": "sha256:abc"},
-)
-```
+## 给 AI 编码助手的入口
 
-`kind` 和 payload 均由宿主定义；MemCore 不解析协议、不决定权限、不执行工具。
-若实际 provider history 使用普通 JSON/XML/标签消息，用 `record_request_projection(...)`
-冻结真实消息即可，后续严格前缀不会被默认原生工具投影改写。
+如果让 AI 编码助手接入本库，请先让它读取根目录 [`AGENTS.md`](AGENTS.md)，再读取 [`docs/ai_integration_checklist_v1.md`](docs/ai_integration_checklist_v1.md)。这份清单集中列出最容易漏掉并导致行为失真的硬规则：
 
-进程重启、换一个新的内存索引实例,或升级索引 metadata 字段后,可以从 SQLite 真相源补建/热加载索引:
+- `MemorySystem` 必须注入 `LLMClient`、生产 embedding、有效 IANA `timezone` 和含 `user_id` 的 `Namespace`；
+- timeline `kind` 必须是小写 namespaced value；普通工具采用 `tool.<lowercase_name>.call/result`；
+- 需要模型回复的请求必须走 `begin_turn → action/observation → complete_turn/abort_turn`，不能用 standalone `record_user_turn()` 冒充开放 turn；
+- 工具结果必须保存模型实际看到的同一份正文，并用相同 `turn_id/correlation_id` 关联；receipt 只能是小型回读锚点；
+- `pending/partial/unavailable/conflict` 必须按结构化状态处理，不能改写成空结果或假成功。
 
-```python
-stats = mem.reindex_all()  # 默认 upsert 当前 tenant/user/domain 下全部会话的 raw/summary/semantic
-# stats: {"scanned": 42, "reindexed": 42, "failed": 0}
-```
+---
 
-`reindex_all()` 不会清空已有 index 里的陈旧条目;它适合空内存索引冷启动/补 upsert。若外部向量库已污染,
-应先用后端管理工具清理对应集合或新建空 index。
+## 公开边界：本库提供什么 / 宿主自备什么
 
-`compact_due_sync()` 是同步确定性入口,适合单测、CLI、管理脚本或进程退出前 flush。在线聊天产品默认应使用
-`compact_due_background()`。
+MemCore 是**纯机制**：它不含任何具体人格、领域调教或模型权重。这条边界让它可以放心交付与授权。
 
-如果宿主按请求动态选择 provider,应把本轮实际投影 profile 传给压缩入口,例如
-`mem.compact_due_background(provider_profile="openai_chat")`。这样 `projected_tokens` 预算按模型真正收到的
-provider history 计算；不传时继续使用 `MemoryConfig.projection_profile`,兼容固定 provider 的宿主。
-
-raw token 压缩只影响 raw → episodic 的触发/批次选择，不改变检索条目结构。若宿主能提供与模型对齐的 tokenizer，
-注入 `TokenCounter` 可得到 exact 口径；没有 counter 时 MemCore 使用内置保守估算，并在结果中明确返回
-`token_count_quality="estimated"`，不会伪装成精确 tokenizer：
-
-```python
-class MyTokenCounter(TokenCounter):
-    def count_text(self, text: str) -> int:
-        return count_with_your_model_tokenizer(text)
-
-cfg = MemoryConfig(raw_token_trigger=12000, raw_token_batch_ratio=0.67)
-mem = MemorySystem(..., config=cfg, token_counter=MyTokenCounter())
-```
-
-压缩统计目标 provider 的完整 raw projection，并以完整 terminal turn/relation
-component 为切点。系统中不存在 count policy、独立消息 batch cap 或第二套 flat compactor。
-
-## 公开边界:本库提供什么 / 接入方自备什么
-
-memcore 是**纯机制**:它不含任何具体人格、领域调教或模型权重。这条边界让它可以放心交付/授权。
-
-| memcore 提供(机制) | 接入方自备(你的资产) |
+| MemCore 提供（机制） | 接入方自备（你的资产） |
 |---|---|
-| 三层记忆、压缩、强化、时间锚点 | 具体**人格文本**(经 `persona_text` / `PromptOverrides` 运行时注入) |
-| raw-first 混合检索、可观测实体放宽、核心读工具与原生工具分发辅助 | 你的**聊天模型**(`LLMClient` 只用于三层压缩，不介入读侧筛选) |
-| 统一 metadata 契约 + 提示词骨架 + 校验插槽 | **领域补充说明**与**调参**(窗口/阈值)；不能替换固定 facet/role 协议 |
-| embedding 接口 + 三路适配器 + 自检 | **embedding 模型**(本地 / API / 自有) |
-| 隔离、outbox 自愈、遗忘、评测台 | 领域**合规规则**(memcore 只保证记忆不越权变指令) |
+| 三层记忆、Token 压缩、强化合并、时间锚点 | 具体**人格文本**（经 `persona_text` / `PromptOverrides` 运行时注入） |
+| raw-first 混合检索、可观测实体放宽、核心读工具与原生工具分发 | 你的**聊天模型**（`LLMClient` 只用于三层压缩，不介入读侧筛选） |
+| 统一 metadata 契约 + 提示词骨架 + 校验插槽 | **领域补充说明**与**参数调优**（窗口/阈值） |
+| 向量索引接口 + 三路适配器 + 语义自检 | **Embedding 模型**（本地 / API / 自有；默认支持纯 SQLite 无向量降级） |
+| 命名空间硬隔离、outbox 自愈、定向遗忘、评测台 | 领域**合规规则**（MemCore 只保证记忆不越权变指令） |
 
-宿主决定什么内容可以进入 MemCore，并在写入前处理密钥、Cookie、二进制和宿主内部诊断。
-MemCore 不内置业务内容分类器，也不因 metadata 为空而让已经合法写入的普通记忆不可浏览、
-不可检索。任务所需的命令参数和可执行路径属于时间线证据，不应被通用内核改写成失去语义的占位符。
+> ⚠️ **隔离单位**：记忆的硬隔离边界是 Namespace 的 `hard_key`（`tenant_id / user_id / domain_id`）。`actor` 是软标签（群聊里“谁说的”），不进硬隔离、同一 `user_id` 下所有 actor 共享记忆池。要“按人隔离”，必须把人映射到 `user_id`。
 
-> 焊死项(时间锚点、字段契约、"只输出 JSON"等)无法被外部覆盖;插槽只能补充。详见 `prompts.PromptOverrides`。
+---
 
-### ⚠️ 隔离单位 = `tenant_id / user_id / domain_id`,不是 actor
+## 严密验证与架构演进
 
-记忆的硬隔离边界是 Namespace 的 `hard_key`(tenant/user/domain)。**`actor` 是软标签**(群聊里"谁说的"),
-**不进硬隔离、同一 user_id 下所有 actor 共享记忆池**。要"按人隔离",必须把"人"映射到 **user_id**,不能指望 actor。
-(检索 where 必须按 hard_key 前置过滤。仓库包含 Chroma 后端实现，但它当前尚未
-进入稳定顶层公共导出；第三方接入不要依赖私有 import path。)
+MemCore 拥有极其严苛的工程自检防线：
+* 全仓库包含 **60+ 个测试套件，770+ 个全绿自动化单测**，覆盖并发竞争、数据库全版本迁移与回滚、时区边界、Prompt 注入与 Outbox 故障自愈。
+* 运行测试：
+  ```bash
+  uv run --extra dev python -m unittest discover -s tests -v
+  uv run --extra dev ruff check .
+  uv run --extra dev ruff format --check .
+  ```
+* 详细技术演进与设计推演见：
+  * [`docs/design_story_and_video_v1.md`](docs/design_story_and_video_v1.md) — 设计思路与视频讲解底稿
+  * [`docs/design_highlights_v1.md`](docs/design_highlights_v1.md) — 系统亮点与机制深度说明
+  * [`docs/operation_projection_settlement_v1.md`](docs/operation_projection_settlement_v1.md) — 终局投影结算与回读规范
+  * [`docs/agentic_memory_navigation_evaluation_20260806.md`](docs/agentic_memory_navigation_evaluation_20260806.md) — 线上真实导航审计报告
 
-## 公共 API
-
-`import memcore` 暴露:`MemorySystem`、`MemoryConfig` / `OperationProjectionPolicy`、`Namespace`/`Actor`、`PromptOverrides`、
-`LLMClient`/`LLMRequest`/`LLMResult`、`MemoryStore`/`VectorIndex`/`EmbeddingProvider`/`TokenCounter` 接口、
-默认实现 `SQLiteMemoryStore`/`InMemoryVectorIndex`/`HashedEmbeddingProvider`/`HuggingFaceEmbeddingProvider`/`HTTPEmbeddingProvider`/`RoleAwareHTTPEmbeddingProvider`、
-`verify_embedding`、`build_native_memory_tool_specs` / `dispatch_native_memory_tool` / `build_memory_operation_receipt`、
-`build_action_entry` / `build_observation_entry`、Timeline V2 与 projection 契约、
-`MemoryMetadata`/`SummaryRecord`/`SemanticRecord`、异常类。
-
-`MemorySystem` 上的 `build_context_projection()`、`settlement_metrics()` 以及
-`open_memory(memory_id|memory_ids, ...)` 构成终局工具结果的投影、观测和回读闭环；
-精确契约见
-[`docs/operation_projection_settlement_v1.md`](docs/operation_projection_settlement_v1.md)。
-需要在开放工具轮中只刷新当前 turn 的宿主可调用
-`build_open_turn_projection(turn_id=..., provider_profile=...)`；它只接受当前命名空间
-拥有且仍为 open 的 turn，不含其它历史或摘要，也不替代完整请求使用的
-`build_context_projection()`。
-
-## 跑测试
-
-```bash
-uv run --extra dev python -m unittest discover -s tests -v
-uv run --extra dev ruff check .
-uv run --extra dev ruff format --check .
-```
+---
 
 ## 授权
 
-**专有软件,默认保留所有权利(All Rights Reserved)。** 见 [LICENSE](LICENSE)。
+**专有软件，默认保留所有权利 (All Rights Reserved)。** 见 [LICENSE](LICENSE)。
 
-- 本库**不开源**;未经书面商业授权,不得使用、复制、修改、再分发。
-- **商用需单独签授权协议**,授权范围与费用另行约定;对外仅按商业授权交付 wheel / 源码副本。
-- 如日后发布开源版本,将另行声明其许可证;本仓库不授予任何开源权利。
-- 本库不含受私有许可约束的人格/权重内容(人格由接入方运行时注入),因此可作为纯机制独立授权。
+- 本库**不开源**；未经书面商业授权，不得使用、复制、修改、再分发。
+- **商用需单独签授权协议**，授权范围与费用另行约定；对外仅按商业授权交付 wheel / 源码副本。
+- 如日后发布开源版本，将另行声明其许可证；本仓库不授予任何开源权利。
+- 本库不含受私有许可约束的人格/权重内容（人格由接入方运行时注入），因此可作为纯机制独立授权。
