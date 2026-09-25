@@ -175,9 +175,10 @@ from memcore import (
     TurnRole,
 )
 
-# 1. 初始化系统（单文件 SQLite 搞定一切）
+# 1. 初始化系统（SQLite 负责持久化真相；Embedding 由宿主显式提供）
 mem = MemorySystem(
     llm=MyLLMClient(),
+    embedding=MyEmbeddingProvider(),  # 必填；可使用本地或 API embedding
     namespace=Namespace(user_id="u_001", conversation_id="c_001"),
     timezone="Asia/Shanghai",  # 强时区支持，消除相对时间歧义
     config=MemoryConfig(
@@ -282,7 +283,7 @@ MemCore 是**纯机制**：它不含任何具体人格、领域调教或模型�
 | 三层记忆、Token 压缩、强化合并、时间锚点 | 具体**人格文本**（经 `persona_text` / `PromptOverrides` 运行时注入） |
 | raw-first 混合检索、可观测实体放宽、核心读工具与原生工具分发 | 你的**聊天模型**（`LLMClient` 只用于三层压缩，不介入读侧筛选） |
 | 统一 metadata 契约 + 提示词骨架 + 校验插槽 | **领域补充说明**与**参数调优**（窗口/阈值） |
-| 向量索引接口 + 三路适配器 + 语义自检 | **Embedding 模型**（本地 / API / 自有；默认支持纯 SQLite 无向量降级） |
+| 向量索引接口 + 三路适配器 + 语义自检 | **Embedding 模型**（本地 / API / 自有；构造 `MemorySystem` 时必须显式提供） |
 | 命名空间硬隔离、outbox 自愈、定向遗忘、评测台 | 领域**合规规则**（MemCore 只保证记忆不越权变指令） |
 
 > ⚠️ **隔离单位**：记忆的硬隔离边界是 Namespace 的 `hard_key`（`tenant_id / user_id / domain_id`）。`actor` 是软标签（群聊里“谁说的”），不进硬隔离、同一 `user_id` 下所有 actor 共享记忆池。要“按人隔离”，必须把人映射到 `user_id`。

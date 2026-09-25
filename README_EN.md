@@ -157,9 +157,10 @@ from memcore import (
     TurnRole,
 )
 
-# 1. Initialize the system (Single-file SQLite handles everything)
+# 1. Initialize the system (SQLite owns durable truth; the host provides embeddings)
 mem = MemorySystem(
     llm=MyLLMClient(),
+    embedding=MyEmbeddingProvider(),  # Required; local and API-backed providers are supported
     namespace=Namespace(user_id="user_001", conversation_id="conv_001"),
     timezone="America/New_York",  # Strong timezone support prevents relative-time ambiguity
     config=MemoryConfig(
@@ -264,7 +265,7 @@ MemCore is **pure mechanism**: it contains zero proprietary persona configuratio
 | Three-tier memory, token compaction, reinforcement merging, time anchoring | Specific **Persona prompts** (injected at runtime via `persona_text` or `PromptOverrides`) |
 | Raw-first hybrid retrieval, observable tag expansion, native tool dispatcher | Your **Chat Model** (`LLMClient` is used for background summaries, never for read-side filtering) |
 | Unified metadata schema, prompt scaffolds, validation harnesses | **Domain specifications** and **parameter tuning** (window sizes, thresholds) |
-| Vector index interfaces, multi-backend adapters, semantic self-check | **Embedding Provider** (Local, API, or zero-embedding SQLite fallback) |
+| Vector index interfaces, multi-backend adapters, semantic self-check | **Embedding Provider** (Local or API-backed; must be supplied explicitly when constructing `MemorySystem`) |
 | Hard namespace isolation, Outbox self-healing, targeted forgetting | **Compliance & Safety rules** (MemCore ensures memory data never executes as instructions) |
 
 > ⚠️ **Isolation Boundaries**: Strict memory isolation is governed by the `Namespace` hard key (`tenant_id / user_id / domain_id`). An `Actor` is a soft speaker attribution label for multi-user chat; it does not isolate memory. All actors under the same `user_id` share the memory pool. To isolate individuals, map them to distinct `user_id`s.
