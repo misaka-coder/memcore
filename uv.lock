@@ -1182,7 +1182,7 @@ requires-dist = [
     { name = "chromadb", marker = "extra == 'chroma'", specifier = ">=0.4" },
     { name = "numpy", marker = "extra == 'speed'", specifier = ">=1.24" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = "==0.15.20" },
     { name = "sentence-transformers", marker = "extra == 'huggingface'", specifier = ">=2.2" },
     { name = "tzdata" },
 ]
