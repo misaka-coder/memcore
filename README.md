@@ -157,12 +157,8 @@ flowchart LR
 
 > **注意**：PyPI 上名为 `memcore` 的包与本项目无关，请勿安装。
 
-目前请从源码安装：
-
 ```bash
-git clone https://github.com/misaka-coder/memcore.git
-cd memcore
-pip install -e ".[dev]"
+pip install memcore-kernel
 ```
 
 可选依赖按需安装：
@@ -173,6 +169,14 @@ pip install "memcore-kernel[huggingface]"  # sentence-transformers 本地嵌入
 ```
 
 `tzdata` 是唯一默认依赖：时间锚点通过 `zoneinfo` 解析 IANA 时区，Windows 无系统时区库。
+
+也可以从源码安装最新开发版：
+
+```bash
+git clone https://github.com/misaka-coder/memcore.git
+cd memcore
+pip install -e ".[dev]"
+```
 
 ---
 

@@ -151,12 +151,8 @@ The distribution name is **`memcore-kernel`**; the import name remains `memcore`
 
 > **Note**: the package named `memcore` on PyPI is unrelated to this project. Do not install it.
 
-Install from source for now:
-
 ```bash
-git clone https://github.com/misaka-coder/memcore.git
-cd memcore
-pip install -e ".[dev]"
+pip install memcore-kernel
 ```
 
 Optional extras:
@@ -167,6 +163,14 @@ pip install "memcore-kernel[huggingface]"  # sentence-transformers local embeddi
 ```
 
 `tzdata` is the only default dependency: time anchoring resolves IANA timezones through `zoneinfo`, and Windows ships no system tz database.
+
+You can also install the latest development version from source:
+
+```bash
+git clone https://github.com/misaka-coder/memcore.git
+cd memcore
+pip install -e ".[dev]"
+```
 
 ---
 
