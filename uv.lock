@@ -1151,8 +1151,8 @@ wheels = [
 ]
 
 [[package]]
-name = "memcore"
-version = "0.1.0+chatv6.2"
+name = "memcore-runtime"
+version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "tzdata" },
