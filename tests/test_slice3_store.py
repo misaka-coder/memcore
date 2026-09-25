@@ -30,8 +30,13 @@ class SQLiteConfiguration(unittest.TestCase):
             store = SQLiteMemoryStore(str(db_path))
             store.close()
 
-            with sqlite3.connect(db_path) as connection:
+            # sqlite3.Connection 的 with 只管事务,不关连接;WAL 下这个活连接会持有
+            # -wal/-shm 文件锁,Windows 上 TemporaryDirectory 清理时无法删除。显式关闭。
+            connection = sqlite3.connect(db_path)
+            try:
                 journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
+            finally:
+                connection.close()
 
             self.assertEqual(str(journal_mode).lower(), "wal")
 
