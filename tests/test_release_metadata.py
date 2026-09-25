@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import unittest
 from pathlib import Path
 
@@ -15,10 +14,13 @@ ROOT = Path(__file__).resolve().parents[1]
 def project_field(name: str) -> str:
     text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     project = text.split("[project]", 1)[1].split("[", 1)[0]
-    match = re.search(rf'^\\s*{re.escape(name)}\\s*=\\s*"([^"]+)"', project, re.MULTILINE)
-    if match is None:
-        raise AssertionError(f"missing [project].{name}")
-    return match.group(1)
+    prefix = f"{name} = "
+    for line in project.splitlines():
+        if line.strip().startswith(prefix):
+            value = line.split("=", 1)[1].strip()
+            if value.startswith('"') and value.endswith('"'):
+                return value[1:-1]
+    raise AssertionError(f"missing [project].{name}")
 
 
 class ReleaseMetadataTests(unittest.TestCase):
