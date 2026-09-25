@@ -62,6 +62,23 @@ MemCore asserts that **semantic embeddings are an acceleration index, never the 
 * `open_memory`: Surgical inspection supporting compact metadata (`card`), summary bodies (`content`), or exact child lineage traces (`sources`).
 * `read_timeline`: Exact chronological verification answering absolute or relative queries (*"yesterday afternoon"*, *"last Tuesday"*) with lossless turn-level pagination.
 
+All four tools **share one time-anchor scheme**, which is why they chain into each other instead of operating in isolation: `browse_memory` cards carry `period_start_at` / `period_end_at`, every `retrieve_for_turn` match carries a `timestamp`, `read_timeline` and the raw tier render as `[日期 2026-04-10 周五]`, and summaries and long-term memory render with a `[time range | ...]` prefix. Time evidence obtained from any one entry point is directly usable as a query condition for the next.
+
+### 2.5 Timestamps Are a Dimension of Memory, Not Just Metadata
+
+Most systems store a timestamp as a peripheral field. MemCore treats it as a **retrieval and reasoning dimension that runs through all three memory tiers**, addressing four things at once:
+
+| Role | How it shows up |
+| --- | --- |
+| **Temporal awareness and companionship** | The model knows when something happened and how long ago, so it can adjust tone and reaction — not merely that it happened |
+| **Automatic ordering** | Memory gains a natural sequence, avoiding the incoherence that follows from a jumble of events with no known order |
+| **A queryable coordinate** | *"That thing last Tuesday"* is itself a query condition; the model resolves the date first, then reads the timeline, instead of searching vaguely |
+| **Hallucination suppression** | A time anchor lets the model judge whether an event could plausibly fall at that time, rather than inventing a memory with no temporal basis |
+
+**How the loop closes**: the summarization model is required to emit the event's time range when it produces an episodic summary (the `[时间锚点规则]` block in `memcore/prompts.py`). The system then normalizes relative expressions (*"recently"*, *"those few days"*) into absolute timestamps and computes `period_start_ts` / `period_end_ts` as a fallback. The result is that catalogs, summaries, raw evidence, and long-term memory **each carry trustworthy time**; the model uses its own temporal awareness to browse a date range, read a summary, and drill into raw evidence as needed — the input to each step is directly obtainable from the output of the previous one, with no guessing.
+
+> Boundary: a source record's time range is computed by code from the record itself, which assumes the host supplies correct timestamps; **an event date stated in dialogue still depends on the model interpreting that utterance correctly**. Time anchors sharply reduce temporal hallucination, but they do not automatically remove misinterpretation of time expressions.
+
 ### 3. Write-Side Tag Generalization + Read-Side Fan-in Convergence
 Why does MemCore achieve high recall without complex semantic indexers?
 * **Union Tag Pool**: During retrieval, MemCore dynamically unions raw entity anchors with high-level episodic summary tags. Raw details preserve obscure proper nouns (model weights, repository names, people), while summaries provide conceptual fallbacks.
