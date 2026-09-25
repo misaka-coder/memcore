@@ -41,12 +41,20 @@ Measured on one fuzzy retrieve: 2,667 SELECTs before, 45 after. The benchmark is
 `examples/benchmark_memory_reads.py`; the write-up is
 [memory_read_performance_20260922.md](memory_read_performance_20260922.md).
 
-## Research harness
+## Long-arc pilot harness
 
-The long-arc pilot harness and its recorded runs under `examples/research_pilot/`
-and `docs/research/pilot_v1..v4/` are included. They document actual compaction,
-history readback and restart recovery, and they also record delivery and
-attribution failures. They are not a comprehensive reliability validation.
+The pilot harness and its recorded runs are host-specific work: they bundle a
+concrete host adapter, answer keys and call traces. They are not part of
+MemCore's public capability, so they are kept in the host project rather than
+this repository and are excluded from the sdist.
+
+What they exercised is still covered by the public suite: actual compaction,
+history readback and restart recovery. They also recorded delivery and
+attribution failures, and they were never a comprehensive reliability
+validation. The bounded claims that survive from that work — the ~81% payload
+reduction scope, the ~3.7% cost caveat, and the four scenarios an evaluation
+must cover — are recorded in
+[design_story_and_video_v1.md](design_story_and_video_v1.md).
 
 ## Documentation
 
@@ -58,12 +66,15 @@ video storyboard material lives in
 ## Validation
 
 ```bash
-uv run --extra dev python -m unittest discover -s tests -v   # 778 tests, OK (skipped=9)
+uv run --extra dev python -m unittest discover -s tests -v   # 611 tests, OK (skipped=9)
 uv run --extra dev ruff check .                              # All checks passed
 uv run --extra dev ruff format --check .                     # 144 files already formatted
 git diff --check                                             # clean
 uv run --extra dev python -m build                           # sdist + wheel
 ```
+
+The public suite shrank from 778 to 611 cases (60 → 45 files) because the
+host-specific pilot tests moved to the host project.
 
 Back up databases before any migration. Projection migration does not rewrite raw
 messages and does not run on the request hot path.

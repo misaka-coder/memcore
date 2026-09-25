@@ -274,7 +274,7 @@ MemCore is **pure mechanism**: it contains zero proprietary persona configuratio
 ## Verification & Test Suite
 
 MemCore enforces rigorous engineering guarantees:
-* Over **60+ test suites and 770+ automated tests** verifying concurrency, schema migrations and rollbacks, timezone bounds, prompt injection defense, and transactional outbox recovery.
+* Over **45 test suites and 611 automated tests** verifying concurrency, schema migrations and rollbacks, timezone bounds, prompt injection defense, and transactional outbox recovery.
 * Run tests locally:
   ```bash
   uv run --extra dev python -m unittest discover -s tests -v

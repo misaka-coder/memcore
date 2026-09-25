@@ -224,6 +224,12 @@ After parsing:
   budget are already embedded.
 - Use `read_timeline` for exact date/time/quotation questions and
   `retrieve_for_turn` for unknown-time fuzzy facts.
+- All four read tools share one time-anchor scheme, which is what lets them
+  chain: `browse_memory` cards expose `period_start_at` / `period_end_at`,
+  each `retrieve_for_turn` match carries `timestamp`, and both `read_timeline`
+  and the raw tier render `[日期 2026-04-10 周五]`. An anchor taken from one
+  tool's result can be fed into another's time selector without conversion.
+  Do not introduce a host-side date format beside this one.
 
 ## Three-layer memory lifecycle
 

@@ -3,10 +3,28 @@ include LICENSE
 include COMMERCIAL.md
 include README.md
 include pyproject.toml
+
 recursive-include docs *.md
-# 演示用 Remotion 工程:体积大且与库本体无关,不随 sdist 发布(git 侧见 .gitignore)
-prune docs/video_assets
 recursive-include examples *.py
 recursive-include tests *.py
+
+# 以下裁剪必须排在 recursive-include 之后:MANIFEST.in 按顺序处理,
+# 排在后面的 include 会把前面已排除的文件重新加回来。
+
+# 演示用 Remotion 工程:体积大且与库本体无关,不随 sdist 发布(git 侧见 .gitignore)
+prune docs/video_assets
+
+# 宿主专属评测台与实验数据:含答案键、调用轨迹与 Akane 适配器。
+# 文件在本地保留以便继续跑,但不属于 MemCore 公开能力,不入 sdist。
+# prune 只接受目录,故按目录裁剪;散落的 pilot 测试按文件名排除。
+prune docs/research
+prune examples/research_pilot
+exclude tests/test_research_pilot_*.py
+
+# Akane 宿主专属的设计依据与代码索引文档:写的是某个具体产品的接入决策,
+# 不是 MemCore 的公开能力说明,不入 sdist。
+exclude docs/akane_memcore_design_rationale_and_research_v1.md
+exclude docs/host_integration_code_index_akane_v1.md
+
 global-exclude __pycache__/*
 global-exclude *.py[cod]

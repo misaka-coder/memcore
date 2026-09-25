@@ -52,7 +52,7 @@ flowchart LR
 折叠的是**默认展示**，不是删除。原文仍保存在 SQLite 中，只是不再占据后续请求的上下文预算。
 
 * **执行期（Open Turn）**：工具调用与大体量原始输出完整呈给模型，保证复杂多步任务推理拥有充分的信息依据。
-* **终局完成后（Post-Final）**：启用 `compact_after_terminal` 策略后，庞大的结果自动折叠为一条包含时间、来源和 `source_id` 的小巧卡片（平均仅 100 Token）。
+* **终局完成后（Post-Final）**：启用 `compact_after_terminal` 策略后，庞大的结果自动折叠为一张**结算卡片**——包含时间、来源与 `source_id`，平均仅 100 Token。
 * **按需瞬间回溯**：后续日常闲聊不受长文本干扰；某天用户突然追问“当时那个报错具体是哪一行”，模型可通过 `open_memory(memory_id=...)` 沿精准的 Lineage 血缘，瞬间把 25,000 字的原始执行轨迹调回前台！
 
 ### 2. 多路径自主记忆导航（Agentic Memory Navigation）
@@ -181,7 +181,7 @@ mem = MemorySystem(
     namespace=Namespace(user_id="u_001", conversation_id="c_001"),
     timezone="Asia/Shanghai",  # 强时区支持，消除相对时间歧义
     config=MemoryConfig(
-        operation_projection_policy="compact_after_terminal",  # 开启工具长结果终局折叠
+        operation_projection_policy="compact_after_terminal",  # 开启长工具结果的终局结算
     ),
 )
 
@@ -292,7 +292,7 @@ MemCore 是**纯机制**：它不含任何具体人格、领域调教或模型�
 ## 严密验证与架构演进
 
 MemCore 拥有极其严苛的工程自检防线：
-* 全仓库包含 **60+ 个测试套件，770+ 个全绿自动化单测**，覆盖并发竞争、数据库全版本迁移与回滚、时区边界、Prompt 注入与 Outbox 故障自愈。
+* 全仓库包含 **45 个测试套件，611 个全绿自动化单测**，覆盖并发竞争、数据库全版本迁移与回滚、时区边界、Prompt 注入与 Outbox 故障自愈。
 * 运行测试：
   ```bash
   uv run --extra dev python -m unittest discover -s tests -v

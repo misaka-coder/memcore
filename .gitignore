@@ -13,6 +13,14 @@ build/
 # 视频/演示资产:Remotion 工程与媒体文件,体积大且与库本体无关,不随开源发布
 docs/video_assets/
 
+# 宿主专属评测台与实验数据:绑定 Akane 宿主、含答案键与调用轨迹,
+# 本地保留以便继续跑,但不属于 MemCore 公开能力,不入公开仓库
+docs/research/
+examples/research_pilot/
+tests/test_research_pilot_*.py
+docs/akane_memcore_design_rationale_and_research_v1.md
+docs/host_integration_code_index_akane_v1.md
+
 # 编辑器与系统垃圾
 .DS_Store
 Thumbs.db

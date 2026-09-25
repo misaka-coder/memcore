@@ -114,6 +114,19 @@ MemCore 用轻量检索替代重型向量库依赖，依靠的是三个互相配
 
 需要注意的是，这不等于「看到概要就看不到细节」：系统减少的是缺乏新证据的重复展示，同时保留对底层更细粒度证据的按需访问通道。
 
+### 2.5.1 调用记录提供线索，卡片提供地址
+
+终局结算替换的是 observation 的正文，**调用本身与参数被保留**。这不是为了完整性而完整性：在多次相似的工具调用之间，参数是模型日后甄别「当时到底查的是哪一个」的核心辨认线索。
+
+由此带来一个容易被忽略的分工：
+
+* **历史事实核验**读的是当时的观察快照——当时返回的就是当时的事实；
+* **当前状态更新**应该重新执行工具——旧快照反映的可能是已经变化的状态。
+
+两者在系统里明确分流，回读路径不会把「重新执行」伪装成「回忆」。
+
+需要说明的是，完整参数并不永久驻留于可见上下文：后续统一 raw 压缩仍可能把操作轨迹转成 digest。
+
 ### 2.6 字节级稳定前缀与双水位线迟滞缓冲（Prefix-Cache-First & Hysteresis Buffer）
 
 前缀缓存命中率低，通常不是因为缓存没开，而是因为前缀在每轮都被改写。固定容量的 FIFO 滑动窗口是典型原因：每进入一条新消息就从头踢出一条，历史 Token 的起始位置每轮前移，导致前缀哈希链持续偏移。
@@ -162,7 +175,5 @@ MemCore 的设计围绕三条约束展开：
 | 读取 API 签名与返回契约 | [`memory_read_api_v1.md`](memory_read_api_v1.md) |
 | 配置与运行时职责 | [`configuration_api_v1.md`](configuration_api_v1.md) |
 | raw 压缩策略 | [`raw_token_compaction_policy_v1.md`](raw_token_compaction_policy_v1.md) |
-| 机制依据、已知边界与待验证假设 | [`akane_memcore_design_rationale_and_research_v1.md`](akane_memcore_design_rationale_and_research_v1.md) |
-| 宿主接入的代码证据索引与版本口径 | [`host_integration_code_index_akane_v1.md`](host_integration_code_index_akane_v1.md) |
 | 真实会话导航审计（含未命中与归因错误） | [`agentic_memory_navigation_evaluation_20260806.md`](agentic_memory_navigation_evaluation_20260806.md) |
-| 多步长程实验结果（含失败记录） | [`research/pilot_v4/actual_results.md`](research/pilot_v4/actual_results.md) |
+| 已知边界与失败矩阵 | [`failure_matrix_v1.md`](failure_matrix_v1.md) |

@@ -1,9 +1,9 @@
 {
   "fixture_version": "context_surface_v1",
   "clock": "2026-08-16T14:24:00+08:00",
-  "host": "akane",
+  "host": "example-host",
   "provider_profile": "anthropic_messages",
-  "system": "You are Akane.",
+  "system": "You are a test host persona.",
   "history_messages": [
     {
       "role": "user",

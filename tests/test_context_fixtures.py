@@ -12,7 +12,7 @@ FIXTURE_DIR = Path(__file__).parent / "fixtures" / "context_surface_v1"
 
 class ContextFixtureTests(unittest.TestCase):
     def test_fixed_clock_fixtures_have_one_current_message_and_no_private_time_format(self) -> None:
-        expected = {"akane_openai.json", "akane_anthropic.json", "harness_deepseek.json"}
+        expected = {"host_openai_chat.json", "host_anthropic_messages.json", "harness_deepseek.json"}
         self.assertEqual({path.name for path in FIXTURE_DIR.glob("*.json")}, expected)
         for path in sorted(FIXTURE_DIR.glob("*.json")):
             with self.subTest(fixture=path.name):
