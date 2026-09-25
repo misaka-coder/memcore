@@ -1,6 +1,6 @@
 # memcore
 
-A domain-agnostic, extensible, and dual-licensable **memory and context engine** engineered for long-horizon agentic conversations and complex tool execution.
+A domain-agnostic, extensible, open-source **memory and context engine** engineered for long-horizon agentic conversations and complex tool execution.
 
 [English](README_EN.md) | [中文](README.md)
 
@@ -292,14 +292,7 @@ MemCore enforces rigorous engineering guarantees:
 
 ## Licensing
 
-MemCore is open-source software licensed under a **dual-licensing model**: [AGPL-3.0-only](LICENSE) **OR** a Commercial License, at the user's choice.
-SPDX Identifier: `AGPL-3.0-only OR LicenseRef-Commercial`.
+MemCore is open-source software licensed under the [Apache License 2.0](LICENSE), with SPDX identifier `Apache-2.0`.
 
-| | AGPL-3.0-only (Default) | Commercial License |
-| :--- | :--- | :--- |
-| **Cost** | Free / Open Source | Per commercial agreement |
-| **Source Disclosure Obligation** | Yes (Copyleft) | None |
-| **Ideal For** | Open-source projects, internal use, copyleft-compatible apps | Closed-source distribution, SaaS platforms, enterprises unable to accept AGPL |
+Subject to the license terms, you may use, modify, distribute, and commercially deploy MemCore, including inside proprietary applications and SaaS products. Apache-2.0 also includes explicit copyright and patent grants; redistributions must retain the license and applicable copyright, patent, and attribution notices.
 
-* **Open Source (AGPL-3.0)**: You may freely use, modify, and distribute MemCore, including for commercial applications, provided you comply with AGPL terms. Note **Section 13 (Remote Network Interaction)**: if you modify MemCore and provide it as a network service to external users, you must make the corresponding source code available to them. Internal company use does not trigger network distribution obligations.
-* **Commercial License**: If the copyleft obligations of AGPL-3.0 do not align with your business model (e.g., embedding into proprietary SaaS without source disclosure, enterprise compliance policies), a separate commercial license is available. Terms and contact information are documented in [`COMMERCIAL.md`](COMMERCIAL.md) and [`COMMERCIAL_EN.md`](COMMERCIAL_EN.md).

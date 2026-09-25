@@ -1,6 +1,5 @@
 include AGENTS.md
 include LICENSE
-include COMMERCIAL.md
 include README.md
 include pyproject.toml
 
