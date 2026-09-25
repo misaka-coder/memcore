@@ -20,7 +20,7 @@ dependencies = ["tzdata"]
 chroma = ["chromadb>=0.4"]
 huggingface = ["sentence-transformers>=2.2"]
 speed = ["numpy>=1.24"]
-dev = ["pytest>=7", "ruff>=0.15", "build>=1.2"]
+dev = ["pytest>=7", "ruff==0.15.20", "build>=1.2"]
 
 [project.urls]
 Homepage = "https://github.com/misaka-coder/memcore"
