@@ -1,5 +1,10 @@
 # memcore
 
+[![CI](https://github.com/misaka-coder/memcore/actions/workflows/ci.yml/badge.svg)](https://github.com/misaka-coder/memcore/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+[![Python >=3.10](https://img.shields.io/badge/Python-%3E%3D3.10-blue.svg)](https://www.python.org/)
+
+
 领域无关、可扩展、开源的**记忆与上下文内核**，专为长程对话与复杂工具执行设计。
 
 [English](README_EN.md) | [中文](README.md)
@@ -22,6 +27,50 @@
 3. **Prompt Cache 频繁被击穿**：大模型服务商（DeepSeek、Anthropic、OpenAI）提供的 Prefix Caching（前缀缓存）是降低延迟和成本的唯一命脉。传统系统因频繁重写 System Prompt、不规则滑动窗口或动态上下文重排，导致缓存命中率归零，越聊越贵、越聊越卡。
 
 **MemCore 为此而生：它不仅是一个记忆库，更是一个统一调度时间线、生命周期、模型投影与按需回溯的上下文操作系统。**
+
+---
+
+## 30 秒看懂 MemCore
+
+```text
+20,000-token tool result
+        ↓  active turn: keep full evidence
+   complete_turn()
+        ↓  terminal settlement
+~100-token reloadable card
+        ↓  need the exact detail later?
+ open_memory() → original raw evidence
+```
+
+**MemCore 不是另一个“把聊天切块塞进向量库”的 memory layer。** 它管理的是：什么信息继续驻留在 Agent 的工作上下文里，什么信息在任务结束后退出默认上下文，以及需要时如何无损回读。
+
+可直接运行核心机制演示：
+
+```bash
+python examples/settlement_demo.py
+```
+
+## 安装
+
+当前仓库可直接从 GitHub 安装：
+
+```bash
+python -m pip install "git+https://github.com/misaka-coder/memcore.git"
+```
+
+首个 PyPI 版本发布后，distribution 名称为 **`memcore-runtime`**，Python import 名保持 **`memcore`**：
+
+```bash
+python -m pip install memcore-runtime
+```
+
+```python
+import memcore
+
+print(memcore.__version__)
+```
+
+> 为什么不是 `pip install memcore`？PyPI 上该 distribution 名已被其他项目占用。MemCore 项目名与 Python import 名不变，仅发行包名称使用 `memcore-runtime`。首发流程见 [v0.1.0 Launch Checklist](docs/launch_v0.1.0.md)。
 
 ---
 
