@@ -1,5 +1,10 @@
 # memcore
 
+[![CI](https://github.com/misaka-coder/memcore/actions/workflows/ci.yml/badge.svg)](https://github.com/misaka-coder/memcore/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+[![Python >=3.10](https://img.shields.io/badge/Python-%3E%3D3.10-blue.svg)](https://www.python.org/)
+
+
 A domain-agnostic, extensible, open-source **memory and context engine** engineered for long-horizon agentic conversations and complex tool execution.
 
 [English](README_EN.md) | [中文](README.md)
@@ -22,6 +27,50 @@ Most agent memory frameworks today simply "chunk chat history and dump it into a
 3. **Prefix Cache Churn (Prompt Cache Busting)**: LLM providers (Anthropic, DeepSeek, OpenAI) offer prompt caching as the primary lever to reduce latency and inference costs. Traditional memory systems frequently rewrite system prompts, shift sliding windows unevenly, or dynamically reorder context snippets—dropping cache hit rates to zero and driving up costs with every turn.
 
 **MemCore is built to solve this: not merely as a storage layer, but as a context operating system that unifies timelines, lifecycles, provider projections, and on-demand backtracking.**
+
+---
+
+## MemCore in 30 Seconds
+
+```text
+20,000-token tool result
+        ↓  active turn: keep full evidence
+   complete_turn()
+        ↓  terminal settlement
+~100-token reloadable card
+        ↓  need the exact detail later?
+ open_memory() → original raw evidence
+```
+
+**MemCore is not another "chunk chat history into a vector DB" memory layer.** It manages what remains resident in an agent's working context, what leaves the default context after a task ends, and how exact evidence can be paged back in when needed.
+
+Run the core mechanism end to end:
+
+```bash
+python examples/settlement_demo.py
+```
+
+## Installation
+
+The repository can be installed directly from GitHub today:
+
+```bash
+python -m pip install "git+https://github.com/misaka-coder/memcore.git"
+```
+
+After the first PyPI release, the distribution name is **`memcore-runtime`** while the Python import remains **`memcore`**:
+
+```bash
+python -m pip install memcore-runtime
+```
+
+```python
+import memcore
+
+print(memcore.__version__)
+```
+
+> Why not `pip install memcore`? That PyPI distribution name is already used by another project. The MemCore project and Python import name stay unchanged; only the distribution name is `memcore-runtime`. See the [v0.1.0 launch checklist](docs/launch_v0.1.0.md) for the release path.
 
 ---
 
