@@ -34,11 +34,7 @@ class NoopMemoryLLM(LLMClient):
 
 
 def tool_contents(projection: object) -> list[str]:
-    return [
-        str(payload.get("content") or "")
-        for payload in projection.payloads
-        if payload.get("role") == "tool"
-    ]
+    return [str(payload.get("content") or "") for payload in projection.payloads if payload.get("role") == "tool"]
 
 
 def main() -> None:
@@ -71,9 +67,7 @@ def main() -> None:
                     origin=EntryOrigin.USER,
                     turn_role=TurnRole.STIMULUS,
                     semantic_text="Inspect this failure and tell me the root cause.",
-                    payload={
-                        "text": "Inspect this failure and tell me the root cause."
-                    },
+                    payload={"text": "Inspect this failure and tell me the root cause."},
                     compatibility_role="user",
                 )
             ],
@@ -113,9 +107,7 @@ def main() -> None:
         assert completed.completed
 
         # Closed history now projects the deterministic reload card, not the raw body.
-        settled_projection = mem.build_context_projection(
-            provider_profile="openai_chat"
-        )
+        settled_projection = mem.build_context_projection(provider_profile="openai_chat")
         settled_tool_text = tool_contents(settled_projection)[-1]
         assert "[compact_reloadable]" in settled_tool_text
         assert raw_result not in settled_tool_text
