@@ -71,7 +71,9 @@ def main() -> None:
                     origin=EntryOrigin.USER,
                     turn_role=TurnRole.STIMULUS,
                     semantic_text="Inspect this failure and tell me the root cause.",
-                    payload={"text": "Inspect this failure and tell me the root cause."},
+                    payload={
+                        "text": "Inspect this failure and tell me the root cause."
+                    },
                     compatibility_role="user",
                 )
             ],
@@ -111,7 +113,9 @@ def main() -> None:
         assert completed.completed
 
         # Closed history now projects the deterministic reload card, not the raw body.
-        settled_projection = mem.build_context_projection(provider_profile="openai_chat")
+        settled_projection = mem.build_context_projection(
+            provider_profile="openai_chat"
+        )
         settled_tool_text = tool_contents(settled_projection)[-1]
         assert "[compact_reloadable]" in settled_tool_text
         assert raw_result not in settled_tool_text
@@ -135,7 +139,8 @@ def main() -> None:
 
         print("\n3) ON-DEMAND READBACK: exact evidence pages back in")
         print(f"   restored payload: {len(restored):,} characters")
-        print(f"   exact root cause recovered: {'ROOT_CAUSE=stale_projection_generation' in restored}")
+        root_cause_recovered = "ROOT_CAUSE=stale_projection_generation" in restored
+        print(f"   exact root cause recovered: {root_cause_recovered}")
     finally:
         mem.close()
         store.close()
