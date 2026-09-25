@@ -1,15 +1,34 @@
 # memcore
 
-A domain-agnostic, extensible, open-source **memory and context engine** engineered for long-horizon agentic conversations and complex tool execution.
+An open-source **context runtime for long-horizon agents**: manage what stays resident in model context, what leaves after a task is done, and how exact evidence comes back when needed.
 
 [English](README_EN.md) | [中文](README.md)
 
-> **"Let AI keep chatting, and keep doing."**
+> **Not another “chunk chat into a vector database” memory layer.**
 >
-> After researching materials, running scripts, and completing tasks, users naturally continue the conversation or transition to the next objective.
-> Voluminous intermediate tool outputs automatically fold upon terminal turn completion, minimizing everyday context bloat.
-> When historical technical details are needed later, the raw observations can be reloaded instantaneously via stable content lineage IDs.
-> Messages, platform events, tool trajectories, and file materials share a single causal timeline, granting long-term agents a continuous, unbroken operational history.
+> Keep full tool results while execution is active. After a terminal turn, settle large bodies into reloadable cards. When a future question needs exact historical detail, reopen the original observation by stable `source_id`.
+> Conversations, events, tool trajectories, and durable memory share one traceable timeline while provider-visible prefixes are kept as stable as practical.
+
+```text
+20,000-token tool result
+        ↓  terminal turn
+~100-token reloadable card
+        ↓  need exact evidence later?
+open_memory(source_id) → original result
+```
+
+### Try it now
+
+The final PyPI distribution name is still being confirmed before the first public release. Source installation works today:
+
+```bash
+git clone https://github.com/misaka-coder/memcore.git
+cd memcore
+python -m pip install -e ".[dev]"
+python examples/settlement_demo.py
+```
+
+The demo requires **no API key** and executes the full lifecycle: resident tool output → terminal settlement → compact card → exact `open_memory` reload.
 
 ---
 

@@ -1,15 +1,34 @@
 # memcore
 
-领域无关、可扩展、开源的**记忆与上下文内核**，专为长程对话与复杂工具执行设计。
+面向长程 Agent 的开源 **Context Runtime**：管理哪些信息继续驻留在模型上下文里、哪些在任务结束后退出，以及需要时如何精确回读原始证据。
 
 [English](README_EN.md) | [中文](README.md)
 
-> **让 AI 接着聊，也接着做事。**
+> **不是另一个“把聊天切块塞进向量库”的记忆层。**
 >
-> 查完资料、跑完代码、完成任务后，用户还会继续聊天或做下一件事。
-> 已经用过的庞大工具输出，在终局后按策略自动折叠，减少日常上下文驻留；
-> 后续偶尔需要核对旧细节时，再沿 ID 瞬间找回原文。
-> 对话、事件、工具轨迹与材料共用一段带有因果的时间线，让长期聊天与做事拥有完整持续的历史。
+> 工具执行期间保留完整结果；任务终局后把庞大正文结算为可回读卡片；未来真正需要旧细节时，再沿稳定 `source_id` 打开原文。
+> MemCore 把对话、事件、工具轨迹和长期记忆放在同一条可追溯时间线上，同时尽量保持 provider 前缀稳定。
+
+```text
+20,000-token tool result
+        ↓  terminal turn
+~100-token reloadable card
+        ↓  need exact evidence later?
+open_memory(source_id) → original result
+```
+
+### 立即试一下
+
+当前正式 PyPI distribution 名仍在发布前确认中；源码安装可立即使用：
+
+```bash
+git clone https://github.com/misaka-coder/memcore.git
+cd memcore
+python -m pip install -e ".[dev]"
+python examples/settlement_demo.py
+```
+
+这个 Demo **不需要 API key**，会真实执行一次：完整工具结果驻留 → terminal settlement → 紧凑卡片 → `open_memory` 原文回读。
 
 ---
 
