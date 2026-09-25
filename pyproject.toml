@@ -4,13 +4,31 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "memcore"
-version = "0.1.0+chatv6.2"
-description = "Domain-agnostic layered memory core with unified timelines, layered compaction, and deterministic hybrid retrieval."
+version = "0.1.0"
+description = "Context runtime for long-horizon AI agents with unified timelines, terminal settlement, and reloadable evidence."
 readme = "README.md"
 requires-python = ">=3.10"
 keywords = ["memory", "llm", "retrieval", "rag", "embeddings", "long-term-memory", "agents"]
 license = "Apache-2.0"
 license-files = ["LICENSE"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries",
+]
+
+[project.urls]
+Homepage = "https://github.com/misaka-coder/memcore"
+Repository = "https://github.com/misaka-coder/memcore"
+Issues = "https://github.com/misaka-coder/memcore/issues"
+Documentation = "https://github.com/misaka-coder/memcore/tree/main/docs"
 # 宽松开源许可证；允许商业使用、修改和分发，具体条件见 LICENSE。
 # tzdata: time anchoring resolves IANA timezones via zoneinfo; Windows lacks a system tz db.
 # Heavy backends (chroma / sentence-transformers) stay optional extras.
