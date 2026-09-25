@@ -33,7 +33,8 @@ class HuggingFaceEmbeddingProvider(EmbeddingProvider):
             from sentence_transformers import SentenceTransformer
         except ImportError as exc:  # 缺可选依赖:明确报错,不静默
             raise RuntimeError(
-                "sentence-transformers not installed; `pip install memcore[huggingface]` or run degraded explicitly"
+                "sentence-transformers not installed; `pip install memcore-kernel[huggingface]`"
+                " or run degraded explicitly"
             ) from exc
         return SentenceTransformer(
             self.model_name,

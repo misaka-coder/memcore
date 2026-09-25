@@ -139,7 +139,7 @@ class WhereTranslation(unittest.TestCase):
         )
 
 
-@unittest.skipUnless(_HAS_CHROMA, "chromadb not installed (pip install memcore[chroma])")
+@unittest.skipUnless(_HAS_CHROMA, "chromadb not installed (pip install memcore-kernel[chroma])")
 class ChromaIntegration(unittest.TestCase):
     def setUp(self) -> None:
         from memcore import HashedEmbeddingProvider

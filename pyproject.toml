@@ -3,15 +3,28 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "memcore"
-version = "0.1.0+chatv6.2"
+# 发行版名。PyPI 上的 `memcore` 已被他人占用(空壳包),因此加 -kernel 后缀。
+# import 名仍是 `memcore`,不随之改变。
+name = "memcore-kernel"
+version = "0.1.0"
 description = "Domain-agnostic layered memory core with unified timelines, layered compaction, and deterministic hybrid retrieval."
 readme = "README.md"
 requires-python = ">=3.10"
 keywords = ["memory", "llm", "retrieval", "rag", "embeddings", "long-term-memory", "agents"]
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-# 宽松开源许可证；允许商业使用、修改和分发，具体条件见 LICENSE。
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+# 宽松开源许可证(Apache-2.0):允许商业使用、修改与分发,无需另行授权。
 # tzdata: time anchoring resolves IANA timezones via zoneinfo; Windows lacks a system tz db.
 # Heavy backends (chroma / sentence-transformers) stay optional extras.
 dependencies = ["tzdata"]
@@ -32,3 +45,12 @@ include = ["memcore*"]
 
 [tool.setuptools.package-data]
 memcore = ["py.typed"]
+
+# 注意:表头的作用域持续到下一个表头,所以 [project.urls] 必须排在
+# [project] 段之外,否则后面的键会被并进 urls 表。
+[project.urls]
+Homepage = "https://github.com/misaka-coder/memcore"
+Repository = "https://github.com/misaka-coder/memcore"
+Issues = "https://github.com/misaka-coder/memcore/issues"
+Documentation = "https://github.com/misaka-coder/memcore/tree/main/docs"
+Changelog = "https://github.com/misaka-coder/memcore/tree/main/docs"

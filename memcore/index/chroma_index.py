@@ -82,7 +82,7 @@ class ChromaVectorIndex(VectorIndex):
         try:
             import chromadb
         except ImportError as exc:
-            raise RuntimeError("chromadb not installed; `pip install memcore[chroma]`") from exc
+            raise RuntimeError("chromadb not installed; `pip install memcore-kernel[chroma]`") from exc
         self.embedding = embedding
         base = Path(base_dir)
         base.mkdir(parents=True, exist_ok=True)

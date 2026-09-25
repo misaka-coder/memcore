@@ -151,6 +151,31 @@ flowchart LR
 
 ---
 
+## 安装
+
+发行版名为 **`memcore-kernel`**，import 名仍是 `memcore`（两者不必一致，与 `beautifulsoup4` / `bs4` 同理）。
+
+> **注意**：PyPI 上名为 `memcore` 的包与本项目无关，请勿安装。
+
+目前请从源码安装：
+
+```bash
+git clone https://github.com/misaka-coder/memcore.git
+cd memcore
+pip install -e ".[dev]"
+```
+
+可选依赖按需安装：
+
+```bash
+pip install "memcore-kernel[chroma]"       # Chroma 向量后端（大规模部署）
+pip install "memcore-kernel[huggingface]"  # sentence-transformers 本地嵌入
+```
+
+`tzdata` 是唯一默认依赖：时间锚点通过 `zoneinfo` 解析 IANA 时区，Windows 无系统时区库。
+
+---
+
 ## 选择接入方式
 
 | 宿主需要什么 | 公开入口 | 接入说明 |

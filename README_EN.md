@@ -145,6 +145,31 @@ MemCore does not attempt to replace all memory architectures. It is purpose-buil
 
 ---
 
+## Installation
+
+The distribution name is **`memcore-kernel`**; the import name remains `memcore`. The two need not match — same as `beautifulsoup4` / `bs4`.
+
+> **Note**: the package named `memcore` on PyPI is unrelated to this project. Do not install it.
+
+Install from source for now:
+
+```bash
+git clone https://github.com/misaka-coder/memcore.git
+cd memcore
+pip install -e ".[dev]"
+```
+
+Optional extras:
+
+```bash
+pip install "memcore-kernel[chroma]"       # Chroma vector backend (large deployments)
+pip install "memcore-kernel[huggingface]"  # sentence-transformers local embeddings
+```
+
+`tzdata` is the only default dependency: time anchoring resolves IANA timezones through `zoneinfo`, and Windows ships no system tz database.
+
+---
+
 ## 5-Minute Quickstart
 
 ```python

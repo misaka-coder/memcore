@@ -163,7 +163,7 @@ stable platform identifier, not a nickname.
 Install the optional dependency:
 
 ```text
-pip install "memcore[huggingface]"
+pip install "memcore-kernel[huggingface]"
 ```
 
 Then either pre-download the model and use the safe offline default:
