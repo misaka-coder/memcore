@@ -1689,13 +1689,167 @@ class MemorySystem:
 
     def reindex_pending(self, *, limit: int = 100, batch_size: int = 64) -> dict[str, int]:
         """outbox 自愈:把 index_status=pending 的记录补做向量 upsert。可定期/启动时调用。"""
+        cleanup = self._repair_index_cleanup(self.namespace)
         pending = self.store.list_pending_index(limit=limit)
         repaired = failed = 0
         for batch in self._record_batches(pending, batch_size=batch_size):
             batch_repaired, batch_failed = self._reindex_batch(batch)
             repaired += batch_repaired
             failed += batch_failed
-        return {"scanned": len(pending), "repaired": repaired, "failed": failed}
+        return {"scanned": len(pending), "repaired": repaired, "failed": failed, **cleanup}
+
+    def _repair_index_cleanup(self, namespace: Namespace) -> dict[str, int]:
+        try:
+            pending = self.store.list_semantic_index_cleanup(namespace=namespace)
+        except NotImplementedError:
+            return {}
+        if not pending:
+            return {}
+        deleted = failed = 0
+        for item in pending:
+            try:
+                self.index.delete(item["source_ids"])
+                # A concurrent guarded rollback can restore an ID while a stale
+                # deletion job is running. Reconcile it from current SQLite truth.
+                restored = self.store.get_retrieval_records(
+                    namespace=namespace, source_ids=tuple(item["source_ids"]), cross_conversation=True
+                )
+                if restored:
+                    _, restore_failed = self._reindex_batch(list(restored.values()))
+                    if restore_failed:
+                        raise RuntimeError("restored_index_pending")
+                self.store.complete_semantic_index_cleanup(
+                    namespace=namespace, repair_id=item["repair_id"], source_ids=item["source_ids"]
+                )
+            except Exception:
+                failed += len(item["source_ids"])
+            else:
+                deleted += len(item["source_ids"])
+        return {"obsolete_index_deleted": deleted, "obsolete_index_failed": failed}
+
+    def plan_semantic_history_repair(self) -> dict[str, Any]:
+        """Read-only maintenance manifest; ordinary model tools cannot apply it."""
+        from .semantic_history import build_repair_plan
+
+        try:
+            snapshot = self.store.get_semantic_history_snapshot(namespace=self.namespace)
+        except NotImplementedError:
+            return {"status": "unavailable", "reason": "semantic_history_maintenance_unsupported"}
+        return build_repair_plan(
+            snapshot,
+            batch_size=self.config.episodic_compact_batch_size,
+            trigger_count=self.config.episodic_compact_trigger_count,
+        )
+
+    def prepare_semantic_history_repair(self, plan: dict[str, Any], *, progress_callback: Any = None) -> dict[str, Any]:
+        """Prepare complete replacement records without publishing or consuming sources."""
+        from .semantic_history import build_repair_plan
+
+        lock = self.runtime.lock_registry.lock_for(
+            store_identity=self.store.runtime_identity(), namespace=self.namespace
+        )
+        with lock:
+            snapshot = self.store.get_semantic_history_snapshot(namespace=self.namespace)
+            current = build_repair_plan(
+                snapshot,
+                batch_size=self.config.episodic_compact_batch_size,
+                trigger_count=self.config.episodic_compact_trigger_count,
+            )
+            if current != plan:
+                return {"status": "stale_plan", "reason": "history_changed"}
+            if plan.get("status") != "ready":
+                return {"status": plan.get("status", "invalid_plan"), "reason": plan.get("reason", "")}
+            by_id = {str(row["summary_id"]): row for row in snapshot["episodes"]}
+            prepared: list[dict[str, Any]] = []
+            for group, sid in zip(plan["groups"], plan["new_memory_ids"], strict=True):
+                cancelled: dict[str, Any] = {}
+                if self._compaction._stop_if_shutdown(cancelled):
+                    return cancelled
+                record = self._compaction.prepare_semantic_record(
+                    namespace=self.namespace, batch=[by_id[item] for item in group]
+                )
+                if record is None:
+                    return {
+                        "status": "generation_failed",
+                        "reason": "semantic_generation_failed",
+                        "prepared_count": len(prepared),
+                        "published_count": 0,
+                    }
+                record["semantic_id"] = sid
+                prepared.append(record)
+                if callable(progress_callback):
+                    progress_callback(
+                        {"prepared_count": len(prepared), "total_count": len(plan["groups"]), "published_count": 0}
+                    )
+            cancelled = {}
+            if self._compaction._stop_if_shutdown(cancelled):
+                return cancelled
+            return {
+                "status": "prepared",
+                "plan": plan,
+                "records": prepared,
+                "prepared_count": len(prepared),
+                "published_count": 0,
+            }
+
+    def commit_prepared_semantic_history_repair(self, prepared: dict[str, Any]) -> dict[str, Any]:
+        """Publish a trusted prepared bundle only if its complete manifest is current."""
+        if not isinstance(prepared, dict) or prepared.get("status") != "prepared":
+            return {"status": "invalid_arguments", "reason": "prepared_repair_required"}
+        plan = prepared.get("plan")
+        records = prepared.get("records")
+        if not isinstance(plan, dict) or not isinstance(records, list):
+            return {"status": "invalid_arguments", "reason": "prepared_repair_required"}
+        if (plan.get("batch_size"), plan.get("trigger_count")) != (
+            self.config.episodic_compact_batch_size,
+            self.config.episodic_compact_trigger_count,
+        ):
+            return {"status": "stale_plan", "reason": "configuration_changed"}
+        lock = self.runtime.lock_registry.lock_for(
+            store_identity=self.store.runtime_identity(), namespace=self.namespace
+        )
+        with lock:
+            cancelled: dict[str, Any] = {}
+            if self._compaction._stop_if_shutdown(cancelled):
+                return cancelled
+            result = self.store.commit_semantic_history_repair(namespace=self.namespace, plan=plan, records=records)
+            if result.get("status") != "committed":
+                return result
+            return self._finish_semantic_history_change(result, plan["new_memory_ids"])
+
+    def repair_semantic_history(self, plan: dict[str, Any], *, progress_callback: Any = None) -> dict[str, Any]:
+        """Prepare and atomically publish under one process conversation lock."""
+        lock = self.runtime.lock_registry.lock_for(
+            store_identity=self.store.runtime_identity(), namespace=self.namespace
+        )
+        with lock:
+            prepared = self.prepare_semantic_history_repair(plan, progress_callback=progress_callback)
+            if prepared.get("status") != "prepared":
+                return prepared
+            return self.commit_prepared_semantic_history_repair(prepared)
+
+    def rollback_semantic_history_repair(self, repair_id: str) -> dict[str, Any]:
+        """Restore guarded affected records; preserve unrelated newer history."""
+        lock = self.runtime.lock_registry.lock_for(
+            store_identity=self.store.runtime_identity(), namespace=self.namespace
+        )
+        with lock:
+            result = self.store.rollback_semantic_history_repair(namespace=self.namespace, repair_id=repair_id)
+            if result.get("status") != "rolled_back":
+                return result
+            return self._finish_semantic_history_change(result, result["restored_memory_ids"])
+
+    def _finish_semantic_history_change(self, result: dict[str, Any], memory_ids: list[str]) -> dict[str, Any]:
+        cleanup = self._repair_index_cleanup(self.namespace)
+        records = self.store.get_retrieval_records(namespace=self.namespace, source_ids=tuple(memory_ids))
+        indexed, failed = self._reindex_batch(list(records.values()))
+        return {
+            **result,
+            **cleanup,
+            "index_repaired": indexed,
+            "index_failed": failed,
+            "index_status": "pending" if failed or cleanup.get("obsolete_index_failed") else "indexed",
+        }
 
     def reindex_all(
         self,
@@ -1713,6 +1867,7 @@ class MemorySystem:
         失败的记录会标回 pending,可交给 reindex_pending 重试。
         """
         target = namespace or self.namespace
+        cleanup = self._repair_index_cleanup(target)
         records = self.store.list_index_records(
             namespace=target,
             limit=limit,
@@ -1723,7 +1878,7 @@ class MemorySystem:
             batch_reindexed, batch_failed = self._reindex_batch(batch)
             reindexed += batch_reindexed
             failed += batch_failed
-        return {"scanned": len(records), "reindexed": reindexed, "failed": failed}
+        return {"scanned": len(records), "reindexed": reindexed, "failed": failed, **cleanup}
 
     @staticmethod
     def _record_batches(records: list[dict[str, Any]], *, batch_size: int):
@@ -2384,17 +2539,20 @@ class MemorySystem:
         node_types: list[str] | None = None,
         keywords: list[str] | None = None,
         keyword_match: str = "any",
+        participants: list[str] | None = None,
+        participant_match: str | None = None,
         cross_conversation: bool = False,
         page_size: int = 50,
         cursor: str = "",
     ) -> dict[str, Any]:
-        """Browse compact cards by time and/or substrings of entity/topic tags.
+        """Browse compact cards by time, tag substrings and/or exact participants.
 
         This is a SQLite catalog read, not semantic Top-K.  Continuation cursors
         freeze the selector and return complete cards without hidden truncation.
         """
 
-        from .catalog_keywords import catalog_keyword_hits, normalize_catalog_terms
+        from .catalog_keywords import normalize_catalog_terms
+        from .catalog_participants import normalize_participant_selectors, participants_match
         from .memory_catalog import build_memory_card
         from .memory_navigation import (
             MEMORY_NODE_TYPES,
@@ -2425,6 +2583,8 @@ class MemorySystem:
                 or node_types is not None
                 or keywords is not None
                 or keyword_match != "any"
+                or participants is not None
+                or participant_match is not None
                 or bool(cross_conversation)
                 or page_size != 50
             ):
@@ -2448,6 +2608,10 @@ class MemorySystem:
                 keyword_match = selector_payload.get("keyword_match", "any")
                 if keyword_match not in ("any", "all"):
                     raise ValueError("invalid_keyword_match")
+                resolved_participants = normalize_participant_selectors(selector_payload.get("participants"))
+                participant_match = selector_payload.get("participant_match", "any")
+                if participant_match not in ("any", "all"):
+                    raise ValueError("invalid_participant_match")
             except (KeyError, TypeError, ValueError) as exc:
                 return _invalid(str(exc) or "invalid_cursor")
         else:
@@ -2458,13 +2622,19 @@ class MemorySystem:
                     raise ValueError("invalid_keyword_match")
                 if keyword_match != "any" and not resolved_keywords:
                     raise ValueError("keyword_match_requires_keywords")
+                resolved_participants = normalize_participant_selectors(participants)
+                participant_match = "any" if participant_match is None else participant_match
+                if participant_match not in ("any", "all"):
+                    raise ValueError("invalid_participant_match")
+                if participant_match != "any" and not resolved_participants:
+                    raise ValueError("participant_match_requires_participants")
                 requested = list(node_types or ["episodic"])
                 resolved_node_types = list(dict.fromkeys(str(item or "").strip().lower() for item in requested))
                 if not resolved_node_types or any(item not in MEMORY_NODE_TYPES for item in resolved_node_types):
                     raise ValueError("invalid_memory_node_types")
                 has_time = time_range is not None or str(date_from or "").strip() or str(date_to or "").strip()
                 selector = None
-                if has_time or not resolved_keywords:
+                if has_time or not (resolved_keywords or resolved_participants):
                     selector = normalize_timeline_time_selector(
                         timezone=self.timezone,
                         time_range=time_range,
@@ -2485,6 +2655,8 @@ class MemorySystem:
                 "cross_conversation": bool(cross_conversation),
                 "keywords": resolved_keywords,
                 "keyword_match": keyword_match,
+                "participants": resolved_participants,
+                "participant_match": participant_match,
             }
 
         try:
@@ -2507,20 +2679,48 @@ class MemorySystem:
                         cross_conversation=cross_conversation,
                     )
                 )
+            participant_refs = self._catalog_participants(
+                records, cross_conversation=cross_conversation, required=bool(resolved_participants)
+            )
+            records = [
+                {
+                    **record,
+                    "participant_refs": participant_refs.get(
+                        str(record.get("summary_id") or record.get("semantic_id")), record.get("participant_refs") or []
+                    ),
+                }
+                for record in records
+            ]
             cards = [build_memory_card(record, timezone=self.timezone) for record in records]
             coverage_cards = cards
+            if resolved_participants:
+                cards = [
+                    card
+                    for card in cards
+                    if card["memory_id"] in participant_refs
+                    and participants_match(card["participant_refs"], resolved_participants, match=participant_match)
+                ]
             if resolved_keywords:
-                pools = self.store.get_catalog_keyword_pools(
+                keyword_matches = self.store.get_catalog_keyword_matches(
                     namespace=self.namespace,
                     memory_ids=tuple(card["memory_id"] for card in cards),
+                    keywords=resolved_keywords,
                     cross_conversation=cross_conversation,
                 )
                 matching_cards = []
                 for card in cards:
-                    hits = catalog_keyword_hits(pools.get(card["memory_id"], []), resolved_keywords)
-                    matched = [hit["query"] for hit in hits]
+                    match = keyword_matches.get(card["memory_id"], {})
+                    matched = match.get("matched_terms", [])
                     if matched and (keyword_match == "any" or len(matched) == len(resolved_keywords)):
-                        matching_cards.append({**card, "matched_terms": matched, "keyword_hits": hits})
+                        matched_card = {
+                            **card,
+                            "matched_terms": matched,
+                            "keyword_hits": match["keyword_hits"],
+                            "matched_source_count": match["matched_source_count"],
+                        }
+                        if match["missing_source_count"]:
+                            matched_card["keyword_evidence_complete"] = False
+                        matching_cards.append(matched_card)
                 cards = matching_cards
             cards.sort(
                 key=lambda card: (
@@ -2530,13 +2730,30 @@ class MemorySystem:
                     str(card.get("memory_id") or ""),
                 )
             )
-            if resolved_keywords:
+            if resolved_keywords or resolved_participants:
                 from .projection import stable_projection_hash
 
-                fingerprint = stable_projection_hash(cards)
+                fingerprint = stable_projection_hash(
+                    [
+                        cards,
+                        [
+                            (card["memory_id"], keyword_matches[card["memory_id"]]["source_fingerprint"])
+                            for card in cards
+                        ]
+                        if resolved_keywords
+                        else [],
+                    ]
+                )
                 if cursor_token and selector_payload.get("catalog_fingerprint") != fingerprint:
                     return _invalid("catalog_changed_restart_required")
                 selector_payload["catalog_fingerprint"] = fingerprint
+            repair_revision = self.store.get_semantic_history_revision(
+                namespace=self.namespace, cross_conversation=cross_conversation
+            )
+            if cursor_token and selector_payload.get("semantic_history_revision", "") != repair_revision:
+                return _invalid("catalog_changed_restart_required")
+            if repair_revision:
+                selector_payload["semantic_history_revision"] = repair_revision
             page = paginate_memory_items(
                 cards,
                 item_keys=[
@@ -2616,23 +2833,43 @@ class MemorySystem:
             "complete": int(raw_coverage.get("gap_source_count") or 0) == 0,
             "meaning": "all stored raw sources in the requested range are accounted for; quiet wall-clock gaps are not missing memory",
         }
-        keyword_result = {}
+        selector_result = {}
         if resolved_keywords:
-            keyword_result = {"keywords": resolved_keywords, "keyword_match": keyword_match}
+            selector_result = {"keywords": resolved_keywords, "keyword_match": keyword_match}
             coverage["keyword_filtered"] = False
+        if resolved_participants:
+            selector_result.update({"participants": resolved_participants, "participant_match": participant_match})
+            coverage["participant_filtered"] = False
+        page_cards = [dict(card) for card in page.items]
+        if resolved_keywords:
+            from .keyword_sources import build_match_ref, keyword_preview
+
+            for card in page_cards:
+                match = keyword_matches[card["memory_id"]]
+                if match["matched_source_count"]:
+                    card["match_ref"] = build_match_ref(self, card["memory_id"], match, selector_payload)
+                    card["match_preview"] = keyword_preview(match["first_source"], resolved_keywords, self.timezone)
         return {
-            "status": "ok" if cards or (not resolved_keywords and coverage["total_source_count"]) else "empty",
+            "status": "ok"
+            if cards or (not (resolved_keywords or resolved_participants) and coverage["total_source_count"])
+            else "empty",
             "reason": ""
             if cards
-            else ("no_catalog_keyword_matches" if resolved_keywords else "no_catalog_cards_in_range"),
-            **keyword_result,
+            else (
+                "no_catalog_participant_matches"
+                if resolved_participants
+                else "no_catalog_keyword_matches"
+                if resolved_keywords
+                else "no_catalog_cards_in_range"
+            ),
+            **selector_result,
             "node_types": resolved_node_types,
             "cross_conversation": bool(cross_conversation),
             "coverage": coverage,
             "matched_card_count": len(cards),
             "returned_card_count": page.returned_count,
             "remaining_card_count": page.remaining_count,
-            "cards": list(page.items),
+            "cards": page_cards,
             "next_cursor": page.next_cursor,
             "page_complete": page.complete,
             "page_size": page_size,
@@ -2643,10 +2880,53 @@ class MemorySystem:
             ],
         }
 
+    def _catalog_participants(
+        self,
+        records: list[dict[str, Any]],
+        *,
+        cross_conversation: bool,
+        required: bool = False,
+    ) -> dict[str, list[dict[str, str]]]:
+        from .memory_catalog import _node_identity
+
+        memory_ids = tuple(
+            memory_id
+            for record in records
+            for node_type, memory_id in [_node_identity(record)]
+            if node_type in {"episodic", "semantic"} and memory_id
+        )
+        if not memory_ids:
+            return {}
+        try:
+            return self.store.get_catalog_participant_refs(
+                namespace=self.namespace,
+                memory_ids=memory_ids,
+                cross_conversation=cross_conversation,
+            )
+        except NotImplementedError:
+            if required:
+                raise
+            return {}
+
+    def _enrich_catalog_records(
+        self, records: list[dict[str, Any]], *, cross_conversation: bool
+    ) -> list[dict[str, Any]]:
+        from .memory_catalog import _node_identity
+
+        refs = self._catalog_participants(records, cross_conversation=cross_conversation)
+        return [
+            {**record, "participant_refs": refs[memory_id]}
+            if node_type in {"episodic", "semantic"} and memory_id in refs
+            else record
+            for record in records
+            for node_type, memory_id in [_node_identity(record)]
+        ]
+
     def open_memory(
         self,
         *,
         memory_id: str = "",
+        match_ref: str = "",
         memory_ids: list[str] | tuple[str, ...] | None = None,
         view: str = "card",
         detail: str = "full",
@@ -2654,6 +2934,9 @@ class MemorySystem:
         cross_conversation: bool = False,
         page_size: int = 50,
         cursor: str = "",
+        speaker_ids: list[str] | None = None,
+        page_token_budget: int = 0,
+        page_byte_budget: int = 0,
     ) -> dict[str, Any]:
         """Open one or several raw, episodic, or semantic nodes through one facade.
 
@@ -2661,30 +2944,76 @@ class MemorySystem:
         ``projection``: conversation keeps dialogue/events full and compacts
         operation/material bodies; full/tools must be explicitly requested.
 
-        ``memory_ids`` is the batch form for ``card`` and ``content``. Results
-        preserve request order and report status/reason independently for each
-        node. Batch ``sources`` is deliberately rejected because each source
-        tree owns an independent cursor.
+        ``memory_ids`` batch-opens every view in request order. Sources keeps
+        independent cursors and shares a finite native page budget. Optional
+        ``speaker_ids`` selects actual user utterances from episodic sources;
+        these explicitly marked excerpts are not complete conversations.
         """
 
-        from .memory_catalog import build_memory_card
-        from .memory_navigation import (
-            MEMORY_DETAILS,
-            MEMORY_VIEWS,
-            decode_memory_cursor,
-            normalize_page_size,
-            paginate_memory_items,
-        )
-        from .rendering import render_timeline
-        from .timeline_read import (
-            build_timeline_read_units,
-            normalize_timeline_projection,
-        )
+        from .memory_navigation import MEMORY_DETAILS, MEMORY_VIEWS, normalize_page_size
+        from .timeline_read import normalize_timeline_projection
 
         def _invalid(reason: str) -> dict[str, Any]:
             return {"status": "invalid_filter", "reason": reason, "memory_id": "", "view": "", "result": None}
 
         cursor_token = str(cursor or "").strip()
+        from .keyword_sources import decode_keyword_ref, open_keyword_sources
+
+        decoded_keyword = None
+        if match_ref or cursor_token:
+            try:
+                decoded_keyword = decode_keyword_ref(self, str(match_ref or cursor_token))
+            except ValueError as exc:
+                if match_ref:
+                    return _invalid(str(exc))
+        if decoded_keyword is not None:
+            if (
+                memory_id
+                or memory_ids
+                or speaker_ids is not None
+                or projection != "conversation"
+                or bool(cross_conversation)
+                or page_size != 50
+                or detail != "full"
+                or view != "card"
+                or (match_ref and cursor_token)
+            ):
+                return _invalid("keyword_source_options_are_embedded")
+            return open_keyword_sources(
+                self,
+                decoded_keyword,
+                page_token_budget=page_token_budget,
+                page_byte_budget=page_byte_budget,
+            )
+
+        if (
+            str(view or "card").strip().lower() == "sources"
+            or cursor_token
+            or speaker_ids is not None
+            or page_token_budget
+            or page_byte_budget
+        ):
+            from .memory_sources import open_memory_sources
+
+            return open_memory_sources(
+                store=self.store,
+                namespace=self.namespace,
+                renderer_registry=self.renderer_registry,
+                timezone=self.timezone,
+                token_counter=self.token_counter,
+                enrich_records=self._enrich_catalog_records,
+                memory_id=memory_id,
+                memory_ids=memory_ids,
+                view=str(view or "card").strip().lower(),
+                detail=str(detail or "full").strip().lower(),
+                projection=str(projection or "conversation").strip().lower(),
+                cross_conversation=cross_conversation,
+                page_size=page_size,
+                speaker_ids=speaker_ids,
+                page_token_budget=page_token_budget,
+                page_byte_budget=page_byte_budget,
+                cursor=cursor_token,
+            )
         if memory_ids is not None:
             if isinstance(memory_ids, (str, bytes, bytearray)):
                 return _invalid("memory_ids_must_be_array")
@@ -2696,8 +3025,6 @@ class MemorySystem:
             batch_view = str(view or "card").strip().lower()
             if not requested_ids:
                 return _invalid("memory_ids_required")
-            if batch_view == "sources":
-                return _invalid("batch_sources_not_supported")
             if batch_view not in {"card", "content"}:
                 return _invalid("invalid_memory_view")
 
@@ -2711,6 +3038,10 @@ class MemorySystem:
                         source_ids=tuple(requested_ids),
                         cross_conversation=cross_conversation,
                     )
+                    enriched = self._enrich_catalog_records(
+                        list(records.values()), cross_conversation=cross_conversation
+                    )
+                    records = dict(zip(records, enriched))
             except (NamespaceError, SchemaError, ValueError, NotImplementedError):
                 # Preserve independent per-node errors for unsupported stores,
                 # ambiguous IDs and invalid options through the single path.
@@ -2727,6 +3058,17 @@ class MemorySystem:
                     for item in requested_ids
                 ]
             else:
+                missing_ids = tuple(sid for sid in requested_ids if sid not in records)
+                try:
+                    replacement_map = (
+                        self.store.get_memory_replacement_map(
+                            namespace=self.namespace, memory_ids=missing_ids, cross_conversation=cross_conversation
+                        )
+                        if missing_ids
+                        else {}
+                    )
+                except NotImplementedError:
+                    replacement_map = {}
                 opened = [
                     self._open_memory_record(
                         memory_id=item,
@@ -2735,6 +3077,7 @@ class MemorySystem:
                         detail=batch_detail,
                         projection=batch_projection,
                         cross_conversation=cross_conversation,
+                        replacement_map=replacement_map,
                     )
                     for item in requested_ids
                 ]
@@ -2774,58 +3117,28 @@ class MemorySystem:
                 },
                 "text": "\n\n".join(text_parts),
             }
-        if cursor_token:
-            if (
-                str(memory_id or "").strip()
-                or str(view or "card").strip().lower() != "card"
-                or str(detail or "full").strip().lower() != "full"
-                or str(projection or "conversation").strip().lower() != "conversation"
-                or bool(cross_conversation)
-                or page_size != 50
-            ):
-                return _invalid("cursor_options_are_embedded")
-            try:
-                decoded = decode_memory_cursor(
-                    cursor_token,
-                    namespace=self.namespace,
-                    expected_mode="open_sources",
-                )
-                selector = dict(decoded["selector"])
-                memory_id = str(selector["memory_id"])
-                view = str(selector["view"])
-                detail = str(selector["detail"])
-                projection = str(selector.get("projection") or "conversation")
-                cross_conversation = bool(selector["cross_conversation"])
-                page_size = int(decoded["page_size"])
-                after_key = tuple(decoded["last_key"])
-            except (KeyError, TypeError, ValueError) as exc:
-                return _invalid(str(exc) or "invalid_cursor")
-        else:
-            memory_id = str(memory_id or "").strip()
-            view = str(view or "card").strip().lower()
-            detail = str(detail or "full").strip().lower()
-            try:
-                projection = normalize_timeline_projection(projection)
-            except ValueError:
-                return _invalid("invalid_memory_projection")
-            try:
-                page_size = normalize_page_size(page_size)
-            except ValueError as exc:
-                return _invalid(str(exc))
-            after_key = None
-            if not memory_id:
-                return _invalid("memory_id_required")
-            if view not in MEMORY_VIEWS:
-                return _invalid("invalid_memory_view")
-            if detail not in MEMORY_DETAILS:
-                return _invalid("invalid_memory_detail")
-
+        memory_id = str(memory_id or "").strip()
+        view = str(view or "card").strip().lower()
+        detail = str(detail or "full").strip().lower()
+        try:
+            projection = normalize_timeline_projection(projection)
+            normalize_page_size(page_size)
+        except ValueError as exc:
+            return _invalid(str(exc))
+        if not memory_id:
+            return _invalid("memory_id_required")
+        if view not in MEMORY_VIEWS:
+            return _invalid("invalid_memory_view")
+        if detail not in MEMORY_DETAILS:
+            return _invalid("invalid_memory_detail")
         try:
             record = self.store.get_retrieval_record(
                 namespace=self.namespace,
                 source_id=memory_id,
                 cross_conversation=cross_conversation,
             )
+            if record is not None:
+                record = self._enrich_catalog_records([record], cross_conversation=cross_conversation)[0]
         except NamespaceError:
             record = None
         except SchemaError as exc:
@@ -2836,159 +3149,14 @@ class MemorySystem:
                 "view": view,
                 "result": None,
             }
-        if record is None:
-            return {
-                "status": "empty",
-                "reason": "memory_not_found_or_out_of_scope",
-                "memory_id": memory_id,
-                "view": view,
-                "result": None,
-            }
-
-        if view in {"card", "content"}:
-            return self._open_memory_record(
-                memory_id=memory_id,
-                record=record,
-                view=view,
-                detail=detail,
-                projection=projection,
-                cross_conversation=cross_conversation,
-            )
-
-        card = build_memory_card(record, timezone=self.timezone)
-        node_type = str(card["node_type"])
-        base = {
-            "memory_id": memory_id,
-            "node_type": node_type,
-            "view": view,
-            "detail": detail,
-            "projection": projection,
-            "cross_conversation": bool(cross_conversation),
-        }
-        selector = {
-            "memory_id": memory_id,
-            "view": "sources",
-            "detail": detail,
-            "projection": projection,
-            "cross_conversation": bool(cross_conversation),
-        }
-        if node_type == "raw":
-            return {
-                "status": "empty",
-                "reason": "raw_node_has_no_sources",
-                **base,
-                "result": {"source_count": 0, "sources": []},
-                "text": "",
-            }
-        child_ids = [
-            str(item or "").strip()
-            for item in (record.get("source_ids") if node_type == "episodic" else record.get("source_summary_ids"))
-            if str(item or "").strip()
-        ]
-        if node_type == "semantic":
-            child_records = self.store.get_retrieval_records(
-                namespace=self.namespace,
-                source_ids=tuple(child_ids),
-                cross_conversation=cross_conversation,
-            )
-            children = [child_records.get(source_id) for source_id in child_ids]
-            valid_records = [
-                child for child in children if child is not None and str(child.get("entry_type") or "") == "summary"
-            ]
-            found_ids = {str(child.get("summary_id") or "") for child in valid_records}
-            missing = [source_id for source_id in child_ids if source_id not in found_ids]
-            cards = [build_memory_card(child, timezone=self.timezone) for child in valid_records]
-            cards.sort(
-                key=lambda child: (
-                    int(child.get("period_start_ts") or 0),
-                    int(child.get("period_end_ts") or 0),
-                    str(child.get("memory_id") or ""),
-                )
-            )
-            page = paginate_memory_items(
-                cards,
-                item_keys=[
-                    (
-                        int(child.get("period_start_ts") or 0),
-                        int(child.get("period_end_ts") or 0),
-                        str(child.get("memory_id") or ""),
-                    )
-                    for child in cards
-                ],
-                namespace=self.namespace,
-                mode="open_sources",
-                selector=selector,
-                page_size=page_size,
-                after_key=after_key,
-            )
-            result = {
-                "source_node_type": "episodic",
-                "source_count": len(child_ids),
-                "returned_source_count": page.returned_count,
-                "missing_source_ids": missing,
-                "sources": list(page.items),
-                "next_cursor": page.next_cursor,
-                "page_complete": page.complete,
-            }
-            return {
-                "status": "partial" if missing else "ok",
-                "reason": "source_lineage_incomplete" if missing else "",
-                **base,
-                "result": result,
-                "text": "",
-            }
-
-        try:
-            entries = self.store.get_entries_by_source_ids(
-                namespace=self.namespace,
-                source_ids=tuple(child_ids),
-                cross_conversation=cross_conversation,
-            )
-        except NotImplementedError:
-            return {
-                "status": "unavailable",
-                "reason": "memory_source_store_unsupported",
-                **base,
-                "result": None,
-                "text": "",
-            }
-        found_ids = {entry.source_id for entry in entries}
-        missing = [source_id for source_id in child_ids if source_id not in found_ids]
-        units = build_timeline_read_units(
-            entries,
+        return self._open_memory_record(
+            memory_id=memory_id,
+            record=record,
+            view=view,
+            detail=detail,
             projection=projection,
-            renderer_registry=self.renderer_registry,
-            timezone=self.timezone,
+            cross_conversation=cross_conversation,
         )
-        page = paginate_memory_items(
-            units,
-            item_keys=[unit.sort_key for unit in units],
-            namespace=self.namespace,
-            mode="open_sources",
-            selector=selector,
-            page_size=page_size,
-            after_key=after_key,
-        )
-        source_units = [{"unit_id": unit.unit_id, "entries": list(unit.projected_messages)} for unit in page.items]
-        messages = [message for unit in page.items for message in unit.projected_messages]
-        result = {
-            "source_node_type": "raw",
-            "source_count": len(child_ids),
-            "logical_unit_count": len(units),
-            "returned_logical_unit_count": page.returned_count,
-            "compacted_entry_count": sum(unit.compacted_entry_count for unit in page.items),
-            "missing_source_ids": missing,
-            "source_units": source_units,
-            "next_cursor": page.next_cursor,
-            "page_complete": page.complete,
-        }
-        return {
-            "status": "partial" if missing else "ok",
-            "reason": "source_lineage_incomplete" if missing else "",
-            **base,
-            "result": result,
-            "text": render_timeline(messages, tz=self.timezone) if messages else "",
-        }
 
     def _open_memory_record(
         self,
@@ -2999,6 +3167,7 @@ class MemorySystem:
         detail: str,
         projection: str,
         cross_conversation: bool,
+        replacement_map: dict[str, list[str]] | None = None,
     ) -> dict[str, Any]:
         """Render an already scoped card/content record, shared by single and batch opens."""
         from .memory_catalog import build_memory_card
@@ -3006,6 +3175,36 @@ class MemorySystem:
         from .timeline_read import project_timeline_entry
 
         if record is None:
+            try:
+                replacements = (
+                    replacement_map.get(memory_id)
+                    if replacement_map is not None
+                    else self.store.get_memory_replacements(
+                        namespace=self.namespace, memory_id=memory_id, cross_conversation=cross_conversation
+                    )
+                )
+            except NotImplementedError:
+                replacements = None
+            if replacements is not None:
+                return {
+                    "status": "replaced",
+                    "reason": "semantic_history_repaired",
+                    "memory_id": memory_id,
+                    "view": view,
+                    "replacement_memory_ids": replacements,
+                    "suggested_next_actions": [
+                        {
+                            "tool": "open_memory",
+                            "arguments": {
+                                "memory_ids": replacements[i : i + self.config.native_sources_max_cards],
+                                "view": view,
+                                **({"cross_conversation": True} if cross_conversation else {}),
+                            },
+                        }
+                        for i in range(0, len(replacements), self.config.native_sources_max_cards)
+                    ],
+                    "result": None,
+                }
             return {
                 "status": "empty",
                 "reason": "memory_not_found_or_out_of_scope",

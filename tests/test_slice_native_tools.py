@@ -491,13 +491,16 @@ class NativeToolDispatch(unittest.TestCase):
         self.assertNotIn("第一条批量证据", str(out["result"]["result"]))
         self.assertEqual(out["receipt"]["returned_memory_ids"], ["raw-b", "raw-a"])
 
-        rejected = dispatch_native_memory_tool(
+        source_batch = dispatch_native_memory_tool(
             "open_memory",
             {"memory_ids": ["raw-a", "raw-b"], "view": "sources"},
             mem=mem,
         )
-        self.assertFalse(rejected["ok"])
-        self.assertEqual(rejected["reason"], "batch_sources_not_supported")
+        self.assertTrue(source_batch["ok"])
+        self.assertEqual(
+            [item["reason"] for item in source_batch["result"]["result"]["items"]],
+            ["raw_node_has_no_sources", "raw_node_has_no_sources"],
+        )
         store.close()
 
     def test_read_timeline_dispatches_exact_time_range_without_unknown_entity(self) -> None:
@@ -717,13 +720,14 @@ class BatchOpenProjectionContract(unittest.TestCase):
         finally:
             store.close()
 
-    def test_sources_batch_and_cursor_mixing_stay_rejected(self) -> None:
+    def test_sources_batch_reports_raw_nodes_and_cursor_mixing_stays_rejected(self) -> None:
         mem, store, s1, s2 = self._mem_with_two_raw_bodies()
         try:
             sources = dispatch_native_memory_tool("open_memory", {"memory_ids": [s1, s2], "view": "sources"}, mem=mem)
-            self.assertFalse(sources["ok"])
-            self.assertEqual(sources["status"], "invalid_arguments")
-            self.assertEqual(sources["reason"], "batch_sources_not_supported")
+            self.assertTrue(sources["ok"])
+            self.assertTrue(
+                all(item["reason"] == "raw_node_has_no_sources" for item in sources["result"]["result"]["items"])
+            )
 
             mixed = dispatch_native_memory_tool(
                 "open_memory", {"cursor": "abc", "memory_id": s1, "view": "content"}, mem=mem

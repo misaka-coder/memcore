@@ -8,6 +8,7 @@ from typing import Any
 MAX_KIND_LENGTH = 160
 KIND_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)+$")
 KIND_PREFIX_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)*$")
+USER_CHAT_KINDS = frozenset({"message.user", "message.user.observed", "message.user.voice"})
 
 
 def normalize_kind(value: Any) -> str:

@@ -23,7 +23,7 @@ from memcore import (
     TokenCounter,
     TurnRole,
 )
-from memcore.compaction import Compaction, _overlap_score
+from memcore.compaction import Compaction
 from memcore.llm.base import LLMClient, LLMRequest, LLMResult, TaskType
 
 
@@ -726,7 +726,7 @@ class SummaryCycleViaFacade(unittest.TestCase):
         self.assertNotIn(raw_output, summary_request.user_prompt)
 
 
-class SemanticAndReinforcement(unittest.TestCase):
+class ContinuousSemanticBatches(unittest.TestCase):
     def setUp(self) -> None:
         self.store = SQLiteMemoryStore(":memory:")
         self.index = InMemoryVectorIndex(embedding=HashedEmbeddingProvider())
@@ -739,7 +739,7 @@ class SemanticAndReinforcement(unittest.TestCase):
     def tearDown(self) -> None:
         self.store.close()
 
-    def test_episodic_compacts_to_semantic_and_reinforces(self) -> None:
+    def test_repeated_topics_create_independent_semantic_batches(self) -> None:
         llm = CapturingLLM()
         compaction = Compaction(store=self.store, index=self.index, llm=llm, config=self.cfg, timezone="Asia/Shanghai")
         for i in range(4):
@@ -769,18 +769,18 @@ class SemanticAndReinforcement(unittest.TestCase):
         third = compaction.run_due(namespace=self.ns)
         fourth = compaction.run_due(namespace=self.ns)
 
-        self.assertEqual(second["semantic_created"], 0)
-        self.assertEqual(second["reinforced"], 1)
-        self.assertEqual(third["semantic_created"], 0)
-        self.assertEqual(third["reinforced"], 1)
+        self.assertEqual(second["semantic_created"], 1)
+        self.assertEqual(second["reinforced"], 0)
+        self.assertEqual(third["semantic_created"], 1)
+        self.assertEqual(third["reinforced"], 0)
         self.assertEqual(fourth["semantic_created"], 0)
         self.assertEqual(fourth["reinforced"], 0)
         self.assertEqual(len(self.store.get_uncompacted_episodic_summaries(namespace=self.ns)), 1)
         recent = self.store.get_recent_semantic_summaries(namespace=self.ns, limit=10)
-        self.assertEqual(len(recent), 1)
-        self.assertEqual(recent[0]["reinforcement_count"], 3)
-        self.assertEqual(recent[0]["source_summary_ids"], ["ep0", "ep1", "ep2"])
-        self.assertEqual(recent[0]["index_status"], "indexed")
+        self.assertEqual(len(recent), 3)
+        self.assertEqual([item["source_summary_ids"] for item in recent], [["ep2"], ["ep1"], ["ep0"]])
+        self.assertTrue(all(item["reinforcement_count"] == 1 and item["index_status"] == "indexed" for item in recent))
+        self.assertFalse(any(request.task_type == TaskType.REINFORCEMENT for request in llm.requests))
 
     def test_default_ten_five_window_ignores_legacy_metadata_admission_flags(self) -> None:
         config = MemoryConfig(
@@ -864,68 +864,21 @@ class SemanticAndReinforcement(unittest.TestCase):
         self.assertIn('"entity_anchors":["张三","基金组合"]', prompt)
         self.assertIn('"about_roles":["third_party"]', prompt)
 
-    def test_reinforcement_prompt_keeps_people_open_loops_and_metadata(self) -> None:
+    def test_pending_batch_cannot_skip_an_already_assigned_episode(self) -> None:
+        config = MemoryConfig(episodic_compact_trigger_count=3, episodic_compact_batch_size=2)
         llm = CapturingLLM()
-        compaction = Compaction(
-            store=self.store,
-            index=self.index,
-            llm=llm,
-            config=self.cfg,
-            timezone="Asia/Shanghai",
+        compaction = Compaction(store=self.store, index=self.index, llm=llm, config=config, timezone="Asia/Shanghai")
+        for i in range(4):
+            self.store.add_summary(namespace=self.ns, record={"summary_id": f"ep{i}", "timestamp": 100 + i})
+        self.store.mark_summaries_semanticized(["ep1"], "old-interleaved")
+        result = compaction.run_due(namespace=self.ns)
+        self.assertEqual(result["status"], "semantic_repair_required")
+        self.assertEqual(result["reason"], "noncontiguous_episode_batch")
+        self.assertFalse(llm.requests)
+        self.assertEqual(
+            [item["summary_id"] for item in self.store.get_uncompacted_episodic_summaries(namespace=self.ns)],
+            ["ep0", "ep2", "ep3"],
         )
-        target = {
-            "semantic_id": "semantic-plan",
-            "timestamp": _ts(2026, 7, 20, 12),
-            "period_start_ts": _ts(2026, 7, 1, 9),
-            "period_end_ts": _ts(2026, 7, 20, 12),
-            "importance": 0.8,
-            "semantic_summary": "张三持续推进基金复盘。",
-            "stable_facts": ["张三负责基金复盘"],
-            "recurring_topics": ["基金复盘"],
-            "important_people": ["张三"],
-            "open_loops": ["等待张三提交复盘结论"],
-            "memory_metadata": {
-                "memory_facets": ["plan"],
-                "about_roles": ["third_party"],
-                "entity_anchors": ["张三", "基金组合"],
-                "topic_terms": ["复盘"],
-                "retrieval_priority": "high",
-            },
-            "source_summary_ids": ["ep-old"],
-            "reinforcement_count": 1,
-        }
-        incoming = {
-            "timestamp": _ts(2026, 7, 29, 13),
-            "period_start_ts": _ts(2026, 7, 29, 12),
-            "period_end_ts": _ts(2026, 7, 29, 13),
-            "date_label": "2026-07-29",
-            "time_of_day": "afternoon",
-            "importance": 0.9,
-            "semantic_summary": "张三提交了新的基金复盘材料。",
-            "stable_facts": ["张三已经提交复盘材料"],
-            "recurring_topics": ["基金复盘"],
-            "important_people": ["张三"],
-            "open_loops": ["等待确认复盘结论"],
-            "memory_metadata": {
-                "memory_facets": ["plan"],
-                "about_roles": ["third_party"],
-                "entity_anchors": ["张三", "基金组合"],
-                "topic_terms": ["复盘"],
-                "retrieval_priority": "high",
-            },
-            "semantic_tags": ["张三", "基金组合", "复盘"],
-            "source_summary_ids": ["ep-new"],
-        }
-
-        compaction._merge_reinforcement(target, incoming)
-
-        requests = [request for request in llm.requests if request.task_type == TaskType.REINFORCEMENT]
-        self.assertEqual(len(requests), 1)
-        prompt = requests[0].user_prompt
-        self.assertIn("重要人物: 张三", prompt)
-        self.assertIn("待续线索: 等待张三提交复盘结论", prompt)
-        self.assertIn("待续线索: 等待确认复盘结论", prompt)
-        self.assertIn('"entity_anchors":["张三","基金组合"]', prompt)
 
     def test_semantic_lineage_keeps_more_than_eight_source_summaries(self) -> None:
         config = MemoryConfig(episodic_compact_trigger_count=10, episodic_compact_batch_size=9)
@@ -959,28 +912,6 @@ class SemanticAndReinforcement(unittest.TestCase):
             semantic["source_summary_ids"],
             [f"source-{index}" for index in range(9)],
         )
-
-    def test_common_person_alone_cannot_merge_unrelated_fable_and_vrchat_memories(self) -> None:
-        fable = {
-            "stable_facts": ["Fable 被用于讨论雅可比猜想"],
-            "recurring_topics": ["雅可比猜想"],
-            "memory_metadata": {
-                "entity_anchors": ["张三", "Fable"],
-                "memory_facets": ["knowledge"],
-                "topic_terms": ["雅可比猜想", "反例"],
-            },
-        }
-        vrchat = {
-            "stable_facts": ["张三晚上去了 VRChat"],
-            "recurring_topics": ["VRChat"],
-            "memory_metadata": {
-                "entity_anchors": ["张三", "VRChat"],
-                "memory_facets": ["knowledge"],
-                "topic_terms": ["VRChat", "社交"],
-            },
-        }
-
-        self.assertEqual(_overlap_score(fable, vrchat), 0)
 
     def test_no_pending_index_left_after_compaction(self) -> None:
         for i in range(2):

@@ -214,6 +214,8 @@ def _dispatch_browse(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
             "node_types",
             "keywords",
             "keyword_match",
+            "participants",
+            "participant_match",
             "cross_conversation",
             "page_size",
             "cursor",
@@ -238,6 +240,15 @@ def _dispatch_browse(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
     keyword_match = args.get("keyword_match") if args.get("keyword_match") is not None else "any"
     if keyword_match not in ("any", "all"):
         return _err("browse_memory", "invalid_arguments", "invalid_keyword_match")
+    from .catalog_participants import normalize_participant_selectors
+
+    try:
+        participants = normalize_participant_selectors(args.get("participants"))
+    except ValueError as exc:
+        return _err("browse_memory", "invalid_arguments", str(exc))
+    participant_match = args.get("participant_match") if args.get("participant_match") is not None else "any"
+    if participant_match not in ("any", "all"):
+        return _err("browse_memory", "invalid_arguments", "invalid_participant_match")
     cross = args.get("cross_conversation", False)
     if cross is None:
         cross = False
@@ -258,6 +269,8 @@ def _dispatch_browse(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
             bool(node_types),
             args.get("keywords") is not None,
             args.get("keyword_match") is not None,
+            args.get("participants") is not None,
+            args.get("participant_match") is not None,
             bool(cross),
             args.get("page_size") is not None,
         )
@@ -270,6 +283,8 @@ def _dispatch_browse(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
         node_types=node_types or None,
         keywords=keywords if args.get("keywords") is not None else None,
         keyword_match=keyword_match,
+        participants=participants if args.get("participants") is not None else None,
+        participant_match=participant_match if args.get("participant_match") is not None else None,
         cross_conversation=cross,
         page_size=page_size,
         cursor=cursor,
@@ -282,16 +297,40 @@ def _dispatch_browse(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
 def _dispatch_open(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
     unknown = _unknown_keys(
         args,
-        {"memory_id", "memory_ids", "view", "detail", "projection", "cross_conversation", "page_size", "cursor"},
+        {
+            "memory_id",
+            "match_ref",
+            "memory_ids",
+            "view",
+            "detail",
+            "projection",
+            "cross_conversation",
+            "page_size",
+            "cursor",
+            "speaker_ids",
+        },
     )
     if unknown:
         return _err("open_memory", "invalid_arguments", f"unknown_arguments:{unknown}")
     if args.get("memory_id") is not None and not isinstance(args.get("memory_id"), str):
         return _err("open_memory", "invalid_arguments", "memory_id_must_be_string")
+    if args.get("match_ref") is not None and (not isinstance(args["match_ref"], str) or not args["match_ref"].strip()):
+        return _err("open_memory", "invalid_arguments", "match_ref_must_be_nonempty_string")
+    match_ref = _optional_string(args.get("match_ref"))
+    if match_ref and any(value is not None for key, value in args.items() if key != "match_ref"):
+        return _err("open_memory", "invalid_arguments", "keyword_source_options_are_embedded")
     memory_id = _optional_string(args.get("memory_id"))
     memory_ids, error = _string_list(args.get("memory_ids"), "memory_ids")
     if error:
         return _err("open_memory", "invalid_arguments", error)
+    from .memory_sources import normalize_speaker_ids
+
+    try:
+        speakers = normalize_speaker_ids(args.get("speaker_ids"))
+    except ValueError as exc:
+        return _err("open_memory", "invalid_arguments", str(exc))
+    if len(speakers) > 16:
+        return _err("open_memory", "invalid_arguments", "speaker_ids_must_not_exceed_16")
     view = _optional_string(args.get("view")) or "card"
     detail = _optional_string(args.get("detail")) or "full"
     projection = _optional_string(args.get("projection")) or "conversation"
@@ -310,18 +349,20 @@ def _dispatch_open(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
     if cursor and any(
         (
             bool(memory_id),
+            bool(match_ref),
             bool(memory_ids),
             args.get("view") is not None,
             args.get("detail") is not None,
             args.get("projection") is not None,
             bool(cross),
             args.get("page_size") is not None,
+            args.get("speaker_ids") is not None,
         )
     ):
         return _err("open_memory", "invalid_arguments", "cursor_options_are_embedded")
     if memory_id and memory_ids:
         return _err("open_memory", "invalid_arguments", "memory_id_and_memory_ids_are_mutually_exclusive")
-    if not cursor and not memory_id and not memory_ids:
+    if not cursor and not memory_id and not memory_ids and not match_ref:
         return _err("open_memory", "invalid_arguments", "memory_id_or_memory_ids_required")
     if view not in MEMORY_VIEWS:
         return _err("open_memory", "invalid_arguments", f"invalid_memory_view:{view}")
@@ -329,10 +370,22 @@ def _dispatch_open(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
         return _err("open_memory", "invalid_arguments", f"invalid_memory_detail:{detail}")
     if projection not in TIMELINE_PROJECTIONS:
         return _err("open_memory", "invalid_arguments", f"invalid_memory_projection:{projection}")
-    if memory_ids and view == "sources":
-        return _err("open_memory", "invalid_arguments", "batch_sources_not_supported")
+    source_budget = 0
+    source_byte_budget = 0
+    if view == "sources" or cursor or match_ref:
+        try:
+            source_budget = int(mem.config.native_timeline_page_token_budget)
+            source_byte_budget = int(mem.config.native_sources_page_utf8_budget)
+            max_cards = int(mem.config.native_sources_max_cards)
+        except (AttributeError, TypeError, ValueError):
+            return _err("open_memory", "invalid_state", "native_source_read_limits_invalid")
+        if source_budget <= 0 or source_byte_budget <= 0 or max_cards <= 0 or max_cards > 32:
+            return _err("open_memory", "invalid_state", "native_source_read_limits_invalid")
+        if len(set(memory_ids)) > max_cards:
+            return _err("open_memory", "invalid_arguments", f"sources_batch_exceeds_{max_cards}_cards")
     result = mem.open_memory(
         memory_id=memory_id,
+        **({"match_ref": match_ref} if match_ref else {}),
         memory_ids=memory_ids if memory_ids else None,
         view=view,
         detail=detail,
@@ -340,6 +393,9 @@ def _dispatch_open(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
         cross_conversation=cross,
         page_size=page_size,
         cursor=cursor,
+        speaker_ids=speakers if args.get("speaker_ids") is not None else None,
+        page_token_budget=source_budget,
+        page_byte_budget=source_byte_budget,
     )
     if result.get("status") == "invalid_filter":
         return _err("open_memory", "invalid_filter", str(result.get("reason") or "invalid_filter"), result=result)
@@ -348,6 +404,18 @@ def _dispatch_open(args: dict[str, Any], *, mem: Any) -> dict[str, Any]:
 
 def _project_open_result_for_model(result: dict[str, Any]) -> dict[str, Any]:
     """Keep one evidence body in native tool results while preserving navigation metadata."""
+
+    if result.get("source_mode") == "keyword_filtered":
+        return {
+            key: value
+            for key, value in result.items()
+            if key != "result"
+            and (value or key in {"page_complete", "returned_source_count", "remaining_source_count"})
+        }
+    if str(result.get("view") or "") == "sources":
+        from .memory_sources import project_source_result
+
+        return project_source_result(result)
 
     model_result = dict(result)
     payload = result.get("result")
@@ -788,26 +856,30 @@ def _timeline_description() -> str:
 
 def _browse_description() -> str:
     return (
-        "Browse chronological compact memory cards by date and/or keywords; dates are optional with keywords. "
-        "A stored summary/source tag must contain the query term (one-way, normalized case-insensitive matching). "
+        "Browse chronological compact memory cards by date, keywords and/or participants; dates are optional with either filter. "
+        "A stored tag or source utterance must contain the query term (one-way, normalized case-insensitive matching). "
         "any=one or more queries, all=every query in one card's pool. Cards show title, time, summary tags, "
-        "matched_terms and keyword_hits (one stored term per query). Tags are clues, not proof of a relationship; "
+        "matched_terms, tag witnesses, unique raw match count and at most one short preview. "
+        "Use open_memory(match_ref=...) for full matched utterances. Tags are clues, not proof of a relationship; "
         "use open_memory(content/sources) for evidence. No match does not prove a topic was never discussed. "
-        "Coverage describes history before keyword filtering. If page_complete is false, continue with only "
+        "Participants are a flat source-recorded list, not a speaker/relationship claim. Select exact Actor IDs "
+        "(e.g. qq:123456) or normalized-equal recorded nicknames; any/all applies within that list, and combines "
+        "with keywords/date by intersection. Same-nickname people stay separate by ID. "
+        "Coverage describes history before keyword/participant filtering. If page_complete is false, continue with only "
         "next_cursor; on catalog_changed_restart_required, repeat the original query."
     )
 
 
 def _open_description() -> str:
     return (
-        "Open one memory_id, or several memory_ids in one batch, returned by browse_memory or retrieval. Batch opening "
-        "supports card/content and reports each node independently in request order; sources uses one memory_id because "
-        "each source tree has its own cursor. card repeats compact navigation metadata; content "
-        "returns the full summary or one raw entry; sources returns exact child episode cards or complete raw logical "
-        "units. Sources default to conversation projection: dialogue/events stay full while operation/material bodies "
-        "become reloadable compact evidence. Use projection=full or tools only when full operation evidence is actually "
-        "needed, or open one compact source_id with content. Use sources only when the summary is insufficient. If "
-        "page_complete is false, continue with only next_cursor."
+        "Open selected memory_id: card for metadata, content for summary/raw text, sources for exact descendants. "
+        "Send a catalog match_ref alone to read its keyword-matched utterances; these are excerpts, with their own cursor. "
+        "Read several selected nodes together with memory_ids; sources shares a finite budget and keeps each node's "
+        "status/cursor. Optional speaker_ids selects actual user authors, including passive/voice messages; these "
+        "excerpts are not a complete conversation. Expand a "
+        "source_id with read_timeline when context is missing. Continue a node with only its cursor; restart on "
+        "source_changed_restart_required. Sources keeps dialogue/events full and compacts operation/material bodies; "
+        "use full/tools or content only when those bodies are needed. Read sources only when the summary is insufficient."
     )
 
 
@@ -967,12 +1039,22 @@ def _browse_schema() -> dict[str, Any]:
             "keywords": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Known names or concrete topic phrases; stored tags must contain each query term after case/width/whitespace normalization.",
+                "description": "Known names or concrete topic phrases; stored tags or source utterances must contain the query terms after case/width/whitespace normalization.",
             },
             "keyword_match": {
                 "type": "string",
                 "enum": ["any", "all"],
                 "description": "any by default; all requires every keyword. Use only with keywords.",
+            },
+            "participants": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Exact known stable Actor IDs (e.g. qq:123456) or recorded nicknames. Nicknames use normalized equality, never substring; dates are optional.",
+            },
+            "participant_match": {
+                "type": "string",
+                "enum": ["any", "all"],
+                "description": "any by default; all requires a recorded match for every participant selector. Use only with participants.",
             },
             "time_range": {
                 "type": "object",
@@ -1011,11 +1093,22 @@ def _open_schema() -> dict[str, Any]:
         "additionalProperties": False,
         "required": [],
         "properties": {
+            "match_ref": {
+                "type": "string",
+                "description": "Opaque catalog reference for full keyword-matched utterances. Send it alone; card, query and scope are embedded.",
+            },
             "memory_id": {"type": "string", "description": "Memory id from a card or retrieval result."},
             "memory_ids": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Several memory ids to open in request order with card/content; mutually exclusive with memory_id and cursor.",
+                "description": "Selected ids to open in request order, including sources; mutually exclusive with memory_id and cursor.",
+            },
+            "speaker_ids": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1, "maxLength": 256},
+                "minItems": 1,
+                "maxItems": 16,
+                "description": "Exact recorded user Actor IDs for episodic sources with conversation projection; omit to read full dialogue. Multiple IDs selects each person's utterances, not mentions/recipients.",
             },
             "view": {"type": "string", "enum": list(MEMORY_VIEWS)},
             "detail": {

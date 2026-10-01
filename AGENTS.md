@@ -213,7 +213,9 @@ calling it again with only `cursor`.
 Recommended tool parameters:
 
 - `keywords: list[str]` optional — known names or concrete topic phrases; dates may be omitted when nonempty
-- `keyword_match: any|all` optional — stored tags contain query terms, against the deduplicated union of summary and exact-source tags
+- `keyword_match: any|all` optional — stored tags or ordinary source utterances contain query terms; `all` is evaluated across the card's deduplicated union
+- `participants: list[str]` optional — exact known Actor IDs (such as `qq:123456`) or normalized-equal recorded nicknames; dates may be omitted when nonempty
+- `participant_match: any|all` optional — match any or every participant selector, intersecting keyword/date filters
 - `time_range: {start_at, end_at}` optional
 - `date_from: YYYY-MM-DD` optional
 - `date_to: YYYY-MM-DD` optional
@@ -227,6 +229,18 @@ and `keyword_hits` with one original stored term per query. Matching is one-way:
 stored `文旅答辩项目` matches query `文旅`, but stored `文旅` does not match the
 longer query `文旅答辩项目`. Exact and substring hits are returned together.
 Tags are navigation clues, not evidence that two names share an event or relationship.
+Raw dialogue matching includes observed/voice utterances without changing fuzzy
+retrieval visibility. Cards add `matched_source_count`, one short `match_preview`
+and `match_ref` only when raw dialogue matches. Read complete matched utterances
+with `open_memory(match_ref=...)` alone, then continue with its cursor alone.
+The result is a keyword excerpt, not the complete conversation.
+Cards also carry one flat source-derived `participant_refs` list. Stable IDs deduplicate
+people; the latest nonempty recorded nickname is retained. Names merely mentioned in
+text are not participants. Hosts may project this once as a readable list (Akane:
+nickname plus QQ number), removing the duplicate structured list from model output.
+Participant filtering uses exact IDs/nickname equality, never keyword substring rules.
+Same-name people retain separate IDs; use IDs after a rename. A participant cursor
+also requires restart if matching identities/cards change. Coverage precedes both filters.
 No keyword hit does not prove no history; use fuzzy retrieval for missing tags or
 paraphrases. Coverage describes history before keyword filtering. If continuation
 returns `catalog_changed_restart_required`, repeat the original query.
@@ -234,9 +248,10 @@ returns `catalog_changed_restart_required`, repeat the original query.
 ### `open_memory`
 
 Use this only with IDs returned by retrieval or `browse_memory`. Pass one
-`memory_id`, or pass `memory_ids` to open several `card`/`content` nodes in one
-ordered batch. Batch results report status/reason per node. `sources` remains a
-single-ID operation because every source tree owns an independent cursor.
+`memory_id`, or pass `memory_ids` to open several nodes in one ordered batch for
+any view. Batch results report status/reason per node. Each `sources` tree has
+its own cursor; native batches default to at most 8 roots and share finite token
+and byte limits rather than receiving a budget per card.
 `view="card"` repeats compact metadata, `view="content"` opens the selected
 raw/summary body, and `view="sources"` follows exact lineage to child episode
 cards or complete raw logical units. Raw sources default to
@@ -245,7 +260,18 @@ Skill, tool, and material bodies become reloadable compact evidence. Use
 `projection="full"`/`"tools"`, or open one compact source ID with
 `view="content"`, only when the full operation body is actually needed. Use
 `sources` only when summary content is insufficient. Continue an incomplete
-sources page with only `cursor`.
+sources page with only that tree's `cursor`.
+
+For selected episodic sources, optional `speaker_ids` selects the actual
+user-message Actor IDs (`message.user`, `message.user.observed`, and
+`message.user.voice`). Use exact known stable IDs; do not infer IDs from
+nicknames, mentions, targets or assistant namespaces. The filtered result is
+marked `speaker_filtered`, contains complete matching utterances, and requires
+`projection="conversation"`. Omission/null keeps complete dialogue; invalid or
+empty filters never broaden the read. Use a returned `source_id` with
+`read_timeline` to expand nearby dialogue only when needed. Hosts must wrap all
+nested cursors and preserve authorized scope on suggested next actions. A
+source-fingerprint restart reason requires a fresh open of the selected card.
 
 ### `load_material` optional
 
@@ -409,7 +435,8 @@ When only integrating memcore into a host project, at minimum run the host app's
 - first message records raw memory;
 - rendered prompt contains visible memory with time anchors;
 - model can call `retrieve_for_turn`;
-- model can browse compact history with `browse_memory`, open one selected `memory_id`, and batch-open several card/content IDs with `open_memory`;
+- model can browse compact history with `browse_memory`, batch-open card/content/sources IDs with `open_memory`, and continue each source tree with its own cursor;
+- optional `speaker_ids` reads actual user utterances, preserves historical attribution, and reports excerpts, missing identity and incomplete evidence correctly;
 - model can call `read_timeline`;
 - assistant reply is recorded;
 - background compaction does not block the visible reply;

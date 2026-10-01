@@ -395,6 +395,64 @@ fields are documented in `raw_token_compaction_policy_v1.md`.
 host that injected a shared `MemCoreRuntime` must close that runtime itself.
 Store/index lifecycle remains host-owned.
 
+## Continuous semantic history and repair
+
+Every semantic batch creates an independent record from the oldest pending
+episodes. Source order is `(timestamp, summary_id)` and cannot skip any stored
+episode in that conversation, including already assigned episodes. A batch may
+span days or silence; continuity is not daily bucketing. A skipped episode returns
+`semantic_repair_required/noncontiguous_episode_batch`, without calling the LLM.
+SQLite repeats the continuity check before committing. No cross-batch topic
+reinforcement occurs; deprecated constructor inputs do not change this behavior.
+New normal-batch IDs include the continuity version, so later batches cannot
+accidentally reuse a retired legacy ID and bypass its replacement mapping.
+
+Trusted operators can repair previously interleaved/merged history through the
+facade; these functions are not model-facing tools:
+
+```python
+plan = mem.plan_semantic_history_repair()
+if plan["status"] == "ready":
+    result = mem.repair_semantic_history(plan, progress_callback=on_progress)
+# Optional guarded recovery:
+restored = mem.rollback_semantic_history_repair(result["repair_id"])
+```
+
+The read-only manifest includes scope/version/fingerprint, affected old IDs,
+ordered episode groups, replacement IDs, pending tail, lineage counts and LLM
+call count. `clean` requires no work; missing episode/raw sources return
+`unavailable` rather than synthesizing history. The affected interval expands
+backward across interleaved owners and forward to the pending frontier, preserving
+the healthy prefix. This suffix ensures the pending tail cannot be stranded
+between already assigned cards. Existing trigger/batch sizes determine the tail.
+
+All semantic results are prepared before publication.
+For operator workflows that coordinate publication separately, use
+`prepare_semantic_history_repair(plan, progress_callback=...)` and then
+`commit_prepared_semantic_history_repair(prepared)`. The first call writes no
+memory; the second rechecks the complete plan and configuration. Prepared bodies
+are trusted maintenance data, never model tool output or repository artifacts.
+
+Generation failure,
+shutdown or a stale plan publishes nothing. A conversation compaction lock and
+transactional fingerprint check guard atomic replacement. Original dialogue,
+episode bodies and fuzzy visibility remain unchanged. A schema-9 maintenance
+journal holds version-guarded recovery records and old-ID mappings outside the
+searchable memory tables. Namespace forgetting deletes that journal too.
+
+Old IDs return `replaced/semantic_history_repaired` and replacement open actions;
+they never silently select one fragment. Browse/source/keyword cursors require
+restart when their repaired lineage changes. Rollback verifies only affected
+records and retained sources, preserving unrelated new chat; changed affected
+history returns `stale_repair/affected_history_changed`.
+
+Committed repair/rollback results report `index_status=indexed|pending` separately.
+Old vector deletions are a durable outbox, retried by `reindex_pending` and
+`reindex_all`; when present their counts are `obsolete_index_deleted/failed`.
+New vector failures use the existing pending-record outbox. SQLite remains truth,
+so stale index hits cannot expose removed memory. Neither index failure implies
+that the successful database replacement was rolled back.
+
 ## Index maintenance
 
 ```python

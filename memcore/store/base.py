@@ -306,6 +306,20 @@ class MemoryStore(ABC):
         """Resolve descendants and ancestors without leaving the authorized Namespace."""
         raise NotImplementedError
 
+    def get_source_entry_headers(
+        self,
+        *,
+        namespace: Namespace,
+        source_ids: tuple[str, ...],
+        cross_conversation: bool = False,
+    ) -> dict[str, dict[str, Any]]:
+        """Optional scoped raw identity/turn headers, without body or payload.
+
+        Used to prefilter exact speakers before loading their source bodies.
+        Unsupported stores retain the exact read/filter path through entries.
+        """
+        raise NotImplementedError
+
     def get_turn(self, *, namespace: Namespace, turn_id: str) -> TurnHandle | None:
         """Namespace-safe turn lookup for lifecycle resume/idempotency."""
         raise NotImplementedError
@@ -511,6 +525,35 @@ class MemoryStore(ABC):
         """
         raise NotImplementedError
 
+    def get_catalog_keyword_matches(
+        self,
+        *,
+        namespace: Namespace,
+        memory_ids: tuple[str, ...],
+        keywords: list[str],
+        cross_conversation: bool = False,
+    ) -> dict[str, dict[str, Any]]:
+        """Exact tag/dialogue matches and fingerprints from authorized card lineage.
+
+        Matched raw IDs are a trusted internal read result, never a model card.
+        Observed dialogue remains excluded from fuzzy retrieval independently.
+        """
+        raise NotImplementedError
+
+    def get_catalog_participant_refs(
+        self,
+        *,
+        namespace: Namespace,
+        memory_ids: tuple[str, ...],
+        cross_conversation: bool = False,
+    ) -> dict[str, list[dict[str, str]]]:
+        """Read system-derived participants, including authorized exact lineage.
+
+        Missing annotations do not hide Actor identity. Never infer participants
+        from summary text, tags, or operation/material bodies.
+        """
+        raise NotImplementedError
+
     @abstractmethod
     def get_recent_semantic_summaries(
         self, *, namespace: Namespace, limit: int | None = None, cross_conversation: bool = False
@@ -564,6 +607,48 @@ class MemoryStore(ABC):
         raise NotImplementedError
 
     # --- 遗忘 / 合规 ---
+    def get_semantic_history_snapshot(self, *, namespace: Namespace) -> dict[str, Any]:
+        """Conversation-local atomic history snapshot for trusted maintenance."""
+        raise NotImplementedError
+
+    def commit_semantic_history_repair(
+        self, *, namespace: Namespace, plan: dict[str, Any], records: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def rollback_semantic_history_repair(self, *, namespace: Namespace, repair_id: str) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def get_memory_replacements(
+        self, *, namespace: Namespace, memory_id: str, cross_conversation: bool = False
+    ) -> list[str] | None:
+        """None means no authorized repair; an empty list means no retained replacement."""
+        raise NotImplementedError
+
+    def get_semantic_history_revision(self, *, namespace: Namespace, cross_conversation: bool = False) -> str:
+        """Only history replacement/rollback invalidates otherwise stable browse pages."""
+        return ""
+
+    def get_memory_replacement_map(
+        self, *, namespace: Namespace, memory_ids: tuple[str, ...], cross_conversation: bool = False
+    ) -> dict[str, list[str]]:
+        return {
+            sid: value
+            for sid in memory_ids
+            if (
+                value := self.get_memory_replacements(
+                    namespace=namespace, memory_id=sid, cross_conversation=cross_conversation
+                )
+            )
+            is not None
+        }
+
+    def list_semantic_index_cleanup(self, *, namespace: Namespace) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    def complete_semantic_index_cleanup(self, *, namespace: Namespace, repair_id: str, source_ids: list[str]) -> None:
+        raise NotImplementedError
+
     @abstractmethod
     def delete_namespace(self, *, namespace: Namespace) -> list[str]:
         """定向遗忘:删除某硬隔离边界下的全部记忆。返回被删的 source_id 列表(供同步清 VectorIndex)。"""

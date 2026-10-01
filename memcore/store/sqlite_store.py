@@ -22,7 +22,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, Callable, Iterator
+from typing import TYPE_CHECKING, Any, Callable, Iterator, Sequence
 
 if TYPE_CHECKING:
     from ..timeline import TurnProjectionSettlement
@@ -90,6 +90,7 @@ _JSON_FIELDS = {
         "important_people_json": "important_people",
         "open_loops_json": "open_loops",
         "topic_headings_json": "topic_headings",
+        "participant_refs_json": "participant_refs",
         "semantic_tags_json": "semantic_tags",
         "memory_metadata_json": "memory_metadata",
         "source_summary_ids_json": "source_summary_ids",
@@ -169,6 +170,17 @@ class SQLiteMemoryStore(MemoryStore):
             self._conn.commit()
 
     # --- 内部工具 ---
+    @contextmanager
+    def _read_transaction(self) -> Iterator[None]:
+        """Hold one SQLite read snapshot without closing a caller's write transaction."""
+        owned = not self._conn.in_transaction
+        if owned:
+            self._conn.execute("BEGIN")
+        try:
+            yield
+        finally:
+            if owned:
+                self._conn.rollback()
 
     @staticmethod
     def _row_to_record(row: sqlite3.Row, table: str) -> dict[str, Any]:
@@ -1421,23 +1433,18 @@ class SQLiteMemoryStore(MemoryStore):
             existing_semantic = self._conn.execute(
                 "SELECT * FROM semantic_summaries WHERE semantic_id = ?", (semantic_id,)
             ).fetchone()
+            from ..semantic_history import contiguous_episode_ids
+
+            if not contiguous_episode_ids(
+                self.get_episodic_summaries_by_time_range(namespace=namespace, start_ts=None, end_ts=None),
+                snapshot.summary_ids,
+            ):
+                return SemanticBatchCommitResult(status="stale_batch", reason="noncontiguous_episode_batch")
             if snapshot.reinforcement_target_id:
-                if snapshot.reinforcement_target_id != semantic_id or existing_semantic is None:
-                    return SemanticBatchCommitResult(status="stale_batch", reason="reinforcement_target_missing")
-                self._assert_scope_owner(existing_semantic, namespace, id_label=f"semantic_id={semantic_id!r}")
-                if int(existing_semantic["row_version"] or 0) != snapshot.reinforcement_target_row_version:
-                    return SemanticBatchCommitResult(status="stale_batch", reason="reinforcement_target_changed")
-            elif existing_semantic is not None:
+                return SemanticBatchCommitResult(status="stale_batch", reason="cross_batch_reinforcement_removed")
+            if existing_semantic is not None:
                 return SemanticBatchCommitResult(status="stale_batch", reason="semantic_id_conflict")
 
-            if snapshot.reinforcement_target_id:
-                semantic_turn_id = f"semantic.{stable_projection_hash({'semantic_id': semantic_id})}"
-                scope_clause, scope_params = self._scope_clause(namespace, with_conversation=True)
-                self._conn.execute(
-                    f"DELETE FROM prompt_projections WHERE {scope_clause} AND turn_id = ?",
-                    [*scope_params, semantic_turn_id],
-                )
-                self._increment_projection_generation_locked(namespace)
             saved = self._add_semantic_summary_locked(namespace=namespace, record=semantic_record)
             cursor = self._conn.execute(
                 f"""
@@ -1968,6 +1975,7 @@ class SQLiteMemoryStore(MemoryStore):
             "memory_title": str(record.get("memory_title") or ""),
             "catalog_hint": str(record.get("catalog_hint") or ""),
             "topic_headings_json": _json_dumps(record.get("topic_headings") or []),
+            "participant_refs_json": _json_dumps(record.get("participant_refs") or []),
             "catalog_schema_version": max(0, int(record.get("catalog_schema_version") or 0)),
             "semantic_tags_json": _json_dumps(record.get("semantic_tags") or []),
             "memory_metadata_json": _json_dumps(record.get("memory_metadata") or {}),
@@ -2177,6 +2185,36 @@ class SQLiteMemoryStore(MemoryStore):
                 raise SchemaError("ambiguous_memory_id")
             return matches[0] if matches else None
 
+    def _rows_by_ids(
+        self,
+        table: str,
+        id_column: str,
+        ids: Sequence[str],
+        *,
+        scope: str,
+        params: Sequence[Any],
+        columns: str = "*",
+        condition: str = "1",
+    ) -> dict[str, sqlite3.Row]:
+        """Read ID batches under the caller's lock without rescanning a namespace.
+
+        The VALUES frontier is the outer CROSS JOIN loop, so each unique ID uses
+        the table's primary-key lookup. All scope/visibility predicates remain.
+        """
+        unique_ids = list(dict.fromkeys(ids))
+        fields = f"{table}.*" if columns == "*" else id_column + (f", {columns}" if columns else "")
+        result: dict[str, sqlite3.Row] = {}
+        for offset in range(0, len(unique_ids), 400):
+            batch = unique_ids[offset : offset + 400]
+            values = ",".join("(?)" for _ in batch)
+            rows = self._conn.execute(
+                f"SELECT {fields} FROM (VALUES {values}) AS requested CROSS JOIN {table} "
+                f"WHERE {id_column} = requested.column1 AND {scope} AND {condition}",
+                [*batch, *params],
+            ).fetchall()
+            result.update((str(row[id_column]), row) for row in rows)
+        return result
+
     def get_retrieval_records(
         self,
         *,
@@ -2193,18 +2231,11 @@ class SQLiteMemoryStore(MemoryStore):
                 ("summaries", "summary_id"),
                 ("semantic_summaries", "semantic_id"),
             ):
-                for offset in range(0, len(requested), 400):
-                    batch = requested[offset : offset + 400]
-                    placeholders = ",".join("?" for _ in batch)
-                    rows = self._conn.execute(
-                        f"SELECT * FROM {table} WHERE {scope} AND {id_column} IN ({placeholders})",
-                        [*params, *batch],
-                    ).fetchall()
-                    for row in rows:
-                        sid = str(row[id_column])
-                        if sid in records:
-                            raise SchemaError("ambiguous_memory_id")
-                        records[sid] = self._row_to_record(row, table)
+                rows = self._rows_by_ids(table, id_column, requested, scope=scope, params=params)
+                for sid, row in rows.items():
+                    if sid in records:
+                        raise SchemaError("ambiguous_memory_id")
+                    records[sid] = self._row_to_record(row, table)
         return records
 
     def get_entries_by_source_ids(
@@ -2221,14 +2252,27 @@ class SQLiteMemoryStore(MemoryStore):
             namespace,
             with_conversation=not bool(cross_conversation),
         )
-        placeholders = ",".join("?" for _ in requested)
         with self._lock:
-            rows = self._conn.execute(
-                f"SELECT * FROM messages WHERE {scope_clause} AND source_id IN ({placeholders})",
-                [*params, *requested],
-            ).fetchall()
-        by_id = {str(row["source_id"]): TimelineEntry.from_record(self._row_to_record(row, "messages")) for row in rows}
+            rows = self._rows_by_ids("messages", "source_id", requested, scope=scope_clause, params=params)
+        by_id = {sid: TimelineEntry.from_record(self._row_to_record(row, "messages")) for sid, row in rows.items()}
         return [by_id[source_id] for source_id in requested if source_id in by_id]
+
+    def get_source_entry_headers(
+        self,
+        *,
+        namespace: Namespace,
+        source_ids: tuple[str, ...],
+        cross_conversation: bool = False,
+    ) -> dict[str, dict[str, Any]]:
+        requested = list(dict.fromkeys(str(item or "").strip() for item in source_ids if str(item or "").strip()))
+        scope, params = self._scope_clause(namespace, with_conversation=not cross_conversation)
+        columns = (
+            "tenant_id, user_id, domain_id, conversation_id, kind, origin, turn_role, "
+            "turn_id, actor_id, actor_display_name, timestamp, seq_no, reply_to_source_id, correlation_id"
+        )
+        with self._lock:
+            rows = self._rows_by_ids("messages", "source_id", requested, scope=scope, params=params, columns=columns)
+        return {sid: dict(row) for sid, row in rows.items()}
 
     def resolve_lineage_source_ids(
         self,
@@ -2258,18 +2302,16 @@ class SQLiteMemoryStore(MemoryStore):
                 ("summaries", "summary_id", "source_ids_json"),
                 ("semantic_summaries", "semantic_id", "source_summary_ids_json"),
             ):
-                columns = f"{id_column}, {lineage_column}" if lineage_column else id_column
-                for offset in range(0, len(pending), 400):
-                    batch = pending[offset : offset + 400]
-                    placeholders = ",".join("?" for _ in batch)
-                    rows = self._conn.execute(
-                        f"SELECT {columns} FROM {table} WHERE {scope_clause} AND {id_column} IN ({placeholders})",
-                        [*params, *batch],
-                    ).fetchall()
-                    for row in rows:
-                        resolved_children[str(row[id_column])] = (
-                            tuple(self._json_list(row[lineage_column])) if lineage_column else ()
-                        )
+                rows = self._rows_by_ids(
+                    table,
+                    id_column,
+                    pending,
+                    scope=scope_clause,
+                    params=params,
+                    columns=lineage_column,
+                )
+                for sid, row in rows.items():
+                    resolved_children[sid] = tuple(self._json_list(row[lineage_column])) if lineage_column else ()
                 pending = [sid for sid in pending if sid not in resolved_children]
 
         def read_children(source_id: str) -> tuple[str, ...] | None:
@@ -3845,18 +3887,15 @@ class SQLiteMemoryStore(MemoryStore):
         scope, scope_params = self._scope_clause(namespace, with_conversation=not cross_conversation)
 
         def load(table: str, id_column: str, ids: list[str], columns: str, condition: str) -> dict[str, Any]:
-            result: dict[str, Any] = {}
-            unique_ids = list(dict.fromkeys(ids))
-            for offset in range(0, len(unique_ids), 400):
-                batch = unique_ids[offset : offset + 400]
-                placeholders = ",".join("?" for _ in batch)
-                rows = self._conn.execute(
-                    f"SELECT {id_column}, memory_metadata_json, {columns} FROM {table} "
-                    f"WHERE {scope} AND {id_column} IN ({placeholders}) AND {condition}",
-                    [*scope_params, *batch],
-                ).fetchall()
-                result.update((str(row[id_column]), row) for row in rows)
-            return result
+            return self._rows_by_ids(
+                table,
+                id_column,
+                ids,
+                scope=scope,
+                params=scope_params,
+                columns=f"memory_metadata_json, {columns}",
+                condition=condition,
+            )
 
         def source_ids(row: Any, field: str) -> list[str]:
             try:
@@ -3872,7 +3911,7 @@ class SQLiteMemoryStore(MemoryStore):
                 return []
             return catalog_metadata_terms(metadata)
 
-        with self._lock:
+        with self._lock, self._read_transaction():
             semantics = load(
                 "semantic_summaries",
                 "semantic_id",
@@ -3919,6 +3958,251 @@ class SQLiteMemoryStore(MemoryStore):
                 pools[sid] = normalize_catalog_terms(pool)
         return pools
 
+    def get_catalog_keyword_matches(
+        self,
+        *,
+        namespace: Namespace,
+        memory_ids: tuple[str, ...],
+        keywords: list[str],
+        cross_conversation: bool = False,
+    ) -> dict[str, dict[str, Any]]:
+        """Load each lineage layer once, sharing normalized raw text across cards."""
+        from ..catalog_keywords import catalog_keyword_hits, catalog_metadata_terms, normalize_catalog_terms
+        from ..kind_contract import USER_CHAT_KINDS
+
+        words = normalize_catalog_terms(keywords, strict=True)
+        word_keys = [word.casefold() for word in words]
+        dialogue_kinds = USER_CHAT_KINDS | {"message.assistant", "message.assistant.voice"}
+        scope, params = self._scope_clause(namespace, with_conversation=not cross_conversation)
+
+        def load(table: str, id_key: str, ids: Sequence[str], columns: str, condition: str = "1=1"):
+            return self._rows_by_ids(
+                table, id_key, ids, scope=scope, params=params, columns=columns, condition=condition
+            )
+
+        def parse(value: Any, fallback: Any) -> Any:
+            try:
+                return json.loads(value or "null")
+            except (TypeError, ValueError):
+                return fallback
+
+        def values(row: Any, key: str) -> list[str]:
+            value = parse(row[key], [])
+            return (
+                list(dict.fromkeys(item for item in value if isinstance(item, str) and item))
+                if isinstance(value, list)
+                else []
+            )
+
+        def terms(row: Any) -> list[str]:
+            return catalog_metadata_terms(parse(row["memory_metadata_json"], {}))
+
+        with self._lock, self._read_transaction():
+            semantic = load(
+                "semantic_summaries",
+                "semantic_id",
+                memory_ids,
+                "memory_metadata_json, source_summary_ids_json, row_version",
+                "retrieval_visibility = 'default'",
+            )
+            episode_ids = list(memory_ids) + [
+                sid for row in semantic.values() for sid in values(row, "source_summary_ids_json")
+            ]
+            episodes = load(
+                "summaries",
+                "summary_id",
+                episode_ids,
+                "memory_metadata_json, source_ids_json, row_version",
+                "kind = 'memory.episode_summary' AND retrieval_visibility = 'default'",
+            )
+            if set(semantic).intersection(episodes):
+                raise SchemaError("ambiguous_memory_id")
+            raw_ids = [sid for row in episodes.values() for sid in values(row, "source_ids_json")]
+            kind_literals = ",".join("'" + kind + "'" for kind in sorted(dialogue_kinds))
+            raw = load(
+                "messages",
+                "source_id",
+                raw_ids,
+                "memory_metadata_json, kind, origin, turn_role, retrieval_visibility, annotation_status, "
+                "row_version, seq_no, timestamp, actor_id, actor_display_name, "
+                f"CASE WHEN kind IN ({kind_literals}) THEN COALESCE(NULLIF(semantic_text,''), content, '') "
+                "ELSE '' END AS dialogue_text",
+            )
+            raw_terms: dict[str, list[str]] = {}
+            raw_hits: dict[str, list[str]] = {}
+            raw_fingerprints: dict[str, str] = {}
+            for sid, row in raw.items():
+                raw_terms[sid] = (
+                    terms(row)
+                    if (
+                        row["retrieval_visibility"] == "default"
+                        and row["annotation_status"] in {"accepted_model", "accepted_host", "accepted_legacy"}
+                        and row["turn_role"] not in {"action", "observation"}
+                        and not str(row["kind"]).startswith(("operation.", "skill.", "tool.", "material."))
+                    )
+                    else []
+                )
+                utterance = (
+                    row["kind"] in dialogue_kinds
+                    and row["origin"] == ("user" if row["kind"] in USER_CHAT_KINDS else "assistant")
+                    and row["turn_role"] not in {"action", "observation"}
+                )
+                text = str(row["dialogue_text"] or "") if utterance else ""
+                normalized = normalize_catalog_terms([text])[0].casefold() if text.strip() else ""
+                raw_hits[sid] = [word for word, key in zip(words, word_keys) if key in normalized] if normalized else []
+                raw_fingerprints[sid] = stable_projection_hash(
+                    [
+                        sid,
+                        row["row_version"],
+                        row["seq_no"],
+                        row["timestamp"],
+                        row["actor_id"],
+                        row["actor_display_name"],
+                        row["kind"],
+                        row["origin"],
+                        raw_terms[sid],
+                        text,
+                    ]
+                )
+            result = {}
+            for memory_id in memory_ids:
+                root = semantic.get(memory_id) or episodes.get(memory_id)
+                if root is None:
+                    continue
+                child_ids = values(root, "source_summary_ids_json") if memory_id in semantic else [memory_id]
+                pool = terms(root)
+                source_ids: list[str] = []
+                for child_id in child_ids:
+                    child = episodes.get(child_id)
+                    if child is not None:
+                        pool.extend(terms(child))
+                        source_ids.extend(values(child, "source_ids_json"))
+                source_ids = list(dict.fromkeys(source_ids))
+                missing = sum(sid not in raw for sid in source_ids) + sum(sid not in episodes for sid in child_ids)
+                for sid in source_ids:
+                    pool.extend(raw_terms.get(sid, []))
+                tag_hits = catalog_keyword_hits(normalize_catalog_terms(pool), words)
+                matched_ids = sorted(
+                    (sid for sid in source_ids if raw_hits.get(sid)),
+                    key=lambda sid: (int(raw[sid]["seq_no"]), str(sid)),
+                )
+                matched_words = {hit["query"] for hit in tag_hits}
+                for sid in matched_ids:
+                    matched_words.update(raw_hits[sid])
+                first = raw[matched_ids[0]] if matched_ids else None
+                result[memory_id] = {
+                    "matched_terms": [word for word in words if word in matched_words],
+                    "keyword_hits": tag_hits,
+                    "matched_source_ids": matched_ids,
+                    "matched_source_versions": {sid: int(raw[sid]["row_version"]) for sid in matched_ids},
+                    "matched_source_count": len(matched_ids),
+                    "missing_source_count": missing,
+                    "source_fingerprint": stable_projection_hash(
+                        [
+                            root["row_version"],
+                            pool,
+                            [(sid, episodes[sid]["row_version"] if sid in episodes else None) for sid in child_ids],
+                            [(sid, raw_fingerprints.get(sid)) for sid in source_ids],
+                        ]
+                    ),
+                    "first_source": {
+                        "source_id": matched_ids[0],
+                        "timestamp": int(first["timestamp"]),
+                        "actor_id": str(first["actor_id"] or ""),
+                        "actor_display_name": str(first["actor_display_name"] or ""),
+                        "text": str(first["dialogue_text"]),
+                    }
+                    if first is not None
+                    else None,
+                }
+            return result
+
+    def get_catalog_participant_refs(
+        self,
+        *,
+        namespace: Namespace,
+        memory_ids: tuple[str, ...],
+        cross_conversation: bool = False,
+    ) -> dict[str, list[dict[str, str]]]:
+        """Batch-read identity columns; retain stored refs when sources are gone."""
+        from ..memory_catalog import normalize_participant_refs
+
+        scope, params = self._scope_clause(namespace, with_conversation=not cross_conversation)
+
+        def load(table: str, id_column: str, ids: list[str], columns: str, condition: str) -> dict[str, Any]:
+            return self._rows_by_ids(
+                table,
+                id_column,
+                ids,
+                scope=scope,
+                params=params,
+                columns=columns,
+                condition=condition,
+            )
+
+        def array(row: Any, field: str) -> list[Any]:
+            try:
+                value = json.loads(row[field] or "[]")
+            except (TypeError, ValueError):
+                return []
+            return value if isinstance(value, list) else []
+
+        def ids(row: Any, field: str) -> list[str]:
+            return [item for item in array(row, field) if isinstance(item, str) and item]
+
+        with self._lock:
+            semantics = load(
+                "semantic_summaries",
+                "semantic_id",
+                list(memory_ids),
+                "source_summary_ids_json, participant_refs_json",
+                "retrieval_visibility = 'default'",
+            )
+            episode_ids = list(memory_ids)
+            for row in semantics.values():
+                episode_ids.extend(ids(row, "source_summary_ids_json"))
+            episodes = load(
+                "summaries",
+                "summary_id",
+                episode_ids,
+                "source_ids_json, participant_refs_json, timestamp",
+                "kind = 'memory.episode_summary' AND retrieval_visibility = 'default'",
+            )
+            if set(semantics).intersection(episodes):
+                raise SchemaError("ambiguous_memory_id")
+            raw = load(
+                "messages",
+                "source_id",
+                [sid for row in episodes.values() for sid in ids(row, "source_ids_json")],
+                "actor_id, actor_display_name, target_actor_id, target_actor_display_name, timestamp, seq_no",
+                "retrieval_visibility = 'default' "
+                "AND COALESCE(turn_role, '') NOT IN ('action', 'observation') "
+                "AND kind NOT LIKE 'operation.%' AND kind NOT LIKE 'skill.%' "
+                "AND kind NOT LIKE 'tool.%' AND kind NOT LIKE 'material.%'",
+            )
+            episode_refs = {}
+            for sid, row in episodes.items():
+                sources = [raw[source_id] for source_id in ids(row, "source_ids_json") if source_id in raw]
+                sources.sort(key=lambda source: (int(source["timestamp"]), int(source["seq_no"]), source["source_id"]))
+                refs = [
+                    {"actor_id": source[id_field], "display_name": source[name_field]}
+                    for source in sources
+                    for id_field, name_field in (
+                        ("actor_id", "actor_display_name"),
+                        ("target_actor_id", "target_actor_display_name"),
+                    )
+                ]
+                episode_refs[sid] = normalize_participant_refs([*refs, *array(row, "participant_refs_json")])
+            result = {sid: episode_refs[sid] for sid in memory_ids if sid in episode_refs}
+            for sid, row in semantics.items():
+                children = [
+                    episodes[child_id] for child_id in ids(row, "source_summary_ids_json") if child_id in episodes
+                ]
+                children.sort(key=lambda child: (int(child["timestamp"]), child["summary_id"]))
+                refs = [ref for child in children for ref in episode_refs[child["summary_id"]]]
+                result[sid] = normalize_participant_refs([*refs, *array(row, "participant_refs_json")])
+            return result
+
     def get_recent_semantic_summaries(
         self, *, namespace: Namespace, limit: int | None = None, cross_conversation: bool = False
     ) -> list[dict[str, Any]]:
@@ -3941,7 +4225,7 @@ class SQLiteMemoryStore(MemoryStore):
         scope_clause, params = self._scope_clause(namespace, with_conversation=True)
         sql = (
             f"SELECT * FROM summaries WHERE {scope_clause} "
-            "AND kind = 'memory.episode_summary' AND is_semanticized = 0 ORDER BY timestamp ASC"
+            "AND kind = 'memory.episode_summary' AND is_semanticized = 0 ORDER BY timestamp ASC, summary_id ASC"
         )
         if limit is not None:
             sql += " LIMIT ?"
@@ -3993,11 +4277,249 @@ class SQLiteMemoryStore(MemoryStore):
 
     # --- 遗忘 / 合规 ---
 
+    def get_semantic_history_snapshot(self, *, namespace: Namespace) -> dict[str, Any]:
+        with self._lock:
+            owned = not self._conn.in_transaction
+            if owned:
+                self._conn.execute("BEGIN")
+            try:
+                return self._semantic_history_snapshot_locked(namespace)
+            finally:
+                if owned:
+                    self._conn.rollback()
+
+    def _semantic_history_snapshot_locked(self, namespace: Namespace) -> dict[str, Any]:
+        scope, params = self._scope_clause(namespace, with_conversation=True)
+        episodes = [
+            self._row_to_record(row, "summaries")
+            for row in self._conn.execute(
+                f"SELECT * FROM summaries WHERE {scope} AND kind = 'memory.episode_summary' ORDER BY timestamp, summary_id",
+                params,
+            ).fetchall()
+        ]
+        semantics = [
+            self._row_to_record(row, "semantic_summaries")
+            for row in self._conn.execute(
+                f"SELECT * FROM semantic_summaries WHERE {scope} ORDER BY timestamp, semantic_id", params
+            ).fetchall()
+        ]
+        raw_ids = tuple(sorted({str(sid) for row in episodes for sid in row.get("source_ids", [])}))
+        raw = (
+            self._rows_by_ids(
+                "messages",
+                "source_id",
+                raw_ids,
+                scope=scope,
+                params=params,
+                columns="row_version",
+            )
+            if raw_ids
+            else {}
+        )
+        return {
+            "namespace_key": [
+                namespace.tenant_id or "",
+                namespace.user_id,
+                namespace.domain_id or "",
+                namespace.conversation_id or "",
+            ],
+            "compaction_generation": self._compaction_generation_locked(namespace),
+            "episodes": episodes,
+            "semantics": semantics,
+            "raw_versions": sorted((dict(row) for row in raw.values()), key=lambda row: row["source_id"]),
+        }
+
+    @staticmethod
+    def _repair_subset(snapshot: dict[str, Any], plan: dict[str, Any], *, applied: bool) -> dict[str, Any]:
+        summary_ids = set(plan["affected_summary_ids"])
+        semantic_ids = set(plan["new_memory_ids"] if applied else plan["affected_memory_ids"])
+        episodes = [row for row in snapshot["episodes"] if row["summary_id"] in summary_ids]
+        raw_ids = {str(sid) for row in episodes for sid in row.get("source_ids", [])}
+        return {
+            "episodes": episodes,
+            "semantics": [row for row in snapshot["semantics"] if row["semantic_id"] in semantic_ids],
+            "raw_versions": [row for row in snapshot["raw_versions"] if row["source_id"] in raw_ids],
+        }
+
+    def commit_semantic_history_repair(
+        self, *, namespace: Namespace, plan: dict[str, Any], records: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        from ..semantic_history import build_repair_plan, history_fingerprint
+
+        with self._lock, self._immediate_transaction():
+            snapshot = self._semantic_history_snapshot_locked(namespace)
+            current = build_repair_plan(snapshot, batch_size=plan["batch_size"], trigger_count=plan["trigger_count"])
+            if current != plan or plan.get("status") != "ready":
+                return {"status": "stale_plan", "reason": "history_changed"}
+            if len(records) != len(plan["groups"]) or any(
+                record.get("semantic_id") != sid or record.get("source_summary_ids") != group
+                for record, sid, group in zip(records, plan["new_memory_ids"], plan["groups"], strict=True)
+            ):
+                raise SchemaError("repair_record_lineage_mismatch")
+            for sid in plan["new_memory_ids"]:
+                if self._conn.execute("SELECT 1 FROM semantic_summaries WHERE semantic_id = ?", (sid,)).fetchone():
+                    raise SchemaError("repair_new_id_conflict")
+            backup = self._repair_subset(snapshot, plan, applied=False)
+            self._delete_repaired_semantics_locked(namespace, plan["affected_memory_ids"])
+            assigned = {
+                sid: mid for group, mid in zip(plan["groups"], plan["new_memory_ids"], strict=True) for sid in group
+            }
+            for row in records:
+                self._add_semantic_summary_locked(namespace=namespace, record=row)
+            for sid in plan["affected_summary_ids"]:
+                owner = assigned.get(sid, "")
+                self._conn.execute(
+                    "UPDATE summaries SET is_semanticized = ?, semantic_id = ?, row_version = row_version + 1 WHERE summary_id = ?",
+                    (int(bool(owner)), owner, sid),
+                )
+            generation = self._increment_compaction_generation_locked(namespace)
+            after = self._repair_subset(self._semantic_history_snapshot_locked(namespace), plan, applied=True)
+            self._conn.execute(
+                """INSERT INTO semantic_history_repairs(
+                    repair_id, tenant_id, user_id, domain_id, conversation_id, status,
+                    plan_json, backup_json, applied_fingerprint, cleanup_ids_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, 'applied', ?, ?, ?, ?, ?)""",
+                (
+                    plan["repair_id"],
+                    *plan["namespace_key"],
+                    _json_dumps(plan),
+                    _json_dumps(backup),
+                    history_fingerprint(after),
+                    _json_dumps(plan["affected_memory_ids"]),
+                    int(time.time()),
+                ),
+            )
+            return {
+                "status": "committed",
+                "reason": "",
+                "repair_id": plan["repair_id"],
+                "compaction_generation": generation,
+                "replacements": plan["replacements"],
+                "semantic_created": len(records),
+                "pending_summary_count": len(plan["pending_summary_ids"]),
+            }
+
+    def _delete_repaired_semantics_locked(self, namespace: Namespace, ids: list[str]) -> None:
+        from ..projection import ProjectionLedger
+
+        scope, params = self._scope_clause(namespace, with_conversation=True)
+        for sid in ids:
+            self._conn.execute(f"DELETE FROM semantic_summaries WHERE {scope} AND semantic_id = ?", [*params, sid])
+            turn_id = ProjectionLedger.memory_turn_id(source_id=sid, id_key="semantic_id", turn_prefix="semantic")
+            self._conn.execute(f"DELETE FROM prompt_projections WHERE {scope} AND turn_id = ?", [*params, turn_id])
+        self._increment_projection_generation_locked(namespace)
+
+    def rollback_semantic_history_repair(self, *, namespace: Namespace, repair_id: str) -> dict[str, Any]:
+        from ..semantic_history import history_fingerprint
+
+        scope, params = self._scope_clause(namespace, with_conversation=True)
+        with self._lock, self._immediate_transaction():
+            row = self._conn.execute(
+                f"SELECT * FROM semantic_history_repairs WHERE {scope} AND repair_id = ?", [*params, repair_id]
+            ).fetchone()
+            if row is None:
+                return {"status": "empty", "reason": "repair_not_found_or_out_of_scope"}
+            if row["status"] == "rolled_back":
+                return {"status": "already_rolled_back", "reason": "", "repair_id": repair_id}
+            plan, backup = json.loads(row["plan_json"]), json.loads(row["backup_json"])
+            snapshot = self._semantic_history_snapshot_locked(namespace)
+            if history_fingerprint(self._repair_subset(snapshot, plan, applied=True)) != row["applied_fingerprint"]:
+                return {"status": "stale_repair", "reason": "affected_history_changed"}
+            if any(item["semantic_id"] in plan["affected_memory_ids"] for item in snapshot["semantics"]):
+                return {"status": "stale_repair", "reason": "old_id_reused"}
+            self._delete_repaired_semantics_locked(namespace, plan["new_memory_ids"])
+            for record in backup["semantics"]:
+                saved = self._add_semantic_summary_locked(namespace=namespace, record=record)
+                self._conn.execute(
+                    "UPDATE semantic_summaries SET row_version = ? WHERE semantic_id = ?",
+                    (int(record["row_version"]) + 1, saved["semantic_id"]),
+                )
+            for record in backup["episodes"]:
+                self._conn.execute(
+                    "UPDATE summaries SET is_semanticized = ?, semantic_id = ?, row_version = row_version + 1 WHERE summary_id = ?",
+                    (int(record["is_semanticized"]), str(record["semantic_id"]), str(record["summary_id"])),
+                )
+            self._conn.execute(
+                "UPDATE semantic_history_repairs SET status = 'rolled_back', cleanup_ids_json = ?, index_status = 'pending' WHERE repair_id = ?",
+                (_json_dumps(plan["new_memory_ids"]), repair_id),
+            )
+            generation = self._increment_compaction_generation_locked(namespace)
+            return {
+                "status": "rolled_back",
+                "reason": "",
+                "repair_id": repair_id,
+                "compaction_generation": generation,
+                "restored_memory_ids": plan["affected_memory_ids"],
+            }
+
+    def get_memory_replacements(
+        self, *, namespace: Namespace, memory_id: str, cross_conversation: bool = False
+    ) -> list[str] | None:
+        return self.get_memory_replacement_map(
+            namespace=namespace, memory_ids=(memory_id,), cross_conversation=cross_conversation
+        ).get(memory_id)
+
+    def get_memory_replacement_map(
+        self, *, namespace: Namespace, memory_ids: tuple[str, ...], cross_conversation: bool = False
+    ) -> dict[str, list[str]]:
+        scope, params = self._scope_clause(namespace, with_conversation=not cross_conversation)
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT status, plan_json FROM semantic_history_repairs WHERE {scope} ORDER BY created_at DESC, rowid DESC",
+                params,
+            ).fetchall()
+        wanted = set(memory_ids)
+        result: dict[str, list[str]] = {}
+        for row in rows:
+            plan = json.loads(row["plan_json"])
+            for memory_id in wanted - result.keys():
+                if row["status"] == "applied" and memory_id in plan["replacements"]:
+                    result[memory_id] = list(plan["replacements"][memory_id])
+                elif row["status"] == "rolled_back" and memory_id in plan["new_memory_ids"]:
+                    result[memory_id] = [
+                        sid for sid, replacements in plan["replacements"].items() if memory_id in replacements
+                    ]
+        return result
+
+    def list_semantic_index_cleanup(self, *, namespace: Namespace) -> list[dict[str, Any]]:
+        scope, params = self._scope_clause(namespace)
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT repair_id, cleanup_ids_json FROM semantic_history_repairs WHERE {scope} AND index_status = 'pending'",
+                params,
+            ).fetchall()
+        return [{"repair_id": row["repair_id"], "source_ids": json.loads(row["cleanup_ids_json"])} for row in rows]
+
+    def get_semantic_history_revision(self, *, namespace: Namespace, cross_conversation: bool = False) -> str:
+        from ..projection import stable_projection_hash
+
+        scope, params = self._scope_clause(namespace, with_conversation=not cross_conversation)
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT repair_id, status FROM semantic_history_repairs WHERE {scope} ORDER BY repair_id", params
+            ).fetchall()
+        return stable_projection_hash([tuple(row) for row in rows]) if rows else ""
+
+    def complete_semantic_index_cleanup(self, *, namespace: Namespace, repair_id: str, source_ids: list[str]) -> None:
+        scope, params = self._scope_clause(namespace)
+        with self._lock, self._conn:
+            self._conn.execute(
+                f"UPDATE semantic_history_repairs SET index_status = 'indexed' WHERE {scope} AND repair_id = ? AND cleanup_ids_json = ?",
+                [*params, repair_id, _json_dumps(source_ids)],
+            )
+
     def delete_namespace(self, *, namespace: Namespace) -> list[str]:
         """定向遗忘:删该硬隔离边界下全部记忆,返回被删的 source_id(供上层同步清 VectorIndex)。"""
         scope_clause, params = self._scope_clause(namespace)
         deleted_ids: list[str] = []
         with self._lock, self._conn:
+            repairs = self._conn.execute(
+                f"SELECT plan_json FROM semantic_history_repairs WHERE {scope_clause}", params
+            ).fetchall()
+            for repair in repairs:
+                plan = json.loads(repair["plan_json"])
+                deleted_ids.extend(plan["affected_memory_ids"])
+                deleted_ids.extend(plan["new_memory_ids"])
             for table, id_col in (
                 ("messages", "source_id"),
                 ("summaries", "summary_id"),
@@ -4008,6 +4530,12 @@ class SQLiteMemoryStore(MemoryStore):
                 ).fetchall()
                 deleted_ids.extend(str(r["sid"]) for r in rows)
                 self._conn.execute(f"DELETE FROM {table} WHERE {scope_clause}", params)
-            for table in ("turns", "conversation_states", "prompt_projections", "projection_audits"):
+            for table in (
+                "turns",
+                "conversation_states",
+                "prompt_projections",
+                "projection_audits",
+                "semantic_history_repairs",
+            ):
                 self._conn.execute(f"DELETE FROM {table} WHERE {scope_clause}", params)
-        return deleted_ids
+        return list(dict.fromkeys(deleted_ids))

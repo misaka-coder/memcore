@@ -31,6 +31,8 @@ from memcore import (
     canonical_json_bytes,
     is_strict_message_prefix,
     stable_projection_hash,
+    render_tool_result_text,
+    render_tool_use_text,
 )
 from memcore.projection import PROJECTION_VERSION, sanitize_projection_payload
 
@@ -127,6 +129,61 @@ class ProjectionBase(unittest.TestCase):
 
 
 class CanonicalRenderingTests(ProjectionBase):
+    def test_tool_readback_keeps_original_output_once_and_preserves_independent_fields(self) -> None:
+        for label, output in (
+            ("text", "卡片Ａ（原样）\n完整目录证据"),
+            ("json", {"text": "完整目录证据", "source_id": "card-original", "cursor": "next-original"}),
+        ):
+            with self.subTest(label=label):
+                handle = self.mem.begin_turn(stimuli=[_stimulus("回读", source_id=f"{label}-question")])
+                self.mem.append_action(
+                    turn_id=handle.turn_id,
+                    kind="tool.open_memory.call",
+                    correlation_id=label,
+                    semantic_text=render_tool_use_text(tool_input={"query": "原始查询"}),
+                    payload={"input": {"query": "原始查询"}},
+                    source_id=f"{label}-action",
+                )
+                self.mem.append_observation(
+                    turn_id=handle.turn_id,
+                    kind="tool.open_memory.result",
+                    correlation_id=label,
+                    semantic_text=render_tool_result_text(result=output, source="native_openai"),
+                    payload={"output": output, "source": "native_openai", "status": "success", "extra": "独有字段"},
+                    source_id=f"{label}-result",
+                )
+                before = self.mem.build_context_projection(provider_profile=OPENAI_PROFILE).payloads
+                content = self.mem.open_memory(memory_id=f"{label}-result", view="content")["text"]
+                self.assertEqual(content.count("完整目录证据"), 1)
+                self.assertIn("独有字段", content)
+                self.assertIn("native_openai", content)
+                if isinstance(output, str):
+                    self.assertIn(output, content)
+                else:
+                    self.assertIn("card-original", content)
+                    self.assertIn("next-original", content)
+                self.assertEqual(
+                    self.store.get_entry(namespace=self.namespace, source_id=f"{label}-result").payload["output"],
+                    output,
+                )
+                self.assertEqual(self.mem.build_context_projection(provider_profile=OPENAI_PROFILE).payloads, before)
+                self.mem.complete_turn(turn_id=handle.turn_id, semantic_text="收到", provider_output_raw="收到")
+
+        handle = self.mem.begin_turn(stimuli=[_stimulus("核对独有说明", source_id="independent-question")])
+        self.mem.append_entry(_action("independent", source_id="independent-action"), turn_id=handle.turn_id)
+        self.mem.append_observation(
+            turn_id=handle.turn_id,
+            kind="tool.open_memory.result",
+            correlation_id="independent",
+            semantic_text="补充说明，只在这里保存",
+            payload={"output": "独立原始结果"},
+            source_id="independent-result",
+        )
+        content = self.mem.open_memory(memory_id="independent-result", view="content")["text"]
+        self.assertIn("补充说明", content)
+        self.assertIn("只在这里保存", content)
+        self.assertIn("独立原始结果", content)
+
     def test_renderer_resolution_prefers_exact_then_longest_prefix(self) -> None:
         registry = RendererRegistry()
 

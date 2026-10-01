@@ -72,17 +72,8 @@ def build_timeline_read_units(
     """Group raw entries into complete turns/standalone units, then project each unit."""
 
     resolved_projection = normalize_timeline_projection(projection)
-    grouped: dict[str, list[TimelineEntry]] = {}
-    for entry in entries:
-        conversation = entry.namespace.conversation_id
-        unit_id = (
-            f"turn:{conversation}:{entry.turn_id}" if entry.turn_id else f"source:{conversation}:{entry.source_id}"
-        )
-        grouped.setdefault(unit_id, []).append(entry)
-
     units: list[TimelineReadUnit] = []
-    for unit_id, raw_entries in grouped.items():
-        ordered = tuple(sorted(raw_entries, key=_entry_key))
+    for unit_id, sort_key, ordered in group_timeline_entries(entries):
         projected: list[dict[str, Any]] = []
         compacted = 0
         for entry in ordered:
@@ -101,13 +92,33 @@ def build_timeline_read_units(
         units.append(
             TimelineReadUnit(
                 unit_id=unit_id,
-                sort_key=min(_entry_key(entry) for entry in ordered),
+                sort_key=sort_key,
                 entries=ordered,
                 projected_messages=tuple(projected),
                 compacted_entry_count=compacted,
             )
         )
-    return sorted(units, key=lambda unit: (unit.sort_key, unit.unit_id))
+    return units
+
+
+def group_timeline_entries(
+    entries: Sequence[TimelineEntry],
+) -> list[tuple[str, StableKey, tuple[TimelineEntry, ...]]]:
+    """Identify complete logical groups without rendering their bodies."""
+
+    grouped: dict[str, list[TimelineEntry]] = {}
+    for entry in entries:
+        conversation = entry.namespace.conversation_id
+        unit_id = (
+            f"turn:{conversation}:{entry.turn_id}" if entry.turn_id else f"source:{conversation}:{entry.source_id}"
+        )
+        grouped.setdefault(unit_id, []).append(entry)
+
+    groups = []
+    for unit_id, raw_entries in grouped.items():
+        ordered = tuple(sorted(raw_entries, key=_entry_key))
+        groups.append((unit_id, _entry_key(ordered[0]), ordered))
+    return sorted(groups, key=lambda group: (group[1], group[0]))
 
 
 def project_timeline_entry(

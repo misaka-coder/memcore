@@ -199,12 +199,12 @@ class MemoryCatalogNavigationTests(unittest.TestCase):
         self.assertIn("第一条原始证据", opened["text"])
         self.assertIn("memory_not_found_or_out_of_scope", opened["text"])
 
-    def test_open_memory_batch_rejects_sources_and_conflicting_selectors(self) -> None:
+    def test_open_memory_batch_sources_isolates_missing_nodes_and_rejects_conflicting_selectors(self) -> None:
         sources = self.mem.open_memory(memory_ids=["raw-a"], view="sources")
         conflicting = self.mem.open_memory(memory_id="raw-a", memory_ids=["raw-b"])
 
-        self.assertEqual(sources["status"], "invalid_filter")
-        self.assertEqual(sources["reason"], "batch_sources_not_supported")
+        self.assertEqual(sources["status"], "partial")
+        self.assertEqual(sources["result"]["items"][0]["reason"], "memory_not_found_or_out_of_scope")
         self.assertEqual(conflicting["status"], "invalid_filter")
         self.assertEqual(
             conflicting["reason"],

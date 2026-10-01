@@ -14,7 +14,7 @@ from typing import Any, Iterable
 
 from ..errors import SchemaError
 
-CURRENT_SCHEMA_VERSION = 7
+CURRENT_SCHEMA_VERSION = 9
 
 _CORE_TABLES = frozenset({"messages", "summaries", "semantic_summaries"})
 _TRACE_CATEGORIES = frozenset({"event_trace", "material_trace", "tool_trace"})
@@ -22,6 +22,26 @@ _SAFE_KIND_SEGMENT = re.compile(r"[^a-z0-9_-]+")
 
 
 LATEST_SCHEMA_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS semantic_history_repairs (
+        repair_id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL DEFAULT '',
+        user_id TEXT NOT NULL,
+        domain_id TEXT NOT NULL DEFAULT '',
+        conversation_id TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL,
+        plan_json TEXT NOT NULL,
+        backup_json TEXT NOT NULL,
+        applied_fingerprint TEXT NOT NULL,
+        cleanup_ids_json TEXT NOT NULL,
+        index_status TEXT NOT NULL DEFAULT 'pending',
+        created_at INTEGER NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_semantic_repairs_scope
+    ON semantic_history_repairs(tenant_id, user_id, domain_id, conversation_id, created_at)
+    """,
     """
     CREATE TABLE IF NOT EXISTS messages (
         source_id TEXT PRIMARY KEY,
@@ -79,6 +99,12 @@ LATEST_SCHEMA_STATEMENTS = (
     """
     CREATE INDEX IF NOT EXISTS idx_messages_scope_turn
     ON messages(tenant_id, user_id, domain_id, conversation_id, turn_id, seq_no)
+    """,
+    # Ownership must be resolved before checking the caller's namespace. The
+    # scope-prefixed index cannot seek by turn_id alone, including legacy misses.
+    """
+    CREATE INDEX IF NOT EXISTS idx_messages_turn_seq
+    ON messages(turn_id, seq_no)
     """,
     """
     CREATE INDEX IF NOT EXISTS idx_messages_scope_correlation
@@ -167,6 +193,7 @@ LATEST_SCHEMA_STATEMENTS = (
         memory_title TEXT NOT NULL DEFAULT '',
         catalog_hint TEXT NOT NULL DEFAULT '',
         topic_headings_json TEXT NOT NULL DEFAULT '[]',
+        participant_refs_json TEXT NOT NULL DEFAULT '[]',
         catalog_schema_version INTEGER NOT NULL DEFAULT 0,
         semantic_tags_json TEXT NOT NULL DEFAULT '[]',
         memory_metadata_json TEXT NOT NULL DEFAULT '{}',
@@ -315,6 +342,10 @@ LATEST_SCHEMA_STATEMENTS = (
     ON turn_projection_settlement(
         tenant_id, user_id, domain_id, conversation_id, turn_id, provider_profile
     )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_settlement_turn_profile
+    ON turn_projection_settlement(turn_id, provider_profile)
     """,
     """
     CREATE TABLE IF NOT EXISTS settled_prompt_projection (
@@ -489,6 +520,7 @@ _REQUIRED_COLUMNS = {
             "recurring_topics_json",
             "important_people_json",
             "open_loops_json",
+            "participant_refs_json",
             *_V4_SEMANTIC_COLUMNS,
             "semantic_tags_json",
             "memory_metadata_json",
@@ -586,7 +618,7 @@ def migrate_database(connection: sqlite3.Connection) -> int:
         else:
             if has_core != _CORE_TABLES:
                 raise SchemaError("sqlite_schema_partial_core_tables")
-            if version not in {0, 1, 2, 3, 4, 5, 6, CURRENT_SCHEMA_VERSION}:
+            if version not in {0, 1, 2, 3, 4, 5, 6, 7, 8, CURRENT_SCHEMA_VERSION}:
                 raise SchemaError("sqlite_schema_unsupported_version")
             if version < 2:
                 _migrate_v1_to_v2(connection)
@@ -602,6 +634,10 @@ def migrate_database(connection: sqlite3.Connection) -> int:
                 _migrate_v5_to_v6(connection)
             if version < 7:
                 _migrate_v6_to_v7(connection)
+            if version < 8:
+                _add_missing_columns(
+                    connection, "semantic_summaries", {"participant_refs_json": "TEXT NOT NULL DEFAULT '[]'"}
+                )
 
         _execute_statements(connection, _CATALOG_INDEX_STATEMENTS)
         _validate_latest_schema(connection)

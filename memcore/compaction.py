@@ -1,7 +1,7 @@
-"""写侧:三层压缩(raw→摘要→语义)+ 强化合并。注入 LLMClient,按 namespace 加锁同步执行。
+"""写侧:三层压缩(raw→摘要→连续批次语义记忆)。注入 LLMClient,按 namespace 加锁同步执行。
 
-差值关系(批量 < 触发数)由 MemoryConfig 保证。强化合并按主题重叠驱动(非位置淘汰):
-新长期记忆形成时,回看最近 N 条,与重叠最高且 >= 阈值者融合,否则新建。
+差值关系(批量 < 触发数)由 MemoryConfig 保证。每个连续阶段批次创建独立长期记录。
+后续话题不覆盖早期记录；历史强化格式仅保持可解释。
 
 并发:压缩核心每 namespace 串行锁,压缩中不与自身重入(代际安全);MemorySystem 提供后台提交入口。
 向量索引用 outbox:先写库(pending),upsert 成功后 set_index_status('indexed')。
@@ -27,15 +27,16 @@ from .errors import SchemaError, StaleSnapshotError
 from .index.base import VectorIndex
 from .index.entry_builder import build_semantic_entry, build_summary_entry
 from .index.metadata_filters import INDEX_SCHEMA_KEY, INDEX_SCHEMA_VERSION
+from .kind_contract import USER_CHAT_KINDS
 from .llm.base import LLMClient, LLMRequest, ResponseFormat, TaskType
 from .memory_catalog import (
-    CATALOG_SCHEMA_VERSION,
     collect_participant_refs,
+    normalize_participant_refs,
     count_logical_turns,
     normalize_catalog_fields,
 )
 from .namespace import Namespace
-from .prompts import PromptOverrides, build_reinforcement_prompts, build_semantic_prompts, build_summary_prompts
+from .prompts import PromptOverrides, build_semantic_prompts, build_summary_prompts
 from .projection import (
     ProjectionAdapter,
     ProjectionLedger,
@@ -649,7 +650,7 @@ class Compaction:
             }
         )
 
-    # --- 阶段摘要 → 长期语义记忆(含强化合并) ---
+    # --- 阶段摘要 → 独立、连续的长期语义记忆 ---
 
     def _semanticize_episodic(self, namespace: Namespace, result: dict[str, Any]) -> None:
         if self._stop_if_shutdown(result):
@@ -659,7 +660,53 @@ class Compaction:
         if len(eps) < cfg.episodic_compact_trigger_count:
             return
         batch = eps[: cfg.episodic_compact_batch_size]
+        from .semantic_history import contiguous_episode_ids
+
+        history = self.store.get_episodic_summaries_by_time_range(namespace=namespace, start_ts=None, end_ts=None)
+        if not contiguous_episode_ids(history, [str(item["summary_id"]) for item in batch]):
+            result["status"] = "semantic_repair_required"
+            result["reason"] = "noncontiguous_episode_batch"
+            return
         generation, _ = self.store.get_conversation_generations(namespace=namespace)
+        record = self.prepare_semantic_record(namespace=namespace, batch=batch)
+        if record is None:
+            result["semantic_retry_pending"] += 1
+            return
+
+        snapshot = SemanticSnapshot(
+            namespace_key=(
+                namespace.tenant_id or "",
+                namespace.user_id,
+                namespace.domain_id or "",
+                namespace.conversation_id or "",
+            ),
+            compaction_generation=generation,
+            summary_ids=tuple(str(summary["summary_id"]) for summary in batch),
+            summary_row_versions=tuple(
+                (str(summary["summary_id"]), int(summary.get("row_version") or 0)) for summary in batch
+            ),
+        )
+        if self._stop_if_shutdown(result):
+            return
+        committed = self.store.commit_semantic_batch(
+            namespace=namespace,
+            commit=SemanticCommitInput(snapshot=snapshot, semantic_record=record),
+        )
+        if not committed.committed or committed.semantic_record is None:
+            result["status"] = committed.status
+            result["reason"] = committed.reason
+            return
+        saved = committed.semantic_record
+        result["compaction_generation"] = committed.compaction_generation
+        result["semantic_created"] += 1
+        self._record_index_result(
+            result,
+            self._index(build_semantic_entry(saved), saved["semantic_id"]),
+        )
+
+    def prepare_semantic_record(self, *, namespace: Namespace, batch: list[dict[str, Any]]) -> dict[str, Any] | None:
+        """Generate one complete record without publishing or consuming sources."""
+        cfg = self.config
         call = self._call_json(
             TaskType.SEMANTIC,
             *build_semantic_prompts(
@@ -676,11 +723,8 @@ class Compaction:
                 "topic_headings": [],
             },
         )
-        if self._stop_if_shutdown(result):
-            return
         if not call.ok or not _has_semantic_content(call.data):
-            result["semantic_retry_pending"] += 1
-            return
+            return None
         payload = call.data
         start_ts = min(int(s.get("period_start_ts") or s.get("timestamp") or 0) for s in batch)
         end_ts = max(int(s.get("period_end_ts") or s.get("timestamp") or 0) for s in batch)
@@ -714,6 +758,7 @@ class Compaction:
             "important_people": _str_list(payload.get("important_people")),
             "open_loops": _str_list(payload.get("open_loops")),
             **normalize_catalog_fields(payload),
+            "participant_refs": self._source_participants(namespace, batch),
             "memory_metadata": semantic_metadata,
             "source_summary_ids": [str(s["summary_id"]) for s in batch],
         }
@@ -722,61 +767,17 @@ class Compaction:
             incoming["memory_metadata"].get("topic_terms"),
         )
 
-        target = self._find_reinforcement_target(namespace, incoming)
-        if target is not None:
-            record = self._merge_reinforcement(target, incoming)
-            if self._stop_if_shutdown(result):
-                return
-            reinforcement_target_id = str(target["semantic_id"])
-            reinforcement_target_row_version = int(target.get("row_version") or 0)
-        else:
-            record = {
-                "semantic_id": self._stable_semantic_id(
-                    namespace,
-                    tuple(str(summary["summary_id"]) for summary in batch),
-                ),
-                "reinforcement_count": 1,
-                "last_reinforced_ts": end_ts,
-                **incoming,
-            }
-            reinforcement_target_id = ""
-            reinforcement_target_row_version = 0
+        record = {
+            "semantic_id": self._stable_semantic_id(
+                namespace,
+                tuple(str(summary["summary_id"]) for summary in batch),
+            ),
+            "reinforcement_count": 1,
+            "last_reinforced_ts": end_ts,
+            **incoming,
+        }
 
-        snapshot = SemanticSnapshot(
-            namespace_key=(
-                namespace.tenant_id or "",
-                namespace.user_id,
-                namespace.domain_id or "",
-                namespace.conversation_id or "",
-            ),
-            compaction_generation=generation,
-            summary_ids=tuple(str(summary["summary_id"]) for summary in batch),
-            summary_row_versions=tuple(
-                (str(summary["summary_id"]), int(summary.get("row_version") or 0)) for summary in batch
-            ),
-            reinforcement_target_id=reinforcement_target_id,
-            reinforcement_target_row_version=reinforcement_target_row_version,
-        )
-        if self._stop_if_shutdown(result):
-            return
-        committed = self.store.commit_semantic_batch(
-            namespace=namespace,
-            commit=SemanticCommitInput(snapshot=snapshot, semantic_record=record),
-        )
-        if not committed.committed or committed.semantic_record is None:
-            result["status"] = committed.status
-            result["reason"] = committed.reason
-            return
-        saved = committed.semantic_record
-        result["compaction_generation"] = committed.compaction_generation
-        if target is not None:
-            result["reinforced"] += 1
-        else:
-            result["semantic_created"] += 1
-        self._record_index_result(
-            result,
-            self._index(build_semantic_entry(saved), saved["semantic_id"]),
-        )
+        return record
 
     def _stable_semantic_id(self, namespace: Namespace, summary_ids: tuple[str, ...]) -> str:
         return stable_projection_hash(
@@ -788,86 +789,29 @@ class Compaction:
                     namespace.conversation_id or "",
                 ],
                 "summary_ids": list(summary_ids),
+                "semantic_lineage_version": 2,
                 "semantic_schema_version": self.config.compaction_schema_version,
                 "summary_profile": f"{self.config.summary_profile}:semantic",
             }
         )
 
-    def _find_reinforcement_target(self, namespace: Namespace, incoming: dict[str, Any]) -> dict[str, Any] | None:
-        cfg = self.config
-        candidates = self.store.get_recent_semantic_summaries(
-            namespace=namespace, limit=cfg.semantic_reinforcement_lookback
+    def _source_participants(self, namespace: Namespace, records: list[dict[str, Any]]) -> list[dict[str, str]]:
+        try:
+            refs = self.store.get_catalog_participant_refs(
+                namespace=namespace,
+                memory_ids=tuple(str(record.get("summary_id") or record.get("semantic_id")) for record in records),
+            )
+        except NotImplementedError:
+            refs = {}
+        return normalize_participant_refs(
+            [
+                ref
+                for record in records
+                for ref in refs.get(
+                    str(record.get("summary_id") or record.get("semantic_id")), record.get("participant_refs") or []
+                )
+            ]
         )
-        best, best_score = None, 0
-        for cand in candidates:
-            score = _overlap_score(cand, incoming)
-            if score >= cfg.semantic_reinforcement_min_overlap and score > best_score:
-                best, best_score = cand, score
-        return best
-
-    def _merge_reinforcement(self, target: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
-        existing_count = max(1, int(target.get("reinforcement_count") or 1))
-        blended = (float(target.get("importance") or 0.5) * existing_count + float(incoming["importance"])) / (
-            existing_count + 1
-        )
-        fallback = {
-            "semantic_summary": target.get("semantic_summary") or incoming["semantic_summary"],
-            "importance": max(float(target.get("importance") or 0.0), float(incoming["importance"]), blended),
-            "stable_facts": _merge_unique(target.get("stable_facts"), incoming["stable_facts"]),
-            "recurring_topics": _merge_unique(target.get("recurring_topics"), incoming["recurring_topics"]),
-            "important_people": _merge_unique(target.get("important_people"), incoming["important_people"]),
-            "open_loops": _merge_unique(target.get("open_loops"), incoming["open_loops"]),
-            "memory_title": target.get("memory_title") or incoming.get("memory_title") or "",
-            "catalog_hint": target.get("catalog_hint") or incoming.get("catalog_hint") or "",
-            "topic_headings": _merge_unique(target.get("topic_headings"), incoming.get("topic_headings")),
-        }
-        call = self._call_json(
-            TaskType.REINFORCEMENT,
-            *build_reinforcement_prompts(
-                existing_text=_render_semantic_text(target, tz=self.timezone),
-                incoming_text=_render_semantic_text(incoming, tz=self.timezone),
-                overrides=self.overrides,
-                enable_flavor=self.config.enable_flavor,
-            ),
-            fallback=fallback,
-        )
-        payload = call.data
-        catalog = normalize_catalog_fields(payload)
-        if not catalog["memory_title"]:
-            catalog["memory_title"] = str(fallback["memory_title"] or "")
-        if not catalog["catalog_hint"]:
-            catalog["catalog_hint"] = str(fallback["catalog_hint"] or "")
-        if not catalog["topic_headings"]:
-            catalog["topic_headings"] = list(fallback["topic_headings"])
-        catalog["catalog_schema_version"] = (
-            CATALOG_SCHEMA_VERSION if catalog["memory_title"] and catalog["catalog_hint"] else 0
-        )
-        return {
-            "semantic_id": target["semantic_id"],  # 同 id 覆盖 = 强化
-            "timestamp": incoming["timestamp"],
-            "period_start_ts": min(
-                int(target.get("period_start_ts") or 0) or incoming["period_start_ts"], incoming["period_start_ts"]
-            ),
-            "period_end_ts": max(int(target.get("period_end_ts") or 0), incoming["period_end_ts"]),
-            "date_label": incoming["date_label"],
-            "time_of_day": incoming["time_of_day"],
-            "importance": _clamp01(payload.get("importance", fallback["importance"])),
-            "semantic_summary": str(payload.get("semantic_summary") or fallback["semantic_summary"]),
-            "stable_facts": _str_list(payload.get("stable_facts")) or fallback["stable_facts"],
-            "recurring_topics": _str_list(payload.get("recurring_topics")) or fallback["recurring_topics"],
-            "important_people": _str_list(payload.get("important_people")) or fallback["important_people"],
-            "open_loops": _str_list(payload.get("open_loops")) or fallback["open_loops"],
-            **catalog,
-            "memory_metadata": _merge_memory_metadata(
-                target.get("memory_metadata"),
-                incoming["memory_metadata"],
-                enable_flavor=self.config.enable_flavor,
-            ),
-            "semantic_tags": _merge_unique(target.get("semantic_tags"), incoming.get("semantic_tags")),
-            "source_summary_ids": _merge_unique(target.get("source_summary_ids"), incoming["source_summary_ids"]),
-            "reinforcement_count": int(target.get("reinforcement_count") or 1) + 1,
-            "last_reinforced_ts": incoming["timestamp"],
-        }
 
     # --- 工具 ---
 
@@ -927,13 +871,7 @@ class Compaction:
         rendered: list[str] = []
         for record in batch:
             entry = TimelineEntry.from_record(record)
-            if entry.kind in {
-                "message.user",
-                "message.user.observed",
-                "message.user.voice",
-                "message.assistant",
-                "message.assistant.voice",
-            }:
+            if entry.kind in USER_CHAT_KINDS or entry.kind in {"message.assistant", "message.assistant.voice"}:
                 rendered.append(render_summary_chat_entry(entry, tz=self.timezone))
                 continue
             if entry.turn_role is TurnRole.FINAL:
@@ -1065,60 +1003,6 @@ def _highest_priority(*values: Any) -> str:
     return max(valid, key=ranking.__getitem__) if valid else "normal"
 
 
-def _merge_memory_metadata(*values: Any, enable_flavor: bool) -> dict[str, Any]:
-    metadata_values = [value for value in values if isinstance(value, dict)]
-    merged = {
-        "turn_intent": next(
-            (str(value.get("turn_intent") or "") for value in reversed(metadata_values) if value.get("turn_intent")),
-            "",
-        ),
-        "memory_facets": _merge_unique(*(value.get("memory_facets") for value in metadata_values)),
-        "about_roles": _merge_unique(*(value.get("about_roles") for value in metadata_values)),
-        "entity_anchors": _merge_unique(*(value.get("entity_anchors") for value in metadata_values)),
-        "topic_terms": _merge_unique(*(value.get("topic_terms") for value in metadata_values)),
-        "retrieval_priority": _highest_priority(*(value.get("retrieval_priority") for value in metadata_values)),
-        "mood_tags": _merge_unique(*(value.get("mood_tags") for value in metadata_values)),
-    }
-    return coerce_memory_metadata(merged, enable_flavor=enable_flavor).to_dict()
-
-
-def _overlap_score(candidate: dict[str, Any], incoming: dict[str, Any]) -> int:
-    def norm_set(record: dict[str, Any], key: str) -> set[str]:
-        return {normalize_text(x) for x in (record.get(key) or []) if normalize_text(x)}
-
-    candidate_metadata = candidate.get("memory_metadata") if isinstance(candidate.get("memory_metadata"), dict) else {}
-    incoming_metadata = incoming.get("memory_metadata") if isinstance(incoming.get("memory_metadata"), dict) else {}
-    candidate_entities = {
-        normalize_text(item).casefold()
-        for item in candidate_metadata.get("entity_anchors") or []
-        if normalize_text(item)
-    }
-    incoming_entities = {
-        normalize_text(item).casefold()
-        for item in incoming_metadata.get("entity_anchors") or []
-        if normalize_text(item)
-    }
-    shared_entities = candidate_entities & incoming_entities
-    if not shared_entities:
-        return 0
-    candidate_facets = set(candidate_metadata.get("memory_facets") or [])
-    incoming_facets = set(incoming_metadata.get("memory_facets") or [])
-    if candidate_facets and incoming_facets and not (candidate_facets & incoming_facets):
-        return 0
-    candidate_topics = {
-        normalize_text(item).casefold() for item in candidate_metadata.get("topic_terms") or [] if normalize_text(item)
-    }
-    incoming_topics = {
-        normalize_text(item).casefold() for item in incoming_metadata.get("topic_terms") or [] if normalize_text(item)
-    }
-    proposition_overlap = len(candidate_topics & incoming_topics)
-    proposition_overlap += len(norm_set(candidate, "stable_facts") & norm_set(incoming, "stable_facts"))
-    proposition_overlap += len(norm_set(candidate, "recurring_topics") & norm_set(incoming, "recurring_topics"))
-    if proposition_overlap <= 0:
-        return 0
-    return len(shared_entities) + proposition_overlap
-
-
 def _source_memory_metadata(record: dict[str, Any]) -> dict[str, Any]:
     raw = record.get("memory_metadata")
     if not isinstance(raw, dict):
@@ -1141,29 +1025,3 @@ def _source_memory_metadata(record: dict[str, Any]) -> dict[str, Any]:
     if priority in RETRIEVAL_PRIORITIES:
         metadata["retrieval_priority"] = priority
     return metadata
-
-
-def _render_semantic_text(record: dict[str, Any], *, tz: str) -> str:
-    start = _positive_ts(record.get("period_start_ts"))
-    end = _positive_ts(record.get("period_end_ts")) or _positive_ts(record.get("timestamp"))
-    time_label = format_time_range_label(start_ts=start, end_ts=end, tz=tz)
-    lines = [f"时间范围: {time_label}" if time_label else "时间范围: 未提供"]
-    for key, label in (
-        ("semantic_summary", "长期印象"),
-        ("stable_facts", "稳定事实"),
-        ("recurring_topics", "反复话题"),
-        ("important_people", "重要人物"),
-        ("open_loops", "待续线索"),
-    ):
-        values = (
-            [normalize_text(record.get(key))]
-            if key == "semantic_summary"
-            else [normalize_text(item) for item in (record.get(key) or [])]
-        )
-        rendered = "; ".join(item for item in values if item)
-        if rendered:
-            lines.append(f"{label}: {rendered}")
-    metadata = _source_memory_metadata(record)
-    if metadata:
-        lines.append("memory_metadata: " + canonical_json_bytes(metadata).decode("utf-8"))
-    return "\n".join(lines)

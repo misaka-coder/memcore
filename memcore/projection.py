@@ -16,9 +16,9 @@ from enum import Enum
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from .errors import SchemaError, StaleSnapshotError
-from .kind_contract import is_valid_kind, is_valid_kind_prefix, normalize_kind
+from .kind_contract import USER_CHAT_KINDS, is_valid_kind, is_valid_kind_prefix, normalize_kind
 from .namespace import Namespace
-from .rendering import render_semantic_snippet, render_summary_snippet
+from .rendering import render_semantic_snippet, render_summary_snippet, render_tool_result_text, render_tool_use_text
 from .text_utils import normalize_text
 from .time_anchor import TIME_PERIOD_LABELS, timestamp_to_datetime_weekday_label
 from .timeline import TimelineEntry, TimelineEntryInput, TurnRole
@@ -1014,7 +1014,7 @@ def _render_user_chat_message(entry: TimelineEntry, timezone: str) -> str:
 
 
 def _is_user_chat_entry(entry: TimelineEntry) -> bool:
-    return str(entry.kind or "") in {"message.user", "message.user.observed", "message.user.voice"}
+    return entry.kind in USER_CHAT_KINDS
 
 
 def _tool_arguments_json(value: Any) -> str:
@@ -1053,10 +1053,26 @@ def _render_canonical_entry(entry: TimelineEntry, timezone: str) -> str:
         lines.append(f"correlation_id: {_display_scalar(entry.correlation_id)}")
     if entry.trust.value != "untrusted_data":
         lines.append(f"trust: {entry.trust.value}")
+    payload = dict(entry.payload)
     semantic_text = _display_multiline(entry.semantic_text)
+    # The host may persist both the original tool value and its generated text.
+    # Render that value once, preserving its original characters and other fields.
+    if entry.turn_role is TurnRole.OBSERVATION and "output" in payload:
+        generated = render_tool_result_text(result=payload["output"], source=payload.get("source", ""))
+        if entry.semantic_text == generated or (
+            isinstance(payload["output"], str) and entry.semantic_text == payload["output"]
+        ):
+            output, _ = _sanitize_value(payload.pop("output"), key="output")
+            semantic_text = (
+                output
+                if isinstance(output, str)
+                else json.dumps(output, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            )
+    elif entry.turn_role is TurnRole.ACTION and "input" in payload:
+        if entry.semantic_text == render_tool_use_text(tool_input=payload["input"]):
+            semantic_text = ""
     if semantic_text:
         lines.extend(("content:", semantic_text))
-    payload = dict(entry.payload)
     if str(payload.get("text") or "") == entry.semantic_text:
         payload.pop("text", None)
     if payload:

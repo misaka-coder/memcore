@@ -276,7 +276,7 @@ class CatalogKeywordTests(unittest.TestCase):
 
     def test_unsupported_store_and_ambiguous_ids_are_unavailable(self):
         self._episode("e", topics=["词"])
-        with patch.object(self.store, "get_catalog_keyword_pools", side_effect=NotImplementedError):
+        with patch.object(self.store, "get_catalog_keyword_matches", side_effect=NotImplementedError):
             result = self.mem.browse_memory(keywords=["词"])
         self.assertEqual(result["status"], "unavailable")
         self.store.add_semantic_summary(
@@ -317,7 +317,9 @@ class CatalogKeywordTests(unittest.TestCase):
         self.assertFalse(rejected["ok"])
         spec = next(s for s in build_native_memory_tool_specs(tool_format="plain") if s["name"] == "browse_memory")
         self.assertIn("keyword_match", spec["parameters"]["properties"])
-        self.assertIn("stored tags must contain", spec["parameters"]["properties"]["keywords"]["description"])
+        self.assertIn(
+            "stored tags or source utterances must contain", spec["parameters"]["properties"]["keywords"]["description"]
+        )
 
     def test_real_compaction_retains_raw_only_and_generated_summary_tags(self):
         self._raw("annotated", topics=["音画同步"])
@@ -354,7 +356,7 @@ class CatalogKeywordTests(unittest.TestCase):
                 mem.close()
                 reopened.close()
 
-    def test_large_lineage_batches_metadata_columns_without_loading_raw_bodies(self):
+    def test_large_keyword_lineage_batches_dialogue_bodies_without_payloads(self):
         ids = [f"r{i}" for i in range(405)]
         for sid in ids:
             self._raw(sid, topics=["共同词", sid])
@@ -368,7 +370,7 @@ class CatalogKeywordTests(unittest.TestCase):
         self.assertEqual(self._ids(found), ["e"])
         raw_reads = [q for q in queries if "SELECT source_id, memory_metadata_json" in q]
         self.assertEqual(len(raw_reads), 2)
-        self.assertTrue(all("content" not in q and "payload" not in q for q in raw_reads))
+        self.assertTrue(all("dialogue_text" in q and "payload" not in q for q in raw_reads))
 
     def test_display_and_pool_normalization_preserve_distinct_names_and_punctuation(self):
         self.assertEqual(

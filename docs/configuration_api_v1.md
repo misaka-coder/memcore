@@ -30,8 +30,8 @@ mem = MemorySystem(
 )
 ```
 
-`llm` must be an `LLMClient` instance. It is used only for summary, semantic,
-and reinforcement compaction tasks; MemCore retrieval does not call a verifier
+`llm` must be an `LLMClient` instance. It is used only for summary and semantic
+compaction tasks; MemCore retrieval does not call a verifier
 LLM. `timezone` is required and must be a valid IANA timezone name.
 
 `embedding` is always required. MemCore never silently falls back to hashed
@@ -65,7 +65,9 @@ class MyMemoryLLM(LLMClient):
 `LLMRequest` fields are `task_type`, `system_prompt`, `user_prompt`,
 `response_format` (currently `json`), `timeout_s`, `max_retries`,
 `temperature`, optional `fallback`, and provider-specific `extra`.
-`TaskType` values are `summary`, `semantic`, and `reinforcement`.
+`TaskType` values are `summary`, `semantic`, and legacy `reinforcement`.
+The current pipeline never invokes reinforcement: each continuous episode batch
+creates an independent semantic record. Legacy enum/prompt slots remain readable.
 
 The adapter must return `LLMResult`, not a raw string/dict. On a provider or
 JSON failure return `LLMResult(ok=False, data=fallback, error=..., attempts=...)`
@@ -93,13 +95,15 @@ values raise `ConfigError`; construction does not clamp them into valid values.
 | `episodic_compact_batch_size` | `5` | Positive integer and strictly smaller than `episodic_compact_trigger_count`. |
 | `semantic_visible_limit` | `5` | Positive integer; maximum visible semantic memories. |
 | `retrieval_result_token_budget` | `0` | Non-negative compatibility setting. Current Retrieval V2 facades take `result_token_budget` per call; native model schemas do not expose that control. `0` means no result-token cut. Do not expect a positive config value alone to cap native results. |
-| `native_timeline_page_token_budget` | `12000` | Positive integer; finite maximum for model-facing native timeline pages. A trusted direct `read_timeline(page_token_budget=0)` call remains the explicit unlimited diagnostic path. |
+| `native_timeline_page_token_budget` | `12000` | Positive integer; finite maximum for native timeline pages and the shared budget of all roots in a native `open_memory(sources)` page. Trusted direct zero-budget reads remain the unlimited diagnostic path. |
+| `native_sources_max_cards` | `8` | Integer from 1 through 32, excluding booleans; maximum roots in one native sources batch. It does not multiply the shared token budget. |
+| `native_sources_page_utf8_budget` | `48000` | Positive integer, excluding booleans; UTF-8 byte limit for the model's source projection, leaving room for host framing/cursor signatures. The host must also enforce its final transport limit; no body is silently cut. |
 | `projection_profile` | `canonical_user_assistant` | Non-empty profile name, normalized to lowercase. Use the actual provider profile at request/final/compaction boundaries when routing dynamically. |
 | `compaction_min_recent_turns` | `1` | Positive integer; minimum recent terminal turns retained outside the selected raw batch. |
 | `compaction_schema_version` | `2` | Positive integer; compaction contract generation. |
 | `summary_profile` | `timeline_v2` | Non-empty string identifying the summary contract/profile. |
-| `semantic_reinforcement_lookback` | `8` | Positive integer; number of recent semantic records considered for reinforcement. |
-| `semantic_reinforcement_min_overlap` | `2` | Integer at least `1`; minimum compatible-overlap score before reinforcement. |
+| `semantic_reinforcement_lookback` | `None` | Deprecated compatibility input. Explicit positive integers warn and have no effect. |
+| `semantic_reinforcement_min_overlap` | `None` | Deprecated compatibility input. Explicit positive integers warn and have no effect. |
 | `retrieval_limit` | `6` | Positive integer; default number of retrieval matches for trusted Python calls. It is not model-controlled in native tool schemas. |
 | `relaxation_stop_candidate_count` | `12` | Positive integer; candidate count at which structured relaxation stops. |
 | `retrieval_min_dense_score` | `0.0` | Non-negative finite number. |

@@ -220,6 +220,7 @@ Expose memory tools to the final chat model:
 - `read_timeline(time_range={"start_at": ..., "end_at": ...}, projection="conversation")` for exact hour/minute questions without calculating epoch; legacy date fields remain available for whole-day/coarse-period reads, or use it for expanding a raw retrieval `source_id` into complete nearby turns. The default view keeps dialogue/events full and returns reloadable compact evidence for operations/materials.
 - `browse_memory(date_from=..., date_to=...)` for broad multi-day overviews. It returns compact chronological cards plus stored-history coverage instead of loading the whole raw range. Continue an incomplete page with only `cursor`.
 - `browse_memory(keywords=[...], keyword_match="any")` for known names or concrete topics, with optional dates. A deduplicated summary/source tag must contain the query term; matching is normalized, case-insensitive and one-way, without embedding calls. `all` requires a stored match for every query; one tag may satisfy several queries. Exact and substring matches are returned together. Cards expose summary tags, matched queries in `matched_terms`, and one stored witness per query in `keyword_hits`. These are clues to open, not proof of a relationship. If a keyword cursor reports `catalog_changed_restart_required`, repeat the original query.
+- `browse_memory(participants=["qq:123456", "小周"], participant_match="all")` for cards containing known participants, with optional keywords/dates. IDs match exactly; nicknames use normalized full equality, not substring. `any` is the default; `all` requires each selector to match the flat source-derived list. Same-name people keep distinct IDs, and changed names are best queried by ID. The list is system-derived and inherited by independent semantic compaction; body mentions are not participants. Akane accepts bare QQ-number strings and projects each card once as nickname plus QQ number. Participant cursors and prefilter coverage follow the keyword rules; open raw evidence when attribution matters.
 - `open_memory(memory_id=..., view="content")` opens one selected raw/episodic/semantic node; `view="sources"` follows exact lineage to child episode cards or complete raw logical units. Raw sources default to `projection="conversation"`, so dialogue/events remain complete while large operation/Skill/tool/material bodies become compact records containing type, call/result linkage, status, `source_id`, and small retained anchors. Use `projection="full"` or `"tools"`, or open one compact `source_id` as `content`, only when that body is actually needed. Use sources only when summary content is insufficient.
 - Provider-native dispatch always applies `MemoryConfig.native_timeline_page_token_budget` as a finite maximum. Omitted/zero uses that maximum; a smaller model request is honored and a larger one is capped. If `status=partial`, inspect selected/returned token and logical-unit counts, then either continue with `read_timeline(cursor=next_cursor)` only or use `browse_memory` for an overview. One oversized turn is returned whole and marked explicitly. The native result keeps the readable rendered `text` plus navigation metadata and omits the duplicate structured `messages` body. Trusted host/diagnostic code may still call `MemorySystem.read_timeline(page_token_budget=0)` directly for an unlimited read and receives both messages and text.
 - `read_entry(source_id=..., detail="full")` is a raw-only compatibility adapter. New integrations use `open_memory(view="content")`.
@@ -308,9 +309,14 @@ carry the exact raw `source_id`. Consume history normally with
 from [`operation_projection_settlement_v1.md`](operation_projection_settlement_v1.md)
 to the final model prompt. Do not call store settlement methods directly.
 
-`open_memory(memory_ids=[...], view="card"|"content")` batch-opens selected
-nodes in request order and reports each node independently. Use a single
-`memory_id` for `sources`, because its cursor belongs to one lineage tree.
+`open_memory(memory_ids=[...], view="card"|"content"|"sources")` batch-opens
+selected nodes in request order and reports each independently. Sources shares
+one finite native token/byte budget; continue each tree with only its own cursor.
+Optional `speaker_ids` filters exact actual user Actor IDs within episodic
+conversation sources. It returns marked utterance excerpts, preserves historical
+names, and does not include assistants, targets or mentions as that person's
+speech. Use `source_id` to expand nearby full dialogue only when needed. Wrap
+nested cursors in the host's conversation policy and recheck every continuation.
 
 If the host app records tool calls or tool results into raw memory, prefer
 `record_tool_exchange(...)`. It writes typed action/observation records. Their

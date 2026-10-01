@@ -234,6 +234,8 @@ browse_memory(
     node_types=None,
     keywords=None,
     keyword_match="any",
+    participants=None,
+    participant_match=None,
     cross_conversation=False,
     page_size=50,
     cursor="",
@@ -242,7 +244,7 @@ browse_memory(
 
 Rules:
 
-- supply a time selector and/or nonempty `keywords`; choose `time_range` or
+- supply a time selector and/or nonempty `keywords` or `participants`; choose `time_range` or
   the `date_from/date_to` mode when time is known;
 - `date_to` is inclusive in date mode;
 - `node_types` defaults to `episodic`; available values are `episodic` and
@@ -262,7 +264,7 @@ result = mem.browse_memory(
 
 `keywords` is a read selector, not a new metadata write field. Each node's pool
 unions its own `entity_anchors/topic_terms` with the accepted tags of its exact
-raw sources. A semantic node also includes its child episode tags. This keeps
+raw sources, together with literal ordinary source utterances. A semantic node also includes its child episode tags and exact dialogue descendants. This keeps
 summary-generated terms searchable even when raw annotations are absent, and
 preserves source terms omitted from the summary's display metadata. Ordinary
 catalog search does not absorb explicit/never or operation/material source tags.
@@ -276,18 +278,21 @@ both fields and sources collapse to one term. Punctuation remains meaningful
 (`C++` and `C#` stay distinct); there is no minimum query length or word-boundary
 rule. There is no BM25, embedding, automatic synonym expansion, or silent
 fallback in this selector. `any` requires at least one keyword; `all` requires
-every keyword in one node's pool, and one stored tag may satisfy several queries.
+every keyword across one card's union; terms may occur in separate source messages.
+One stored tag or utterance may satisfy several queries. Observed and voice user
+messages and assistant speech participate regardless of fuzzy visibility; tool,
+material, action and observation bodies do not. Fuzzy admission remains unchanged.
 That does **not** prove the terms belong to the same event or relation.
 Dates constrain the card's overlapping period, not each individual source tag.
 Use `open_memory(content/sources)` for evidence and `retrieve_for_turn` for fuzzy
 expressions or history with missing tags. An empty keyword result does not prove
 the topic was never discussed.
 
-Pools are derived from current SQLite metadata in batches without reading raw
-bodies. Existing databases require no tag migration, LLM backfill, or vector
+Pools are derived from current SQLite metadata and authorized dialogue bodies in
+shared ID batches; each source is normalized once per query. Existing databases require no tag migration, LLM backfill, or vector
 reindex. Metadata repairs and source/namespace deletion take effect on the next
 read; surviving summaries retain their own stored tags. A custom store must
-implement `get_catalog_keyword_pools` and support unbounded catalog time reads;
+implement `get_catalog_keyword_matches` and support unbounded catalog time reads;
 unsupported keyword reads return `unavailable`, never an incomplete success.
 
 Important result fields:
@@ -314,11 +319,88 @@ not an exhaustive list of all matching tags. Normalized `keywords/keyword_match`
 appear at the result level. The complete backend pool is not copied into the
 model result.
 
+Raw hits are deduplicated by source ID, not text: one message matching several
+terms counts once; identical messages with different IDs count separately. Each
+card appears once and exposes `matched_source_count`. A raw match adds one short
+`match_preview` (source ID, historical speaker/time, up to 80 original characters)
+and opaque `match_ref`; the complete source ID list/body never enters the card.
+Tags retain `keyword_hits` independently. Missing lineage sets
+`keyword_evidence_complete=false`, so counts cannot claim complete evidence.
+
+Call `open_memory(match_ref=...)` alone to read complete matching utterances,
+then `open_memory(cursor=...)` alone. These results carry
+`source_mode="keyword_filtered"`, matched/returned/remaining counts and one
+evidence body. They are keyword excerpts, not complete dialogue. `all` is still
+card-wide, so a returned message need not individually contain every query term.
+Selectors, scope, fingerprint and paging budgets are frozen in the reference.
+Source changes return `source_changed_restart_required` with a fresh browse
+action. Native calls reuse existing token/byte budgets and do not truncate
+utterances or impose an additional match-count limit.
+
 Keyword cursors freeze selectors and a fingerprint of matching cards. If those
 results change between pages (including metadata repair or reinforcement), the
 continuation returns `invalid_filter/catalog_changed_restart_required`; repeat
 the original query to restart. Ordinary date-only cursors retain their existing
-stable-key continuation behavior. No persistent snapshot is created.
+stable-key continuation behavior. Semantic-history repair/rollback invalidates
+all affected scope's browse cursors, including date-only cursors. No persistent
+read snapshot is created.
+
+Participant example (no date required):
+
+```python
+result = mem.browse_memory(
+    participants=["qq:123456", "小周"],
+    participant_match="all",
+    keywords=["答辩"],
+)
+```
+
+`participants` accepts known stable Actor IDs or recorded nicknames. IDs match
+exactly and remain case-sensitive; a platform-prefixed value such as
+`qq:123456` selects an ID. Names match by full equality after NFKC, whitespace
+collapse and casefold, never substring, embeddings, or guessed aliases. Same-name
+people remain distinct by ID and all matching cards are retained. Each card uses
+the latest nonempty recorded nickname per ID within its source batch; an earlier
+nickname is not an alias registry. Use the stable ID when a nickname changed.
+Akane's adapter accepts a bare QQ-number string and converts it to `qq:<number>`.
+Other hosts own their platform-ID adapters.
+
+`participant_match=None` defaults to `any` (at least one selector has a match);
+`all` requires every selector to have a recorded match in the card's list.
+The participant, keyword, time and node-type dimensions intersect. One person's
+ID and nickname can satisfy two selectors; `all` does not assert distinct people
+or that people shared a topic, spoke, or had a relationship.
+
+Cards expose one flat `participant_refs=[{actor_id,display_name}]` list in trusted
+Python and generic native results. It is derived from actual source/target Actor
+fields, deduplicated by stable ID, not from body names, tags, or model-generated
+`important_people`. Ordinary lineage lookup excludes operation/material and
+explicit/never source entries. Missing annotations do not hide recorded actors.
+Episodic compaction records the list; independent semantic batches inherit
+it from their actual sources. Unknown participants remain `[]`. Existing records
+can derive missing lists from authorized exact lineage in bounded SQL batches,
+without reading raw bodies or making model calls. Missing/deleted sources
+contribute nothing; stored system-derived summary lists remain available.
+
+SQLite schema 8 adds an empty-default `participant_refs_json` to semantic rows;
+the automatic additive upgrade does not rewrite summaries, freeze new provider
+history, or require embedding reindex. Custom stores may implement
+`get_catalog_participant_refs`. Without it, ordinary reads retain their stored
+lists, while participant-filtered reads return `unavailable`.
+
+Akane projects each card's list once as `participants=["小林（QQ 123456）", ...]`,
+removing that card's `participant_refs`. Missing names render only the number;
+non-QQ IDs retain their actual platform identity. Storage and diagnostic APIs keep
+the structured refs. Do not attach a second rendered list or inject all names
+into topic keywords just to display participants.
+
+Participant results echo `participants/participant_match` at the result and
+receipt-selector level. `coverage.participant_filtered=false` describes history
+before this filter. A valid participant filter with no cards returns
+`empty/no_catalog_participant_matches`. Participant cursors freeze selectors and
+the matching-card fingerprint, including displayed identities; repaired or
+reinforced results require `catalog_changed_restart_required`, just like keyword
+cursors. Continuations send only `cursor` (nullable schema fields may be null).
 
 Stores may override `get_retrieval_records` to batch scoped node reads. Its base
 implementation delegates to existing single-node reads, so third-party stores
@@ -350,15 +432,19 @@ open_memory(
     cross_conversation=False,
     page_size=50,
     cursor="",
+    match_ref="",
+    speaker_ids=None,
+    page_token_budget=0,
+    page_byte_budget=0,
 ) -> dict
 ```
 
-`memory_id` opens one node. `memory_ids=[...]` batch-opens `card` or `content`
+`memory_id` opens one node. `memory_ids=[...]` batch-opens any view's
 nodes in request order and returns per-node `status/reason`; one unavailable ID
 does not discard successful siblings. The two selectors are mutually
-exclusive. Batch `sources` returns `invalid_filter/batch_sources_not_supported`
-because each lineage tree has its own lossless cursor; call it once per selected
-tree instead.
+exclusive. Duplicate IDs are opened once in a sources batch. Every sources tree
+keeps its own cursor; continue one tree with only its cursor, never the original
+batch selectors.
 
 ### Views
 
@@ -367,6 +453,38 @@ tree instead.
 | raw | compact identity | one projected raw entry | `empty/raw_node_has_no_sources` |
 | episodic | episode card | full episode summary | complete raw logical units |
 | semantic | semantic card | full semantic summary | exact child episode cards |
+
+Optional `speaker_ids=["qq:123456", "qq:654321"]` selects the actual recorded
+user speakers within episodic sources. IDs are exact and case-sensitive; several
+IDs select anyone in that list. `message.user`, `message.user.observed`, and
+`message.user.voice` entries with user origin and an actual matching Actor
+qualify. Assistant replies, target Actors, mentions and
+events cannot qualify as that person's utterance. Names are not resolved into
+IDs. Akane may normalize an ASCII QQ-number string to `qq:<number>` before
+calling MemCore. Historical nickname changes do not change the ID match.
+
+Omission or `null` means complete sources. An explicit empty array, nonstring,
+blank, surrounding whitespace, control characters or ID longer than 256
+characters returns a structured error. Filtering requires `view="sources"` and
+`projection="conversation"`; semantic/raw roots report unsupported filtering per
+node. Native calls accept at most 16 speaker selectors. No invalid filter falls
+back to the complete dialogue.
+
+Filtered pages carry `read_mode="speaker_filtered"` and the actual `speaker_ids`;
+their logical groups contain only the matching complete utterances. Auxiliary
+payloads, traces and receivers are omitted. These are excerpts, not complete
+conversations. Unfiltered pages carry `read_mode="complete_sources"` and retain
+complete logical units. Each returned utterance has a copyable `source_id` and
+exact Actor ID beside its recorded nickname and time. Use
+`read_timeline(anchor_source_id=..., before_turns=..., after_turns=...)` if nearby
+full dialogue is necessary; it is not automatically appended to an excerpt.
+
+`empty/no_matching_speaker_utterances` means no match among known, retained
+sources. `partial/speaker_identity_incomplete` plus `unknown_speaker_count`
+distinguishes missing identity; `partial/source_lineage_incomplete` distinguishes
+missing or unauthorized sources. A paged result does not prove absence outside
+that page. Semantic sources still return child episode cards without descending
+automatically into their raw history.
 
 `detail=full|compact` applies to a raw `content` view. It does not globally
 change every source entry.
@@ -418,8 +536,8 @@ mem.open_memory(
 )
 ```
 
-This batch form is valid for `card` and `content` only. `sources` remains single-ID
-or cursor-only. Full terminal settlement configuration and lifecycle are documented
+All three views support a batch; sources continuations remain one cursor per
+tree. Full terminal settlement configuration and lifecycle are documented
 in [`operation_projection_settlement_v1.md`](operation_projection_settlement_v1.md).
 
 To inspect every operation body in one episode, explicitly use
@@ -443,9 +561,57 @@ diagnostics. Native dispatch removes the duplicate entry bodies and returns one
 rendered `text` body plus `returned_logical_unit_ids` and navigation metadata.
 This prevents one source page from occupying the model context twice.
 
-Source pagination is by complete logical units and `page_size`, not a hidden
-token truncation. `open_memory` does not silently replace explicit raw evidence
-with cards or summaries.
+### Source batches and finite native pages
+
+`result.items` keeps request order and each tree's status, small title/time
+header, returned/remaining counts and `result.next_cursor`. The batch's
+`result.page_complete` describes pagination across its trees. Missing evidence
+remains a separate per-node reason even when pagination is complete. Source text
+appears once at the top level, grouped by card ID. Shared `source_id` bodies are
+deduplicated within this page; later card groups reference the earlier body.
+Every continuation page supplies its own evidence without relying on the
+previous page's retained text.
+
+Native sources batches accept at most `MemoryConfig.native_sources_max_cards`
+roots (default 8, configurable 1–32). All roots share the finite
+`native_timeline_page_token_budget` (default 12000), plus
+`native_sources_page_utf8_budget` (default 48000 bytes of the model projection).
+The byte limit leaves room for host cursor signatures and framing; hosts must
+also enforce their actual transport limit. These limits are host controls,
+absent from model schemas. `page_size` limits each tree's groups, not a separate
+budget per card. Trusted Python's zero budgets mean unlimited diagnostic pages.
+
+Allocation first attempts one complete group per tree in request order, then
+adds more within the shared budget. A pending tree with no returned group gets
+`partial/source_page_budget_exhausted` and a minimal `suggested_next_actions`
+call. A partly returned tree gets its own cursor. One group exceeding only the
+token limit may be returned whole with `oversized_unit=true`; no further body is
+added. A group exceeding the byte limit gets
+`unavailable/source_unit_exceeds_byte_budget` with a compact raw or child-content
+reload anchor.
+Neither limit silently cuts a message or replaces original evidence with a
+generated summary.
+
+Cursors freeze the root, projection, speakers, conversation scope, page size,
+budget and exact-source fingerprint. Relevant source/body/identity changes return
+`invalid_filter/source_changed_restart_required` with a fresh-open action.
+Older source cursors without the fingerprint return
+`source_cursor_upgrade_restart_required`; restart the selected tree. A smaller
+current host budget can tighten a cursor page; a larger limit cannot lift its
+frozen budget. Native calls always retain finite limits on continuation.
+
+SQLite loads source identities and selected bodies in bounded batches. Its speaker
+filters load only matching user bodies, with no LLM or embedding call. Stores may
+optionally implement `get_source_entry_headers(namespace, source_ids,
+cross_conversation)` to supply scoped kind/origin, Actor, time and grouping
+identity fields without bodies. The base method raises `NotImplementedError`;
+the facade then loads the same authorized sources and filters in memory,
+preserving evidence and isolation. Group
+projection/rendering is deferred to the returned page and reused across shared
+sources. Receipts keep bounded navigation/status data (at most 4096 UTF-8 bytes)
+and may mark omitted navigation; the full observation retains the actual
+cursors. Hosts must wrap every nested cursor, keep suggested actions in the
+authorized conversation, and recheck access on every continuation.
 
 ## `read_timeline`
 

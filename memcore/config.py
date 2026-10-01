@@ -6,13 +6,14 @@
 焊死的承重不变量(不可绕过):
 - raw 压缩只按 provider projection token 触发，并按完整 terminal turn/component 落切点。
 - `episodic_compact_batch_size < episodic_compact_trigger_count`。
-- 所有窗口/阈值为正;重叠阈值 >= 1;模型元数据枚举由 schema 固定而非宿主配置。
+- 所有窗口/阈值为正;模型元数据枚举由 schema 固定而非宿主配置。
 - TokenCounter 可由宿主显式注入；缺失时 raw 规划使用带 quality 标记的估算，不伪装成精确 tokenizer。
 """
 
 from __future__ import annotations
 
 import math
+import warnings
 from dataclasses import dataclass
 from enum import Enum
 
@@ -53,14 +54,18 @@ class MemoryConfig:
     # provider-native read_timeline 的模型可见单页上限。可信宿主仍可直接调用
     # MemorySystem.read_timeline(page_token_budget=0) 进行显式无限诊断读取。
     native_timeline_page_token_budget: int = 12000
+    # Native sources shares the timeline token budget across these selected trees.
+    native_sources_max_cards: int = 8
+    # Leave framing room within the host's 64 KiB memory-tool response limit.
+    native_sources_page_utf8_budget: int = 48000
     projection_profile: str = "canonical_user_assistant"
     compaction_min_recent_turns: int = 1
     compaction_schema_version: int = 2
     summary_profile: str = "timeline_v2"
 
-    # --- 强化合并 ---
-    semantic_reinforcement_lookback: int = 8  # 回看最近多少条长期记忆找合并目标
-    semantic_reinforcement_min_overlap: int = 2  # 触发合并的最小重叠分
+    # Deprecated constructor inputs: new semantic records never merge old batches.
+    semantic_reinforcement_lookback: int | None = None
+    semantic_reinforcement_min_overlap: int | None = None
 
     # --- 检索 ---
     retrieval_limit: int = 6  # 默认返回片段数
@@ -107,20 +112,32 @@ class MemoryConfig:
             "semantic_visible_limit": self.semantic_visible_limit,
             "compaction_min_recent_turns": self.compaction_min_recent_turns,
             "compaction_schema_version": self.compaction_schema_version,
-            "semantic_reinforcement_lookback": self.semantic_reinforcement_lookback,
             "retrieval_limit": self.retrieval_limit,
             "relaxation_stop_candidate_count": self.relaxation_stop_candidate_count,
             "llm_max_retries": self.llm_max_retries,
             "native_timeline_page_token_budget": self.native_timeline_page_token_budget,
+            "native_sources_max_cards": self.native_sources_max_cards,
+            "native_sources_page_utf8_budget": self.native_sources_page_utf8_budget,
         }
         for name, value in positives.items():
             if not isinstance(value, int) or value <= 0:
                 raise ConfigError(f"{name} must be a positive int, got {value!r}")
 
-        if self.semantic_reinforcement_min_overlap < 1:
-            raise ConfigError(
-                f"semantic_reinforcement_min_overlap must be >= 1, got {self.semantic_reinforcement_min_overlap!r}"
-            )
+        if isinstance(self.native_sources_max_cards, bool) or self.native_sources_max_cards > 32:
+            raise ConfigError("native_sources_max_cards must be between 1 and 32")
+        if isinstance(self.native_sources_page_utf8_budget, bool):
+            raise ConfigError("native_sources_page_utf8_budget must be a positive int")
+
+        for name in ("semantic_reinforcement_lookback", "semantic_reinforcement_min_overlap"):
+            value = getattr(self, name)
+            if value is not None:
+                if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                    raise ConfigError(f"{name} must be a positive int or None, got {value!r}")
+                warnings.warn(
+                    f"{name} is deprecated; semantic compaction now creates independent continuous batches",
+                    DeprecationWarning,
+                    stacklevel=3,
+                )
 
         for name in (
             "retrieval_min_dense_score",

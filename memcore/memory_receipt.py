@@ -26,6 +26,7 @@ _COVERAGE_KEYS = (
     "remaining_projected_token_count",
     "token_count_quality",
     "page_token_budget",
+    "page_byte_budget",
     "oversized_unit",
     "total_source_count",
     "covered_source_count",
@@ -75,6 +76,19 @@ def build_memory_operation_receipt(
         "request_hash": stable_projection_hash({"operation": operation, "arguments": safe_arguments}),
         "result_hash": stable_projection_hash(safe_dispatch),
     }
+    if operation == "open_memory" and str(result.get("view") or "") == "sources":
+        payload = result.get("result") if isinstance(result.get("result"), Mapping) else {}
+        receipt["source_nodes"] = [
+            {
+                "memory_id": str(item.get("memory_id") or ""),
+                "status": str(item.get("status") or ""),
+                "reason": str(item.get("reason") or ""),
+                "page_complete": bool((item.get("result") or {}).get("page_complete", True)),
+                "next_cursor": _next_cursor(item),
+            }
+            for item in _mapping_items(payload.get("items"))
+        ]
+        receipt = _bound_source_receipt(receipt)
     safe_receipt, _ = sanitize_timeline_value(receipt)
     return dict(safe_receipt)
 
@@ -102,6 +116,8 @@ def _compact_coverage(result: Mapping[str, Any]) -> dict[str, Any]:
         }
     if "page_complete" in result:
         compact["page_complete"] = bool(result.get("page_complete"))
+    elif isinstance(result.get("result"), Mapping) and "page_complete" in result["result"]:
+        compact["page_complete"] = bool(result["result"]["page_complete"])
     return compact
 
 
@@ -125,6 +141,11 @@ def _selector_for(operation: str, arguments: Mapping[str, Any], result: Mapping[
                 if result.get("keywords")
                 else {}
             ),
+            **(
+                {"participants": list(result["participants"]), "participant_match": result["participant_match"]}
+                if result.get("participants")
+                else {}
+            ),
         }
     if operation in {"open_memory", "read_entry"}:
         return {
@@ -133,6 +154,8 @@ def _selector_for(operation: str, arguments: Mapping[str, Any], result: Mapping[
             "view": str(result.get("view") or arguments.get("view") or "content"),
             "detail": str(result.get("detail") or arguments.get("detail") or "full"),
             "projection": str(result.get("projection") or arguments.get("projection") or "conversation"),
+            **({"speaker_ids": list(result["speaker_ids"])} if result.get("speaker_ids") else {}),
+            **({"read_mode": result["read_mode"]} if result.get("read_mode") else {}),
         }
     if operation == "retrieve_for_turn":
         return {
@@ -170,6 +193,7 @@ def _returned_memory_ids(operation: str, result: Mapping[str, Any]) -> list[str]
             item.get("memory_id")
             for item in _mapping_items(payload.get("items"))
             if str(item.get("status") or "") == "ok"
+            or (operation == "open_memory" and result.get("view") == "sources" and item.get("result"))
         )
         values.extend(card.get("memory_id") for card in _mapping_items(payload.get("sources")))
     return _unique_strings(values)
@@ -200,8 +224,51 @@ def _returned_logical_unit_ids(operation: str, result: Mapping[str, Any]) -> lis
         returned_ids = payload.get("returned_logical_unit_ids")
         if returned_ids:
             return _unique_strings(returned_ids)
-        return _unique_strings(unit.get("unit_id") for unit in _mapping_items(payload.get("source_units")))
+        values = [unit.get("unit_id") for unit in _mapping_items(payload.get("source_units"))]
+        for item in _mapping_items(payload.get("items")):
+            nested = item.get("result") if isinstance(item.get("result"), Mapping) else {}
+            values.extend(nested.get("returned_logical_unit_ids") or [])
+        return _unique_strings(values)
     return []
+
+
+def _bound_source_receipt(receipt: dict[str, Any]) -> dict[str, Any]:
+    """Keep reload/navigation hints within the 4 KiB retention-anchor limit.
+
+    Complete independent cursors and selectors remain in the observation. A
+    receipt may omit them; it must never invent shortened IDs or cursors.
+    """
+
+    def fits() -> bool:
+        return len(json.dumps(receipt, ensure_ascii=False, sort_keys=True).encode("utf-8")) <= 4096
+
+    if fits():
+        return receipt
+    receipt["navigation_omitted"] = True
+    for node in reversed(receipt["source_nodes"]):
+        if node.get("next_cursor"):
+            node["next_cursor"] = ""
+            node["cursor_in_observation"] = True
+        if fits():
+            return receipt
+    if receipt["next_cursor"]:
+        receipt["next_cursor"] = ""
+        receipt["cursor_in_observation"] = True
+    selector = receipt["selector"]
+    for key in ("speaker_ids", "memory_ids"):
+        values = selector.get(key)
+        while values and not fits():
+            values.pop()
+            selector[key + "_omitted_count"] = selector.get(key + "_omitted_count", 0) + 1
+    for key in ("returned_logical_unit_ids", "returned_source_ids", "returned_memory_ids", "source_nodes"):
+        values = receipt[key]
+        while values and not fits():
+            values.pop()
+            receipt[key + "_omitted_count"] = receipt.get(key + "_omitted_count", 0) + 1
+    if not fits():
+        receipt["selector"] = {key: selector[key] for key in ("view", "projection", "read_mode") if key in selector}
+        receipt["reason"] = str(receipt["reason"])[:128]
+    return receipt
 
 
 def _next_cursor(result: Mapping[str, Any]) -> str:

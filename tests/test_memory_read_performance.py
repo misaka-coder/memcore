@@ -83,7 +83,8 @@ class ReadPerformanceTests(unittest.TestCase):
         requested = ["episode", "raw", "episode", "missing"]
         expected = [self.mem.open_memory(memory_id=sid, view="content") for sid in requested]
         result, queries = self.traced(lambda: self.mem.open_memory(memory_ids=requested, view="content"))
-        self.assertEqual(len(queries), 3)
+        # Three node batches plus three identity/lineage batches, never per ID.
+        self.assertEqual(len(queries), 7)  # One batched repair lookup for missing nodes.
         self.assertEqual(result["result"]["items"], expected)
         self.assertEqual(result["status"], "partial")
         self.store.add_semantic_summary(
@@ -135,9 +136,10 @@ class ReadPerformanceTests(unittest.TestCase):
             )
         )
         self.assertEqual([entry.source_id for entry in window.entries], ["a1", "a2", "b1", "standalone"])
-        full_reads = [q for q in queries if "SELECT * FROM messages" in q]
+        full_reads = [q for q in queries if q.startswith(("SELECT * FROM messages", "SELECT messages.*"))]
         self.assertEqual(len(full_reads), 1)
-        self.assertIn("source_id IN", full_reads[0])
+        plan = [row[3] for row in self.store._conn.execute("EXPLAIN QUERY PLAN " + full_reads[0])]
+        self.assertTrue(any("source_id=?" in step for step in plan), plan)
         self.assertNotIn("c1", full_reads[0])
 
     def test_timeline_render_reuse_preserves_exact_counts_and_continuations(self):
