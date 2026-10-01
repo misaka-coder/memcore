@@ -835,10 +835,12 @@ def _retrieve_description() -> str:
         "only one detail is missing, call this tool again with that summary memory_id as within_memory_id and "
         "source_layers=[raw] to search only its exact source lineage. Use open_memory(sources) only when the complete "
         "source tree or original evidence is needed. A raw source_id can be passed to read_timeline when adjacent "
-        "turns are missing, while a known exact time should go directly to read_timeline. Use browse_memory for broad "
+        "turns are missing. If an anchor is unavailable, use the returned time in read_timeline.time_range. "
+        "A known exact time should go directly to read_timeline. Use browse_memory for broad "
         "multi-day overviews. Do not repeatedly call this tool with synonymous queries after a useful hit; retrieve "
         "again only for a scoped detail or when a new known entity, time clue, or materially different search target "
-        "becomes available."
+        "becomes available. For exact quotations, or when a hit conflicts with the question and a time clue is known, "
+        "verify the raw timeline. Empty retrieval does not negate visible evidence or prove no history exists."
     )
 
 

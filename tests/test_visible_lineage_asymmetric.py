@@ -12,6 +12,7 @@ could never be semantically re-found (the production 发烧 zero-hit case).
 
 from __future__ import annotations
 
+import json
 import unittest
 
 from memcore import (
@@ -332,16 +333,20 @@ class AsymmetricVisibleLineageTests(unittest.TestCase):
             )
 
             summary_text = render_summary_snippet(summary, tz="Asia/Shanghai")
-            self.assertIn('open_memory(memory_id="fever-summary"', summary_text)
-            self.assertIn('view="sources"', summary_text)
+            self.assertEqual(summary_text.splitlines()[-1], 'memory_id: "fever-summary"')
+            self.assertNotIn("expand:", summary_text)
 
             semantic_text = render_semantic_snippet(semantic, tz="Asia/Shanghai")
-            self.assertIn('open_memory(memory_id="fever-semantic"', semantic_text)
-            self.assertIn('view="sources"', semantic_text)
+            self.assertEqual(semantic_text.splitlines()[-1], 'memory_id: "fever-semantic"')
+            self.assertNotIn("expand:", semantic_text)
 
             opened = mem.open_memory(memory_id="fever-summary", view="sources")
             self.assertEqual(opened["status"], "ok")
             self.assertIn("fever-raw", str(opened.get("result") or {}))
+            semantic_id = json.loads(semantic_text.splitlines()[-1].split(": ", 1)[1])
+            opened_semantic = mem.open_memory(memory_id=semantic_id, view="sources")
+            self.assertEqual(opened_semantic["status"], "ok")
+            self.assertIn("fever-summary", str(opened_semantic.get("result") or {}))
         finally:
             mem.close()
             store.close()

@@ -58,11 +58,9 @@ def _anchor_line(record: dict[str, Any], parts_text: list[str], time_range_label
     )
 
 
-def _memory_open_hint(memory_id: str, *, down_label: str) -> str:
+def _memory_id_line(memory_id: str) -> str:
     encoded = json.dumps(str(memory_id), ensure_ascii=False)
-    return (
-        f'expand: 需要{down_label}时调用 open_memory(memory_id={encoded}, view="sources")；完整卡片用 view="content"。'
-    )
+    return f"memory_id: {encoded}"
 
 
 def render_summary_snippet(record: dict[str, Any], *, tz: str, enable_flavor: bool = False) -> str:
@@ -93,7 +91,7 @@ def render_summary_snippet(record: dict[str, Any], *, tz: str, enable_flavor: bo
         parts.append("核心事实:" + ";".join(str(f) for f in record["core_facts"]))
     summary_id = str(record.get("summary_id") or "").strip()
     if summary_id:
-        parts.append(_memory_open_hint(summary_id, down_label="该阶段原始对话"))
+        parts.append(_memory_id_line(summary_id))
     return "\n".join(parts)
 
 
@@ -133,7 +131,7 @@ def render_semantic_snippet(record: dict[str, Any], *, tz: str, enable_flavor: b
             parts.append(f"{label}:" + ";".join(str(x) for x in record[field_key]))
     semantic_id = str(record.get("semantic_id") or "").strip()
     if semantic_id:
-        parts.append(_memory_open_hint(semantic_id, down_label="该长期记忆的下级记忆"))
+        parts.append(_memory_id_line(semantic_id))
     return "\n".join(parts)
 
 
