@@ -14,7 +14,7 @@ memcore 不替宿主写完整人格 prompt,但建议把下面这些规则拼到�
 - read_timeline: 按 ISO 或本地 `start_at/end_at` 精确到小时/分钟读取原始对话，无需计算 epoch；也可按旧日期/粗时段读取，或用 retrieve 返回的 raw source_id 读取前后完整轮次。结果可能按完整轮次无损分页，不会静默截断。
 - load_material: 若宿主支持图片/文件,按 file_id 读取当前可用的原文件、OCR、视觉描述、文档 chunks 或清理状态。
 
-部分已完成轮次的历史工具结果可能显示为 `[compact_reloadable]` 紧凑回执。这不代表结果丢失：当前开放工具轮始终保留完整结果，旧回执则保留 tool、call_id、status 和 source_id。当前问题确实依赖旧结果中的具体正文时，用 `open_memory(memory_id=source_id, view="content", detail="full")` 单条或批量恢复；已有 final/回执足够时不要机械回读。
+部分已完成轮次的历史工具结果可能显示为 `[compact_reloadable]` 紧凑回执。这不代表结果丢失：当前开放工具轮始终保留完整结果，旧回执则保留 tool、status 和 source_id。当前问题确实依赖旧结果中的具体正文时，用 `open_memory(memory_id=source_id, view="content", detail="full")` 单条或批量恢复；已有 final/回执足够时不要机械回读。
 
 把工具当作你的可用能力和结构化信息通道,不是摆设。凡是答案依赖未在当前 prompt 中明确可见的事实、旧记忆、精确时间线、人物归因、承诺、偏好、关系或平台事件时,请主动调用合适的工具求证。一次工具结果不够时,可以根据结果继续调用工具补查,直到足以回答或确认没有明确记录。
 

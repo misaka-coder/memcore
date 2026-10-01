@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import unittest
@@ -142,7 +143,7 @@ class SettledLifecycleTests(unittest.TestCase):
         payloads = _settled_payloads(mem, "t1")
         tool_payload = next(p for p in payloads if p.get("role") == "tool")
         self.assertIn("[compact_reloadable]", tool_payload["content"])
-        self.assertIn("reload: open_memory", tool_payload["content"])
+        self.assertEqual(tool_payload["tool_call_id"], "call_long")
         self.assertIn(long_sid, tool_payload["content"])
         store.close()
 
@@ -210,6 +211,47 @@ class SettledLifecycleTests(unittest.TestCase):
 
 
 class SettledParallelPendingTests(unittest.TestCase):
+    def test_canonical_parallel_results_keep_call_pairing_and_failure_status(self) -> None:
+        mem, store = _shared_mem()
+        _turn_with_tools(mem, results=[])
+        try:
+            for call_id in ("call_a", "call_b"):
+                mem.append_action(
+                    turn_id="t1",
+                    kind="tool.web_search.call",
+                    correlation_id=call_id,
+                    semantic_text="search",
+                    payload={"input": {"query": call_id}},
+                    trace_metadata={"tool_name": "web_search"},
+                    timestamp=1001,
+                )
+            # Same tool, reverse completion order; pairing cannot rely on adjacency.
+            for call_id, status in (("call_b", "failed"), ("call_a", "success")):
+                mem.append_observation(
+                    turn_id="t1",
+                    kind="tool.web_search.result",
+                    correlation_id=call_id,
+                    source_id=f"result-{call_id}",
+                    semantic_text=LONG_BODY + call_id,
+                    payload={"output": LONG_BODY + call_id},
+                    trace_metadata={"tool_name": "web_search"},
+                    status=status,
+                    timestamp=1002,
+                )
+            _complete(mem, "t1", profile="canonical_user_assistant")
+            payloads = _settled_payloads(mem, "t1", profile="canonical_user_assistant")
+            cards = [p["content"] for p in payloads if str(p.get("content", "")).startswith("[compact_reloadable]")]
+            self.assertEqual(len(cards), 2)
+            for card, call_id, status in zip(cards, ("call_b", "call_a"), ("failed", "success")):
+                self.assertIn(f"call_id: {call_id}", card)
+                self.assertIn(f"status: {status}", card)
+                self.assertIn(f"source_id: result-{call_id}", card)
+                restored = mem.open_memory(memory_id=f"result-{call_id}", view="content", detail="full")
+                self.assertIn(LONG_BODY + call_id, restored["text"])
+        finally:
+            mem.close()
+            store.close()
+
     def test_parallel_tools_compact_all_long_results_without_reordering(self) -> None:
         mem, store = _shared_mem()
         bodies_a = LONG_BODY + "_AAA"
@@ -265,6 +307,52 @@ class SettledParallelPendingTests(unittest.TestCase):
 
 
 class SettledRetryRestartTests(unittest.TestCase):
+    def test_legacy_card_replays_byte_identically_after_restart_and_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "legacy-card.sqlite3"
+            mem, store = _shared_mem(store=SQLiteMemoryStore(str(path)))
+            source_id = _turn_with_tools(mem, results=[("web_search", "call_legacy", LONG_BODY)])[0]
+            legacy_card = "\n".join(
+                [
+                    "[compact_reloadable]",
+                    "tool: web_search",
+                    "call_id: call_legacy",
+                    "status: success",
+                    f"source_id: {source_id}",
+                    f"stored_chars: {len(LONG_BODY)}",
+                    f"stored_utf8_bytes: {len(LONG_BODY.encode('utf-8'))}",
+                    f"result_hash: sha256:{hashlib.sha256(LONG_BODY.encode('utf-8')).hexdigest()}",
+                    f'reload: open_memory(memory_id="{source_id}", view="content", detail="full")',
+                ]
+            )
+            with patch("memcore.settlement.render_compact_reload", return_value=legacy_card):
+                _complete(mem, "t1")
+            expected = mem.build_context_projection(provider_profile="openai_chat")
+            expected_row = _settlement_row(mem, "t1")
+            self.assertEqual(next(p for p in expected.payloads if p.get("role") == "tool")["content"], legacy_card)
+            mem.close()
+            store.close()
+
+            fresh, fresh_store = _shared_mem(store=SQLiteMemoryStore(str(path)))
+            try:
+                with patch(
+                    "memcore.settlement.render_compact_reload", side_effect=AssertionError("must not rerender")
+                ) as renderer:
+                    replayed = fresh.build_context_projection(provider_profile="openai_chat")
+                    renderer.assert_not_called()
+                _complete(fresh, "t1")
+                self.assertEqual(replayed.payloads, expected.payloads)
+                self.assertEqual(
+                    fresh.build_context_projection(provider_profile="openai_chat").payloads, expected.payloads
+                )
+                self.assertEqual(_settlement_row(fresh, "t1"), expected_row)
+                restored = fresh.open_memory(memory_id=source_id, view="content", detail="full")
+                self.assertEqual(restored["status"], "ok")
+                self.assertIn(LONG_BODY, restored["text"])
+            finally:
+                fresh.close()
+                fresh_store.close()
+
     def test_retry_complete_is_idempotent_and_never_overwrites_settlement(self) -> None:
         mem, store = _shared_mem()
         _turn_with_tools(mem, results=[("web_search", "call_retry", LONG_BODY)])

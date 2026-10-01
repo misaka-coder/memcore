@@ -29,6 +29,7 @@ from .llm.base import LLMClient
 from .namespace import Actor, Namespace
 from .prompts import PromptOverrides
 from .projection import (
+    CANONICAL_PROFILE,
     ContextProjection,
     ProjectionAdapter,
     ProjectionLedger,
@@ -580,6 +581,7 @@ class MemorySystem:
                 min_inline_bytes=frozen_min,
                 required_savings_ratio=frozen_ratio,
                 timezone=self.timezone,
+                include_call_id=profile == CANONICAL_PROFILE,
             )
             plan = build_settlement_plan(
                 self._projection,

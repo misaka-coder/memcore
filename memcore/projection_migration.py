@@ -87,6 +87,7 @@ def _adapter_projection_builder(adapter: Any) -> ProjectionBuilder:
 def _settlement_plan_builder(adapter: Any, *, count_text: Callable[[str], int] | None = None) -> SettlementBuilder:
     from functools import partial
 
+    from .projection import CANONICAL_PROFILE
     from .settlement import build_settlement_plan, classify_observation, settlement_config_hash
 
     def build(
@@ -111,6 +112,7 @@ def _settlement_plan_builder(adapter: Any, *, count_text: Callable[[str], int] |
                 min_inline_bytes=int(min_inline_bytes),
                 required_savings_ratio=float(required_savings_ratio),
                 timezone=str(getattr(adapter, "timezone", "") or "").strip(),
+                include_call_id=provider_profile == CANONICAL_PROFILE,
             )
             return build_settlement_plan(
                 adapter,

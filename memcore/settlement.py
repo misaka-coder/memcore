@@ -44,10 +44,6 @@ def utf8_bytes(value: Any) -> int:
     return len(str(value or "").encode("utf-8"))
 
 
-def _sha256_hex(text: str) -> str:
-    return hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()
-
-
 def _tool_label(entry: Any) -> str:
     trace_name = str((entry.trace_metadata or {}).get("tool_name") or "").strip()
     if trace_name:
@@ -63,14 +59,15 @@ def _observation_status(entry: Any) -> str:
     return str((entry.trace_metadata or {}).get("status") or (entry.payload or {}).get("status") or "").strip()
 
 
-def render_compact_reload(entry: Any, *, full_content: str, timezone: str = "") -> str:
+def render_compact_reload(entry: Any, *, full_content: str, timezone: str = "", include_call_id: bool = True) -> str:
     """通用可回读引用(文档 §7.2 推荐形态的确定性文本化)。
 
-    ``timezone`` 为空时输出与历史逐字节一致; 传入时在卡片首行后补一条
-    通用可读时间(从 entry 既有 timestamp 派生, 不要求生产者新增字段)。
+    只保留识别与回读所需字段; 调用配对和校验哈希仍由投影账本保存。
+    ``timezone`` 非空时从 entry 既有 timestamp 派生可读时间。
+    只有原生消息已携带调用 ID 时才省略重复行; 纯文本回放保留配对标识。
+    已冻结的历史卡片从账本原样读取, 不经本函数重新渲染。
     """
     payload_chars = len(str(full_content or ""))
-    payload_bytes = utf8_bytes(full_content)
     status = _observation_status(entry)
     lines = ["[compact_reloadable]"]
     if str(timezone or "").strip():
@@ -78,18 +75,14 @@ def render_compact_reload(entry: Any, *, full_content: str, timezone: str = "") 
         if timestamp > 0:
             lines.append(f"time: {timestamp_to_datetime_label(timestamp, str(timezone).strip())}")
     lines.append(f"tool: {_tool_label(entry)}")
-    lines.append(f"call_id: {str(getattr(entry, 'correlation_id', '') or '')}")
+    if include_call_id:
+        lines.append(f"call_id: {str(getattr(entry, 'correlation_id', '') or '')}")
     if status:
         lines.append(f"status: {status}")
     lines.extend(
         [
             f"source_id: {str(getattr(entry, 'source_id', '') or '')}",
             f"stored_chars: {payload_chars}",
-            f"stored_utf8_bytes: {payload_bytes}",
-            f"result_hash: sha256:{_sha256_hex(full_content)[:64]}",
-            "reload: "
-            f"open_memory(memory_id={json.dumps(str(getattr(entry, 'source_id', '') or ''), ensure_ascii=False)}, "
-            'view="content", detail="full")',
         ]
     )
     return "\n".join(lines)
@@ -102,6 +95,7 @@ def classify_observation(
     min_inline_bytes: int = COMPACT_RELOAD_MIN_INLINE_BYTES,
     required_savings_ratio: float = COMPACT_RELOAD_REQUIRED_SAVINGS_RATIO,
     timezone: str = "",
+    include_call_id: bool = True,
 ) -> tuple[str, str]:
     """确定性分类, 返回 (kind, projection_content)。
 
@@ -116,7 +110,9 @@ def classify_observation(
     full_bytes = utf8_bytes(full_content)
     if full_bytes < min_inline_bytes:
         return (INLINE_FULL, str(full_content))
-    compact = render_compact_reload(entry, full_content=full_content, timezone=timezone)
+    compact = render_compact_reload(
+        entry, full_content=full_content, timezone=timezone, include_call_id=include_call_id
+    )
     compact_bytes = utf8_bytes(compact)
     savings_ratio = min(0.99, max(0.0, float(required_savings_ratio)))
     if compact_bytes >= full_bytes * (1.0 - savings_ratio):
@@ -287,8 +283,12 @@ def build_settlement_plan(
     对齐留到 Slice 3(request builder 消费 settled 账本时)。
     ``timezone`` 非空且使用默认 decider 时, 紧凑卡片附带通用可读时间。
     """
-    if observation_decider is classify_observation and str(timezone or "").strip():
-        observation_decider = partial(classify_observation, timezone=str(timezone).strip())
+    if observation_decider is classify_observation:
+        observation_decider = partial(
+            classify_observation,
+            timezone=str(timezone or "").strip(),
+            include_call_id=provider_profile == CANONICAL_PROFILE,
+        )
     if authoritative_messages is not None:
         full_messages = tuple(_as_projection_input(message) for message in authoritative_messages)
         settled_messages, kinds = _settle_authoritative_messages(

@@ -212,7 +212,7 @@ class ClassifyBoundaryTests(unittest.TestCase):
         self.assertEqual(kind, COMPACT_RELOADABLE)
         self.assertIn("[compact_reloadable]", content)
         self.assertIn("source_id: s1", content)
-        self.assertIn("open_memory(memory_id=", content)
+        self.assertIn("stored_chars: 100000", content)
 
 
 class CustomThresholdStoreTests(unittest.TestCase):

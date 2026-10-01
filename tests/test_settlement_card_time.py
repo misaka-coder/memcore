@@ -164,11 +164,13 @@ class SettlementCardTimeTests(unittest.TestCase):
         expected_time = timestamp_to_datetime_label(FIXED_TS + 1, "Asia/Shanghai")
         self.assertIn(f"time: {expected_time}", content)
         self.assertIn("tool: web_search", content)
-        self.assertIn("call_id: call_t", content)
+        self.assertEqual(tool_payloads[0]["tool_call_id"], "call_t")
         self.assertIn("status: success", content)
         self.assertIn("source_id: tooltrace:t1-call_t:tool_result", content)
-        self.assertIn("stored_chars:", content)
-        self.assertIn("reload: open_memory(memory_id=", content)
+        self.assertIn(f"stored_chars: {len(LONG_BODY)}", content)
+        self.assertEqual(content.count("tooltrace:t1-call_t:tool_result"), 1)
+        for redundant_field in ("call_id:", "stored_utf8_bytes:", "result_hash:", "reload:"):
+            self.assertNotIn(redundant_field, content)
         # The tool input stays in the adjacent action and is never copied into
         # the result card.
         self.assertNotIn("绝密搜索词", content)
@@ -176,9 +178,7 @@ class SettlementCardTimeTests(unittest.TestCase):
         self.assertNotIn(LONG_BODY, content)
         store.close()
 
-    def test_old_cards_without_timezone_stay_byte_identical(self) -> None:
-        # The generic renderer must stay backwards compatible: without a
-        # timezone there is no time line, so historical cards are unchanged.
+    def test_timezone_only_adds_readable_time_to_new_card(self) -> None:
         from types import SimpleNamespace
 
         from memcore.settlement import render_compact_reload
@@ -191,11 +191,14 @@ class SettlementCardTimeTests(unittest.TestCase):
             payload={"output": LONG_BODY},
             trace_metadata={"tool_name": "web_search", "status": "success"},
         )
-        legacy = render_compact_reload(entry, full_content=LONG_BODY)
-        self.assertNotIn("time:", legacy)
+        without_time = render_compact_reload(entry, full_content=LONG_BODY)
+        self.assertNotIn("time:", without_time)
         with_time = render_compact_reload(entry, full_content=LONG_BODY, timezone="Asia/Shanghai")
         self.assertIn(f"time: {timestamp_to_datetime_label(FIXED_TS, 'Asia/Shanghai')}", with_time)
         self.assertTrue(with_time.startswith("[compact_reloadable]\ntime: "))
+        self.assertEqual(
+            "\n".join(line for line in with_time.splitlines() if not line.startswith("time:")), without_time
+        )
 
     def test_openai_function_arguments_byte_identical_after_settlement(self) -> None:
         mem, store = _shared_mem()

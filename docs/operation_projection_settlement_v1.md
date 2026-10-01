@@ -129,18 +129,17 @@ UTF-8 字节收益不等于 provider token 或总费用收益。
 [compact_reloadable]
 time: 2026-08-17 00:12
 tool: web_search
-call_id: call_001
 status: success
 source_id: <raw-tool-result-source-id>
 stored_chars: 53870
-stored_utf8_bytes: 64102
-result_hash: sha256:<hash>
-reload: open_memory(memory_id="<raw-tool-result-source-id>", view="content", detail="full")
 ```
 
-`time` 行是通用可读时间（从 observation 既有 timestamp 与宿主时区派生，仅
-新增字段；不复制工具入参，不要求生产者新增 summary/anchor）。未配置时区时
-渲染结果与历史逐字节一致（旧卡仍可正常打开，新完成回合使用新格式）。
+`time` 行从 observation 既有 timestamp 与宿主时区派生；未配置时区时省略。
+卡片只显示工具、状态、唯一的 `source_id` 和正文字符数；原文用该 `source_id`
+调用 `open_memory(view="content", detail="full")` 回读，见第 7 节。调用 ID 留在
+provider 消息与 action 中，纯文本回放则仍在卡片显示调用 ID 以保持配对；
+校验哈希留在投影账本，不在正文重复渲染。
+已冻结的旧卡按账本逐字节重放，重启或幂等重试不会改写；新完成回合使用精简格式。
 
 以下内容不会被该策略压缩：
 
