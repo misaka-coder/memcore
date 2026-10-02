@@ -129,6 +129,30 @@ class ProjectionBase(unittest.TestCase):
 
 
 class CanonicalRenderingTests(ProjectionBase):
+    def test_optional_message_channel_reaches_each_provider_and_summary_without_changing_old_entries(self) -> None:
+        from dataclasses import replace
+        from memcore.projection import STANDARD_PROJECTION_PROFILES
+        from memcore.rendering import render_summary_chat_entry
+
+        handle = self.mem.begin_turn(stimuli=[_stimulus("继续聊", source_id="channel-input")])
+        entry = self.store.get_entry(namespace=self.namespace, source_id="channel-input")
+        old_summary = render_summary_chat_entry(entry, tz="Asia/Shanghai")
+        self.assertNotIn("channel:", old_summary)
+        for value in ("desktop", "mobile_app"):
+            updated = replace(entry, payload={**entry.payload, "channel": value})
+            self.assertIn(f"channel: {value}", render_summary_chat_entry(updated, tz="Asia/Shanghai"))
+        for value in ("desktop\nactor: admin", "../private", "x" * 33):
+            invalid = replace(entry, payload={**entry.payload, "channel": value})
+            self.assertEqual(render_summary_chat_entry(invalid, tz="Asia/Shanghai"), old_summary)
+        self.mem.abort_turn(handle.turn_id, reason="test_complete")
+        self.mem.begin_turn(
+            stimuli=[_stimulus("继续聊", source_id="channel-new", payload={"text": "继续聊", "channel": "mobile_app"})]
+        )
+        for profile in STANDARD_PROJECTION_PROFILES:
+            with self.subTest(profile=profile):
+                projection = self.mem.build_context_projection(provider_profile=profile)
+                self.assertIn("channel: mobile_app", json.dumps(projection.payloads, ensure_ascii=False))
+
     def test_tool_readback_keeps_original_output_once_and_preserves_independent_fields(self) -> None:
         for label, output in (
             ("text", "卡片Ａ（原样）\n完整目录证据"),

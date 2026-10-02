@@ -125,6 +125,13 @@ Important optional fields:
 - hosts should normally leave renderer and derived time-label fields at their
   defaults and let `MemorySystem` bind/fill them.
 
+For user chat entries, an optional `payload.channel` records the authenticated
+ingress chosen by the host, for example `mobile_app` or `desktop`. Values must
+match `[a-z][a-z0-9_-]{0,31}` to be displayed. It appears as one `channel:` line
+in provider history and the semantic compaction view. Omitted or invalid values
+preserve the existing rendering. Do not derive it from user text or rewrite old
+records when a client reconnects; it is provenance, not a delivery instruction.
+
 ## `begin_turn`
 
 ```python

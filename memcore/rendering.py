@@ -157,6 +157,12 @@ _SPEAKER_STRUCTURAL_CHARS = re.compile(r"[:：\[\]\(\)（）{}<>]")
 _WHITESPACE = re.compile(r"\s+")
 
 
+def message_channel(value: Any) -> str:
+    """Optional host-supplied channel label, safe as a single metadata token."""
+    text = str(value or "")
+    return text if re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", text) else ""
+
+
 def _sanitize_speaker_part(value: Any) -> str:
     text = normalize_text(value)
     if not text:
@@ -427,10 +433,12 @@ def render_summary_chat_entry(entry: TimelineEntry, *, tz: str) -> str:
     """Semantic chat transcript for compaction, independent of provider wire."""
 
     payload = dict(entry.payload)
+    channel = message_channel(payload.get("channel")) if entry.origin.value == "user" else ""
     is_observed = str(entry.kind or "") == "message.user.observed"
     is_voice = str(entry.kind or "").endswith(".voice")
     has_relations = bool(
-        entry.target_actor is not None
+        channel
+        or entry.target_actor is not None
         or payload.get("mentioned_actors")
         or payload.get("reply_reference")
         or payload.get("forward_references")
@@ -446,6 +454,8 @@ def render_summary_chat_entry(entry: TimelineEntry, *, tz: str) -> str:
         return f"{prefix}{role}: {content}".rstrip()
 
     lines = ["【对话事件】"]
+    if channel:
+        lines.append(f"channel: {channel}")
     if entry.timestamp > 0:
         lines.append(f"time: {timestamp_to_datetime_weekday_label(entry.timestamp, tz)}")
     actor = entry.namespace.actor

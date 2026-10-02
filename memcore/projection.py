@@ -18,7 +18,13 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 from .errors import SchemaError, StaleSnapshotError
 from .kind_contract import USER_CHAT_KINDS, is_valid_kind, is_valid_kind_prefix, normalize_kind
 from .namespace import Namespace
-from .rendering import render_semantic_snippet, render_summary_snippet, render_tool_result_text, render_tool_use_text
+from .rendering import (
+    message_channel,
+    render_semantic_snippet,
+    render_summary_snippet,
+    render_tool_result_text,
+    render_tool_use_text,
+)
 from .text_utils import normalize_text
 from .time_anchor import TIME_PERIOD_LABELS, timestamp_to_datetime_weekday_label
 from .timeline import TimelineEntry, TimelineEntryInput, TurnRole
@@ -926,6 +932,9 @@ def _render_user_chat_message(entry: TimelineEntry, timezone: str) -> str:
 
     payload = dict(entry.payload)
     lines: list[str] = []
+    channel = message_channel(payload.get("channel"))
+    if channel:
+        lines.append(f"channel: {channel}")
     if entry.timestamp > 0:
         lines.append(f"time: {timestamp_to_datetime_weekday_label(entry.timestamp, timezone)}")
     message_id = _display_scalar(payload.get("message_id"))
