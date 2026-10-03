@@ -100,6 +100,8 @@ def _settlement_plan_builder(adapter: Any, *, count_text: Callable[[str], int] |
         policy: str = "compact_after_terminal",
         min_inline_bytes: int = 256,
         required_savings_ratio: float = 0.5,
+        argument_min_utf8_bytes: int = 1024,
+        argument_preview_chars: int = 96,
     ) -> Any:
         """Return a SettledProjectionPlan, or None when planning fails structurally.
 
@@ -123,10 +125,15 @@ def _settlement_plan_builder(adapter: Any, *, count_text: Callable[[str], int] |
                 observation_decider=decider,
                 settlement_min_utf8_bytes=int(min_inline_bytes),
                 settlement_min_saved_ratio=float(required_savings_ratio),
+                compact_arguments=policy == "compact_arguments_after_terminal",
+                settlement_argument_min_utf8_bytes=argument_min_utf8_bytes,
+                settlement_argument_preview_chars=argument_preview_chars,
                 settlement_config_hash=settlement_config_hash(
                     policy=policy,
                     min_utf8_bytes=int(min_inline_bytes),
                     saved_ratio=float(required_savings_ratio),
+                    argument_min_utf8_bytes=argument_min_utf8_bytes,
+                    argument_preview_chars=argument_preview_chars,
                 ),
             )
         except Exception:

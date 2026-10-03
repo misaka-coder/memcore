@@ -254,6 +254,8 @@ class SQLiteMemoryStore(MemoryStore):
         operation_projection_policy: str = "full_until_raw_compaction",
         operation_settlement_min_utf8_bytes: int = 256,
         operation_settlement_min_saved_ratio: float = 0.5,
+        operation_argument_min_utf8_bytes: int = 1024,
+        operation_argument_preview_chars: int = 96,
     ) -> TurnHandle:
         if not stimulus_entries:
             raise SchemaError("turn_stimulus_required")
@@ -308,8 +310,9 @@ class SQLiteMemoryStore(MemoryStore):
                     stimulus_source_ids_json, annotation_target_ids_json,
                     opened_at, operation_projection_policy,
                     operation_settlement_min_utf8_bytes, operation_settlement_min_saved_ratio,
+                    operation_argument_min_utf8_bytes, operation_argument_preview_chars,
                     row_version
-                ) VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, 1)
+                ) VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, 1)
                 """,
                 (
                     normalized_turn_id,
@@ -327,6 +330,8 @@ class SQLiteMemoryStore(MemoryStore):
                         if operation_settlement_min_saved_ratio is not None
                         else 0.5
                     ),
+                    int(operation_argument_min_utf8_bytes),
+                    int(operation_argument_preview_chars),
                 ),
             )
             self._ensure_conversation_state_locked(namespace=namespace, updated_at=opened)
@@ -346,6 +351,8 @@ class SQLiteMemoryStore(MemoryStore):
                 operation_settlement_min_saved_ratio=float(
                     operation_settlement_min_saved_ratio if operation_settlement_min_saved_ratio is not None else 0.5
                 ),
+                operation_argument_min_utf8_bytes=int(operation_argument_min_utf8_bytes),
+                operation_argument_preview_chars=int(operation_argument_preview_chars),
             )
 
     def begin_turn_from_existing_sources(
@@ -359,6 +366,8 @@ class SQLiteMemoryStore(MemoryStore):
         operation_projection_policy: str = "full_until_raw_compaction",
         operation_settlement_min_utf8_bytes: int = 256,
         operation_settlement_min_saved_ratio: float = 0.5,
+        operation_argument_min_utf8_bytes: int = 1024,
+        operation_argument_preview_chars: int = 96,
     ) -> TurnHandle:
         if not stimulus_source_ids:
             raise SchemaError("turn_stimulus_required")
@@ -430,8 +439,9 @@ class SQLiteMemoryStore(MemoryStore):
                     stimulus_source_ids_json, annotation_target_ids_json,
                     opened_at, operation_projection_policy,
                     operation_settlement_min_utf8_bytes, operation_settlement_min_saved_ratio,
+                    operation_argument_min_utf8_bytes, operation_argument_preview_chars,
                     row_version
-                ) VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, 1)
+                ) VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, 1)
                 """,
                 (
                     normalized_turn_id,
@@ -449,6 +459,8 @@ class SQLiteMemoryStore(MemoryStore):
                         if operation_settlement_min_saved_ratio is not None
                         else 0.5
                     ),
+                    int(operation_argument_min_utf8_bytes),
+                    int(operation_argument_preview_chars),
                 ),
             )
             placeholders = ",".join("?" for _ in source_ids)
@@ -1657,6 +1669,8 @@ class SQLiteMemoryStore(MemoryStore):
                 if row["operation_settlement_min_saved_ratio"] is not None
                 else 0.5
             ),
+            operation_argument_min_utf8_bytes=int(row["operation_argument_min_utf8_bytes"]),
+            operation_argument_preview_chars=int(row["operation_argument_preview_chars"]),
         )
 
     def _ensure_conversation_state_locked(self, *, namespace: Namespace, updated_at: int) -> None:
@@ -2427,8 +2441,9 @@ class SQLiteMemoryStore(MemoryStore):
                     policy, settlement_status, settlement_schema_version, terminal_source_id,
                     full_projection_hash, settled_projection_hash, first_changed_projection_index,
                     full_projected_tokens, settled_projected_tokens, token_count_quality,
-                    reason, settled_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    reason, settled_at, settlement_min_utf8_bytes, settlement_min_saved_ratio,
+                    settlement_config_hash, settlement_argument_min_utf8_bytes, settlement_argument_preview_chars
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(
                     tenant_id, user_id, domain_id, conversation_id, turn_id, provider_profile
                 ) DO NOTHING
@@ -2456,6 +2471,11 @@ class SQLiteMemoryStore(MemoryStore):
                     str(settlement.token_count_quality or "").strip(),
                     str(settlement.reason or "").strip(),
                     int(settlement.settled_at or 0),
+                    int(settlement.settlement_min_utf8_bytes),
+                    float(settlement.settlement_min_saved_ratio),
+                    str(settlement.settlement_config_hash or ""),
+                    int(settlement.settlement_argument_min_utf8_bytes),
+                    int(settlement.settlement_argument_preview_chars),
                 ),
             )
         return inserted.rowcount > 0
@@ -2508,6 +2528,11 @@ class SQLiteMemoryStore(MemoryStore):
                 raise SchemaError("settlement_min_utf8_bytes_mismatch")
             if abs(float(settlement.settlement_min_saved_ratio or 0.5) - frozen_ratio) > 1e-9:
                 raise SchemaError("settlement_min_saved_ratio_mismatch")
+            if policy == "compact_arguments_after_terminal":
+                if settlement.settlement_argument_min_utf8_bytes != int(turn["operation_argument_min_utf8_bytes"]):
+                    raise SchemaError("settlement_argument_min_utf8_bytes_mismatch")
+                if settlement.settlement_argument_preview_chars != int(turn["operation_argument_preview_chars"]):
+                    raise SchemaError("settlement_argument_preview_chars_mismatch")
             existing = self._conn.execute(
                 """
                 SELECT 1 FROM turn_projection_settlement
@@ -2550,8 +2575,8 @@ class SQLiteMemoryStore(MemoryStore):
                     full_projection_hash, settled_projection_hash, first_changed_projection_index,
                     full_projected_tokens, settled_projected_tokens, token_count_quality,
                     reason, settled_at, settlement_min_utf8_bytes, settlement_min_saved_ratio,
-                    settlement_config_hash
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    settlement_config_hash, settlement_argument_min_utf8_bytes, settlement_argument_preview_chars
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     namespace.tenant_id or "",
@@ -2579,6 +2604,8 @@ class SQLiteMemoryStore(MemoryStore):
                     int(settlement.settlement_min_utf8_bytes or 256),
                     float(settlement.settlement_min_saved_ratio or 0.5),
                     str(settlement.settlement_config_hash or "").strip(),
+                    int(settlement.settlement_argument_min_utf8_bytes),
+                    int(settlement.settlement_argument_preview_chars),
                 ),
             )
             settlement_id = f"{turn_id}:{profile}"
@@ -3360,6 +3387,12 @@ class SQLiteMemoryStore(MemoryStore):
             )
             plan = None
             try:
+                argument_options = {}
+                if frozen_policy == "compact_arguments_after_terminal" and turn_row is not None:
+                    argument_options = {
+                        "argument_min_utf8_bytes": int(turn_row["operation_argument_min_utf8_bytes"]),
+                        "argument_preview_chars": int(turn_row["operation_argument_preview_chars"]),
+                    }
                 plan = settlement_builder(
                     namespace,
                     turn_id,
@@ -3369,6 +3402,7 @@ class SQLiteMemoryStore(MemoryStore):
                     policy=frozen_policy,
                     min_inline_bytes=frozen_min,
                     required_savings_ratio=frozen_ratio,
+                    **argument_options,
                 )
             except Exception:
                 plan = None
@@ -3456,6 +3490,11 @@ class SQLiteMemoryStore(MemoryStore):
         plan_ratio = float(getattr(plan, "settlement_min_saved_ratio", 0.5) or 0.5)
         if plan_min != frozen_min or abs(plan_ratio - frozen_ratio) > 1e-9:
             return False
+        if policy == "compact_arguments_after_terminal" and (
+            getattr(plan, "settlement_argument_min_utf8_bytes", 0) != int(turn["operation_argument_min_utf8_bytes"])
+            or getattr(plan, "settlement_argument_preview_chars", 0) != int(turn["operation_argument_preview_chars"])
+        ):
+            return False
         # V6 之前的旧行没有 config hash; 只对已有非空 hash 的行做一致性校验,
         # 旧行由重建路径用冻结配置补齐后写回 plan 的 hash。
         existing_config_hash = str(existing["settlement_config_hash"] or "").strip()
@@ -3517,8 +3556,8 @@ class SQLiteMemoryStore(MemoryStore):
                 full_projection_hash, settled_projection_hash, first_changed_projection_index,
                 full_projected_tokens, settled_projected_tokens, token_count_quality,
                 reason, settled_at, settlement_min_utf8_bytes, settlement_min_saved_ratio,
-                settlement_config_hash
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                settlement_config_hash, settlement_argument_min_utf8_bytes, settlement_argument_preview_chars
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 namespace.tenant_id or "",
@@ -3546,6 +3585,8 @@ class SQLiteMemoryStore(MemoryStore):
                 int(getattr(plan, "settlement_min_utf8_bytes", 256) or 256),
                 float(getattr(plan, "settlement_min_saved_ratio", 0.5) or 0.5),
                 str(getattr(plan, "settlement_config_hash", "") or "").strip(),
+                int(getattr(plan, "settlement_argument_min_utf8_bytes", 1024)),
+                int(getattr(plan, "settlement_argument_preview_chars", 96)),
             ),
         )
         for item in messages:
@@ -3721,10 +3762,45 @@ class SQLiteMemoryStore(MemoryStore):
         scope_clause, params = self._scope_clause(namespace, with_conversation=not cross_conversation)
         with self._lock:
             rows = self._conn.execute(
-                f"SELECT * FROM summaries WHERE {scope_clause} AND is_semanticized = 0 ORDER BY timestamp DESC LIMIT ?",
+                f"SELECT * FROM summaries WHERE {scope_clause} AND is_semanticized = 0 "
+                "AND kind = 'memory.episode_summary' ORDER BY timestamp DESC LIMIT ?",
                 [*params, int(limit)],
             ).fetchall()
         return [self._row_to_record(r, "summaries") for r in rows]
+
+    def get_previous_episodic_summary(
+        self, *, namespace: Namespace, before_seq_no: int, before_timestamp: int
+    ) -> dict[str, Any] | None:
+        scope_clause, params = self._scope_clause(namespace, with_conversation=True)
+        # Covered source order, not summary creation time, determines continuity.
+        # This also handles legacy summaries without period metadata. Broken or
+        # foreign lineage must never become a summary-model reference.
+        owned = (
+            "m.source_id = j.value AND m.tenant_id = s.tenant_id "
+            "AND m.user_id = s.user_id AND m.domain_id = s.domain_id "
+            "AND m.conversation_id = s.conversation_id"
+        )
+        with self._lock:
+            row = self._conn.execute(
+                f"""
+                SELECT s.* FROM summaries s
+                WHERE {scope_clause} AND kind = 'memory.episode_summary'
+                  AND lineage_status = 'valid' AND retrieval_visibility = 'default'
+                  AND json_valid(source_ids_json) AND json_array_length(source_ids_json) > 0
+                  AND (period_end_ts = 0 OR period_end_ts <= ?)
+                  AND NOT EXISTS (
+                    SELECT 1 FROM json_each(s.source_ids_json) j
+                    LEFT JOIN messages m ON {owned}
+                    WHERE m.source_id IS NULL OR m.seq_no >= ? OR m.timestamp > ?
+                  )
+                ORDER BY (
+                    SELECT MAX(m.seq_no) FROM json_each(s.source_ids_json) j
+                    JOIN messages m ON {owned}
+                ) DESC, s.summary_id ASC LIMIT 1
+                """,
+                [*params, int(before_timestamp), int(before_seq_no), int(before_timestamp)],
+            ).fetchone()
+        return self._row_to_record(row, "summaries") if row is not None else None
 
     def get_episodic_summaries_by_time_range(
         self,

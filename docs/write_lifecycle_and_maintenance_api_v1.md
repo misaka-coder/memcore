@@ -154,7 +154,9 @@ handle = mem.begin_turn(
   `turn_idempotency_conflict`.
 - The current `operation_projection_policy` is frozen into the returned
   `TurnHandle` together with `operation_settlement_min_utf8_bytes` and
-  `operation_settlement_min_saved_ratio`; changing configuration later does
+  `operation_settlement_min_saved_ratio`. The argument policy also freezes
+  `operation_argument_min_utf8_bytes` and `operation_argument_preview_chars`;
+  changing configuration later does
   not rewrite an open turn.
 
 The returned `TurnHandle` contains `turn_id`, `namespace`, `status`, persisted

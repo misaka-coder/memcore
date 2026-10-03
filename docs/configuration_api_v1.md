@@ -118,22 +118,26 @@ values raise `ConfigError`; construction does not clamp them into valid values.
 | `operation_projection_policy` | `full_until_raw_compaction` | Stable wire value described below. |
 | `operation_settlement_min_utf8_bytes` | `256` | Positive integer; observation bodies below this UTF-8 byte threshold stay full. Frozen when the turn begins. |
 | `operation_settlement_min_saved_ratio` | `0.5` | Finite number strictly between `0` and `1`; the card must save strictly more than the effective ratio to replace the body. The current classifier caps the effective ratio at `0.99` without changing the stored configuration. Frozen when the turn begins. |
+| `operation_argument_min_utf8_bytes` | `1024` | Positive integer; under the argument policy, only string leaves reaching this byte threshold are candidates. Frozen when the turn begins. |
+| `operation_argument_preview_chars` | `96` | Positive integer; maximum string-prefix characters retained beside the action source ID. Frozen when the turn begins. |
 
 `operation_projection_policy` accepts only:
 
 - `full_until_raw_compaction`: keep full action/observation projection until the
   unified raw compactor processes the turn;
-- `compact_after_terminal`: after successful turn completion, freeze a deterministic
-  reloadable compact projection while retaining full SQLite truth.
+- `compact_after_terminal`: after successful turn completion, compact observation
+  bodies; native action arguments remain byte-identical.
+- `compact_arguments_after_terminal`: additionally shorten eligible string argument
+  values while preserving native call structure, keys and types. Arrays stay full.
 
 These enum strings are persisted and enter settled hashes. Published values are
 stable wire values: do not rename, delete, reuse, or change their meaning. A
 future schema may add a new value but must keep historical values readable.
 
-The policy and both settlement thresholds are frozen together by `begin_turn()`.
+The policy and all settlement thresholds are frozen together by `begin_turn()`.
 Changing configuration affects new turns only; existing turns and settled
-history retain their recorded values. Byte savings describe the observation
-projection, not provider token usage or total cost. See
+history retain their recorded values. Byte savings describe replaced string
+values, not provider token usage or total cost. See
 [`operation_projection_settlement_v1.md`](operation_projection_settlement_v1.md)
 for threshold examples, readback, and metrics, and
 [`provider_support_matrix_v1.md`](provider_support_matrix_v1.md) for supported
@@ -333,7 +337,7 @@ band that a prefix stays byte-stable inside; `raw_token_trigger` and
 `episodic_compact_trigger_count` toward `episodic_visible_max` removes the
 append-only headroom the band exists to provide. A UI slider here does not
 tune the system, it disables the mechanism and then gets judged on the result.
-`operation_projection_policy` is a binary architectural decision that shapes
+`operation_projection_policy` is an architectural decision that shapes
 how much long-lived context a product carries, not a preference. Keep all of
 these in host configuration files, applied at startup.
 

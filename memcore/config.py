@@ -28,6 +28,7 @@ class OperationProjectionPolicy(str, Enum):
 
     FULL_UNTIL_RAW_COMPACTION = "full_until_raw_compaction"
     COMPACT_AFTER_TERMINAL = "compact_after_terminal"
+    COMPACT_ARGUMENTS_AFTER_TERMINAL = "compact_arguments_after_terminal"
 
     def __str__(self) -> str:
         return self.value
@@ -90,8 +91,8 @@ class MemoryConfig:
     # --- 工具结果终局紧凑投影 ---
     # 枚举值见 OperationProjectionPolicy(稳定 wire value, 永不改名)。默认保持旧行为:
     # full_until_raw_compaction = 完整 action/observation 直到 raw compaction 由
-    # operation_digest 接替, 不新增 settlement 元数据。compact_after_terminal 由后续
-    # 切片接入, 本字段仅用于 begin_turn 冻结与 schema 落库。
+    # operation_digest 接替, 不新增 settlement 元数据。compact_after_terminal 只收起结果;
+    # compact_arguments_after_terminal 另收起长字符串参数。所有策略在 begin_turn 冻结。
     operation_projection_policy: str = "full_until_raw_compaction"
     # 卡片替换的字节/收益门槛(通用扩展, 默认与历史行为逐字节一致):
     # 正文 UTF-8 字节数低于 min 直接 inline_full; 卡片不能至少比正文小 ratio 时
@@ -99,6 +100,8 @@ class MemoryConfig:
     # settlement 配置 hash, 重启后按冻结值稳定重放, 不受运行中配置变化影响。
     operation_settlement_min_utf8_bytes: int = 256
     operation_settlement_min_saved_ratio: float = 0.5
+    operation_argument_min_utf8_bytes: int = 1024
+    operation_argument_preview_chars: int = 96
 
     def __post_init__(self) -> None:
         self.validate()
@@ -203,3 +206,7 @@ class MemoryConfig:
         if not isinstance(ratio, (int, float)) or not math.isfinite(float(ratio)) or not (0.0 < float(ratio) < 1.0):
             raise ConfigError(f"operation_settlement_min_saved_ratio must be > 0 and < 1, got {ratio!r}")
         self.operation_settlement_min_saved_ratio = float(ratio)
+        for name in ("operation_argument_min_utf8_bytes", "operation_argument_preview_chars"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ConfigError(f"{name} must be a positive int, got {value!r}")

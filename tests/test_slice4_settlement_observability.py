@@ -199,7 +199,12 @@ class ReadbackBaselineTests(unittest.TestCase):
         _complete(mem, "t1")
         out = mem.compact_due_sync(provider_profile="openai_chat")
         self.assertGreater(out.get("summaries_created", 0), 0)
-        visible = store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10)
+        visible = list(
+            store.get_retrieval_records(
+                namespace=mem.namespace,
+                source_ids=tuple(row[0] for row in store._conn.execute("SELECT summary_id FROM summaries")),
+            ).values()
+        )
         operation = next(item for item in visible if item["kind"] == "memory.operation_digest")
         digest_sids = set(operation.get("source_ids") or [])
         self.assertIn(use_sid, digest_sids)

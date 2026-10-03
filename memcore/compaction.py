@@ -298,7 +298,7 @@ class Compaction:
                     batch_size=len(episode_entries),
                     overrides=self.overrides,
                     enable_flavor=self.config.enable_flavor,
-                    reference_summary_text=self._render_reference_summaries(namespace),
+                    reference_summary_text=self._render_reference_summaries(namespace, ordered_entries),
                 ),
                 fallback={
                     "diary_summary": "",
@@ -854,18 +854,22 @@ class Compaction:
         elif result.get("index_status") != "pending":
             result["index_status"] = "indexed"
 
-    def _render_reference_summaries(self, namespace: Namespace) -> str:
-        """取本会话最近的既有阶段摘要作参考,帮新摘要与旧摘要保持一致、避免冲突。"""
-        existing = self.store.get_visible_episodic_summaries(
-            namespace=namespace, limit=self.config.episodic_visible_max
+    def _render_reference_summaries(self, namespace: Namespace, entries: list[TimelineEntry]) -> str:
+        """Only the preceding chat episode provides continuity; traces stay separate."""
+        if not entries:
+            return ""
+        previous = self.store.get_previous_episodic_summary(
+            namespace=namespace,
+            before_seq_no=min(entry.seq_no for entry in entries),
+            before_timestamp=min(entry.timestamp for entry in entries),
         )
-        lines = []
-        for s in existing:
-            diary = normalize_text(s.get("diary_summary"))
-            facts = "; ".join(str(f) for f in (s.get("core_facts") or []))
-            label = str(s.get("date_label") or "")
-            lines.append(f"- [{label}] {diary}" + (f"(事实:{facts})" if facts else ""))
-        return "\n".join(lines)
+        if not previous:
+            return ""
+        diary = normalize_text(previous.get("diary_summary"))
+        if not diary:
+            return ""
+        label = str(previous.get("date_label") or "")
+        return f"- [{label}] {diary}" if label else diary
 
     def _render_transcript(self, batch: list[dict[str, Any]]) -> str:
         rendered: list[str] = []

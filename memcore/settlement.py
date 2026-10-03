@@ -4,7 +4,7 @@
   - inline_full: 短反馈/低收益, 保留完整正文(逐字节不变);
   - compact_reloadable: 长正文且 compact 引用明显更小, 替换为可回读引用;
   - explicit_empty: 无正文(不替换, 保持宿主记录的 observation 形状)。
-硬约束: compact 必须严格小于 full(no-expansion); 替换至少省一半才执行。
+硬约束: compact 必须严格小于 full(no-expansion); 默认节省严格超过一半才执行。
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 from functools import partial
 
 from .errors import SchemaError
+from .config import OperationProjectionPolicy
 from .projection import (
     ANTHROPIC_PROFILE,
     CANONICAL_PROFILE,
@@ -30,6 +31,8 @@ from .token_counter import estimate_text_tokens
 
 COMPACT_RELOAD_MIN_INLINE_BYTES = 256  # 正文低于该字节数直接 inline_full(短反馈)
 COMPACT_RELOAD_REQUIRED_SAVINGS_RATIO = 0.5  # compact 必须 < full 的 1-ratio(明显收益)
+ARGUMENT_MIN_UTF8_BYTES = 1024
+ARGUMENT_PREVIEW_CHARS = 96
 SETTLED_PROJECTION_SCHEMA_VERSION = 1
 TOKEN_COUNT_QUALITY = "estimated"
 
@@ -137,9 +140,12 @@ class SettledProjectionPlan:
     token_count_quality: str = TOKEN_COUNT_QUALITY
     reason: str = ""
     observation_kinds: dict[str, str] = field(default_factory=dict)
+    action_kinds: dict[str, str] = field(default_factory=dict)
     settlement_min_utf8_bytes: int = COMPACT_RELOAD_MIN_INLINE_BYTES
     settlement_min_saved_ratio: float = COMPACT_RELOAD_REQUIRED_SAVINGS_RATIO
     settlement_config_hash: str = ""
+    settlement_argument_min_utf8_bytes: int = ARGUMENT_MIN_UTF8_BYTES
+    settlement_argument_preview_chars: int = ARGUMENT_PREVIEW_CHARS
 
     @property
     def replaced(self) -> bool:
@@ -181,14 +187,173 @@ def _is_observation(entry: Any) -> bool:
     return str(getattr(entry, "turn_role", "") or "").endswith("observation")
 
 
+def compact_argument_value(
+    value: Any,
+    *,
+    source_id: str,
+    min_utf8_bytes: int = ARGUMENT_MIN_UTF8_BYTES,
+    preview_chars: int = ARGUMENT_PREVIEW_CHARS,
+    saved_ratio: float = 0.5,
+) -> tuple[Any, bool]:
+    """Keep argument shape; shorten only eligible string leaves of objects.
+
+    Arrays are deliberately opaque. The source ID opens the immutable action,
+    so field names, call IDs and tool names need no duplicate markers.
+    """
+    if isinstance(value, dict):
+        changed = False
+        result = {}
+        for key, item in value.items():
+            result[key], replaced = compact_argument_value(
+                item,
+                source_id=source_id,
+                min_utf8_bytes=min_utf8_bytes,
+                preview_chars=preview_chars,
+                saved_ratio=saved_ratio,
+            )
+            changed = changed or replaced
+        return (result if changed else value), changed
+    if not isinstance(value, str) or utf8_bytes(value) < min_utf8_bytes:
+        return value, False
+    preview = value[:preview_chars] + f"\n[truncated source_id={source_id}]"
+    if utf8_bytes(preview) >= utf8_bytes(value) * (1.0 - saved_ratio):
+        return value, False
+    return preview, True
+
+
+def _has_opaque_signature(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        return any(
+            str(key) in {"signature", "thought_signature", "thoughtSignature", "encrypted_content"}
+            or (str(key) not in {"arguments", "input"} and _has_opaque_signature(item))
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return any(_has_opaque_signature(item) for item in value)
+    return False
+
+
+def _settle_action_payload(
+    payload: dict[str, Any],
+    actions: Sequence[Any],
+    *,
+    provider_profile: str,
+    min_utf8_bytes: int,
+    preview_chars: int,
+    saved_ratio: float,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    kinds = {entry.source_id: INLINE_FULL for entry in actions}
+    by_call = {str(entry.correlation_id): entry for entry in actions}
+    if len(by_call) != len(actions):
+        raise SchemaError("settlement_action_correlation_ambiguous")
+
+    def compact(value: Any, entry: Any) -> Any:
+        replacement, changed = compact_argument_value(
+            value,
+            source_id=entry.source_id,
+            min_utf8_bytes=min_utf8_bytes,
+            preview_chars=preview_chars,
+            saved_ratio=saved_ratio,
+        )
+        if changed:
+            kinds[entry.source_id] = COMPACT_RELOADABLE
+        return replacement
+
+    result = dict(payload)
+    if provider_profile == OPENAI_PROFILE:
+        calls = payload.get("tool_calls")
+        if payload.get("role") != "assistant" or not isinstance(calls, list):
+            raise SchemaError("settlement_action_projection_shape_unsupported")
+        updated_calls = []
+        seen: set[str] = set()
+        for call in calls:
+            if not isinstance(call, Mapping) or call.get("type") != "function":
+                raise SchemaError("settlement_action_projection_shape_unsupported")
+            call_id = str(call.get("id") or "")
+            function = call.get("function")
+            if call_id not in by_call or call_id in seen or not isinstance(function, Mapping):
+                raise SchemaError("settlement_action_projection_shape_unsupported")
+            arguments = function.get("arguments")
+            if not isinstance(arguments, str):
+                raise SchemaError("settlement_action_arguments_invalid")
+            try:
+                parsed = json.loads(arguments)
+            except (ValueError, TypeError) as exc:
+                raise SchemaError("settlement_action_arguments_invalid") from exc
+            replacement = compact(parsed, by_call[call_id])
+            # Keep untouched JSON strings byte-identical, including whitespace.
+            if replacement is not parsed:
+                call = {
+                    **call,
+                    "function": {
+                        **function,
+                        "arguments": json.dumps(replacement, ensure_ascii=False, separators=(",", ":")),
+                    },
+                }
+            updated_calls.append(call)
+            seen.add(call_id)
+        if seen != set(by_call):
+            raise SchemaError("settlement_action_source_coverage_mismatch")
+        result["tool_calls"] = updated_calls
+    elif provider_profile == ANTHROPIC_PROFILE:
+        blocks = payload.get("content")
+        if payload.get("role") != "assistant" or not isinstance(blocks, list):
+            raise SchemaError("settlement_action_projection_shape_unsupported")
+        updated_blocks = []
+        seen = set()
+        for block in blocks:
+            if not isinstance(block, Mapping) or block.get("type") != "tool_use":
+                updated_blocks.append(block)
+                continue
+            call_id = str(block.get("id") or "")
+            if call_id not in by_call or call_id in seen or "input" not in block:
+                raise SchemaError("settlement_action_projection_shape_unsupported")
+            replacement = compact(block["input"], by_call[call_id])
+            updated_blocks.append({**block, "input": replacement} if replacement is not block["input"] else block)
+            seen.add(call_id)
+        if seen != set(by_call):
+            raise SchemaError("settlement_action_source_coverage_mismatch")
+        result["content"] = updated_blocks
+    else:
+        content = payload.get("content")
+        if len(actions) != 1 or not isinstance(content, str):
+            raise SchemaError("settlement_action_projection_shape_unsupported")
+        prefix, separator, data = content.rpartition("\ndata:\n")
+        if not separator:
+            return payload, kinds  # Custom canonical renderer: no trusted input section.
+        try:
+            parsed = json.loads(data)
+        except ValueError as exc:
+            raise SchemaError("settlement_action_arguments_invalid") from exc
+        if not isinstance(parsed, dict):
+            return payload, kinds
+        key = "input" if "input" in parsed else "arguments" if "arguments" in parsed else ""
+        if key:
+            replacement = compact(parsed[key], actions[0])
+            parsed = {**parsed, key: replacement}
+        else:
+            parsed = compact(parsed, actions[0])
+        if any(kind == COMPACT_RELOADABLE for kind in kinds.values()):
+            result["content"] = (
+                prefix + separator + json.dumps(parsed, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            )
+    if any(kind == COMPACT_RELOADABLE for kind in kinds.values()) and _has_opaque_signature(payload):
+        raise SchemaError("settlement_signed_action_requires_full_replay")
+    return result, kinds
+
+
 def _settle_authoritative_messages(
     entries: Sequence[Any],
     full_messages: Sequence[Any],
     *,
     provider_profile: str,
     observation_decider: Callable[[Any, str], tuple[str, str]],
-) -> tuple[tuple[ProjectionMessageInput, ...], dict[str, str]]:
-    """Compact only observation bodies inside the exact frozen provider projection."""
+    compact_arguments: bool = False,
+    argument_min_utf8_bytes: int = ARGUMENT_MIN_UTF8_BYTES,
+    argument_preview_chars: int = ARGUMENT_PREVIEW_CHARS,
+    saved_ratio: float = 0.5,
+) -> tuple[tuple[ProjectionMessageInput, ...], dict[str, str], dict[str, str]]:
+    """Settle eligible values inside the exact frozen provider projection."""
 
     if provider_profile not in {CANONICAL_PROFILE, OPENAI_PROFILE, ANTHROPIC_PROFILE}:
         raise SchemaError("settlement_provider_profile_unsupported")
@@ -199,6 +364,7 @@ def _settle_authoritative_messages(
     }
     settled: list[ProjectionMessageInput] = []
     kinds: dict[str, str] = {}
+    action_kinds: dict[str, str] = {}
     for raw_message in full_messages:
         message = _as_projection_input(raw_message)
         observations = [
@@ -206,12 +372,29 @@ def _settle_authoritative_messages(
             for source_id in message.source_ids
             if source_id in entry_by_source and _is_observation(entry_by_source[source_id])
         ]
-        if not observations:
+        actions = [
+            entry_by_source[source_id]
+            for source_id in message.source_ids
+            if source_id in entry_by_source and str(entry_by_source[source_id].turn_role).endswith("action")
+        ]
+        if not observations and not (compact_arguments and actions):
             settled.append(message)
             continue
 
         payload = dict(message.payload)
-        if provider_profile in {CANONICAL_PROFILE, OPENAI_PROFILE}:
+        if compact_arguments and actions:
+            payload, replacements = _settle_action_payload(
+                payload,
+                actions,
+                provider_profile=provider_profile,
+                min_utf8_bytes=argument_min_utf8_bytes,
+                preview_chars=argument_preview_chars,
+                saved_ratio=saved_ratio,
+            )
+            action_kinds.update(replacements)
+        if not observations:
+            pass
+        elif provider_profile in {CANONICAL_PROFILE, OPENAI_PROFILE}:
             expected_role = "tool" if provider_profile == OPENAI_PROFILE else "user"
             if len(observations) != 1 or str(payload.get("role") or "") != expected_role:
                 raise SchemaError("settlement_observation_projection_shape_unsupported")
@@ -259,7 +442,7 @@ def _settle_authoritative_messages(
                 projection_version=message.projection_version,
             )
         )
-    return tuple(settled), kinds
+    return tuple(settled), kinds, action_kinds
 
 
 def build_settlement_plan(
@@ -276,6 +459,9 @@ def build_settlement_plan(
     settlement_min_saved_ratio: float = COMPACT_RELOAD_REQUIRED_SAVINGS_RATIO,
     settlement_config_hash: str = "",
     timezone: str = "",
+    compact_arguments: bool = False,
+    settlement_argument_min_utf8_bytes: int = ARGUMENT_MIN_UTF8_BYTES,
+    settlement_argument_preview_chars: int = ARGUMENT_PREVIEW_CHARS,
 ) -> SettledProjectionPlan:
     """确定性生成 settled projection。
 
@@ -289,13 +475,22 @@ def build_settlement_plan(
             timezone=str(timezone or "").strip(),
             include_call_id=provider_profile == CANONICAL_PROFILE,
         )
-    if authoritative_messages is not None:
+    action_kinds: dict[str, str] = {}
+    if authoritative_messages is not None or compact_arguments:
+        if authoritative_messages is None:
+            authoritative_messages = adapter.project_entries(
+                entries, provider_profile=provider_profile, start_index=start_index
+            )
         full_messages = tuple(_as_projection_input(message) for message in authoritative_messages)
-        settled_messages, kinds = _settle_authoritative_messages(
+        settled_messages, kinds, action_kinds = _settle_authoritative_messages(
             entries,
             full_messages,
             provider_profile=provider_profile,
             observation_decider=observation_decider,
+            compact_arguments=compact_arguments,
+            argument_min_utf8_bytes=settlement_argument_min_utf8_bytes,
+            argument_preview_chars=settlement_argument_preview_chars,
+            saved_ratio=settlement_min_saved_ratio,
         )
     else:
         full_messages = tuple(
@@ -320,7 +515,7 @@ def build_settlement_plan(
         if full_message.payload != settled_message.payload:
             changed_index = index
             break
-    any_compact = any(kind == COMPACT_RELOADABLE for kind in kinds.values())
+    any_compact = COMPACT_RELOADABLE in (*kinds.values(), *action_kinds.values())
     if any_compact and changed_index >= 0:
         status = "settled"
     else:
@@ -341,9 +536,12 @@ def build_settlement_plan(
         settled_projection_hash=stable_projection_hash([m.payload for m in settled_messages]),
         token_count_quality=str(token_count_quality or TOKEN_COUNT_QUALITY),
         observation_kinds=dict(kinds),
+        action_kinds=dict(action_kinds),
         settlement_min_utf8_bytes=int(settlement_min_utf8_bytes),
         settlement_min_saved_ratio=float(settlement_min_saved_ratio),
         settlement_config_hash=str(settlement_config_hash or ""),
+        settlement_argument_min_utf8_bytes=int(settlement_argument_min_utf8_bytes),
+        settlement_argument_preview_chars=int(settlement_argument_preview_chars),
     )
 
 
@@ -375,13 +573,22 @@ def stable_settlement_id(*, turn_id: str, provider_profile: str) -> str:
     return f"{turn_id}:{provider_profile}"
 
 
-def settlement_config_hash(*, policy: str, min_utf8_bytes: int, saved_ratio: float) -> str:
+def settlement_config_hash(
+    *,
+    policy: str,
+    min_utf8_bytes: int,
+    saved_ratio: float,
+    argument_min_utf8_bytes: int = ARGUMENT_MIN_UTF8_BYTES,
+    argument_preview_chars: int = ARGUMENT_PREVIEW_CHARS,
+) -> str:
     """确定性配置指纹: 冻结阈值与策略共同进入 settlement 身份, 重启后稳定。
 
     只用于一致性校验与审计, 不参与 provider payload hash。
     """
 
     canonical = f"{str(policy or 'full_until_raw_compaction').strip()}|{int(min_utf8_bytes)}|{float(saved_ratio):.6f}"
+    if policy == OperationProjectionPolicy.COMPACT_ARGUMENTS_AFTER_TERMINAL.value:
+        canonical += f"|arguments_v1|{int(argument_min_utf8_bytes)}|{int(argument_preview_chars)}"
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -391,6 +598,7 @@ def load_settled_projection(
     namespace: Any,
     turn_id: str,
     provider_profile: str,
+    settlement_policies: set[str] | None = None,
 ) -> "list[Any] | None":
     """读取已冻结的 settled 历史投影(仅 status==settled), 无则返回 None。
 
@@ -413,7 +621,10 @@ def load_settled_projection(
     )
     if not rows:
         raise SchemaError("settled_projection_rows_missing")
-    return settled_rows_to_messages(settlement, rows)
+    messages = settled_rows_to_messages(settlement, rows)
+    if settlement_policies is not None:
+        settlement_policies.add(str(settlement.get("policy") or ""))
+    return messages
 
 
 def settled_rows_to_messages(

@@ -235,6 +235,7 @@ class MemorySystem:
                 operation_projection_policy=self.config.operation_projection_policy,
                 operation_settlement_min_utf8_bytes=self.config.operation_settlement_min_utf8_bytes,
                 operation_settlement_min_saved_ratio=self.config.operation_settlement_min_saved_ratio,
+                **self._argument_settlement_options(),
             )
         except NotImplementedError as exc:
             raise SchemaError("store_timeline_v2_unsupported") from exc
@@ -275,6 +276,7 @@ class MemorySystem:
                 operation_projection_policy=self.config.operation_projection_policy,
                 operation_settlement_min_utf8_bytes=self.config.operation_settlement_min_utf8_bytes,
                 operation_settlement_min_saved_ratio=self.config.operation_settlement_min_saved_ratio,
+                **self._argument_settlement_options(),
             )
         except NotImplementedError as exc:
             raise SchemaError("store_existing_stimulus_turn_unsupported") from exc
@@ -302,6 +304,14 @@ class MemorySystem:
         except NotImplementedError as exc:
             raise SchemaError("store_timeline_v2_unsupported") from exc
         return self._index_timeline_entry(stored)
+
+    def _argument_settlement_options(self) -> dict[str, int]:
+        if self.config.operation_projection_policy != OperationProjectionPolicy.COMPACT_ARGUMENTS_AFTER_TERMINAL.value:
+            return {}
+        return {
+            "operation_argument_min_utf8_bytes": self.config.operation_argument_min_utf8_bytes,
+            "operation_argument_preview_chars": self.config.operation_argument_preview_chars,
+        }
 
     def append_action(
         self,
@@ -548,7 +558,10 @@ class MemorySystem:
         if frozen_turn is None:
             return None
         frozen_policy = str(frozen_turn.operation_projection_policy or "full_until_raw_compaction")
-        if frozen_policy != OperationProjectionPolicy.COMPACT_AFTER_TERMINAL.value:
+        if frozen_policy not in {
+            OperationProjectionPolicy.COMPACT_AFTER_TERMINAL.value,
+            OperationProjectionPolicy.COMPACT_ARGUMENTS_AFTER_TERMINAL.value,
+        }:
             return None
         from functools import partial
 
@@ -563,10 +576,14 @@ class MemorySystem:
         profile = normalize_provider_profile(provider_profile or self.config.projection_profile)
         frozen_min = int(frozen_turn.operation_settlement_min_utf8_bytes or 256)
         frozen_ratio = float(frozen_turn.operation_settlement_min_saved_ratio or 0.5)
+        frozen_argument_min = frozen_turn.operation_argument_min_utf8_bytes
+        frozen_argument_preview = frozen_turn.operation_argument_preview_chars
         config_hash = settlement_config_hash(
             policy=frozen_policy,
             min_utf8_bytes=frozen_min,
             saved_ratio=frozen_ratio,
+            argument_min_utf8_bytes=frozen_argument_min,
+            argument_preview_chars=frozen_argument_preview,
         )
         try:
             entries = self.store.get_turn_entries(namespace=self.namespace, turn_id=turn_id)
@@ -594,6 +611,9 @@ class MemorySystem:
                 settlement_min_utf8_bytes=frozen_min,
                 settlement_min_saved_ratio=frozen_ratio,
                 settlement_config_hash=config_hash,
+                compact_arguments=frozen_policy == OperationProjectionPolicy.COMPACT_ARGUMENTS_AFTER_TERMINAL.value,
+                settlement_argument_min_utf8_bytes=frozen_argument_min,
+                settlement_argument_preview_chars=frozen_argument_preview,
             )
         except Exception as exc:  # noqa: BLE001
             detail = str(exc) if isinstance(exc, SchemaError) else ""
@@ -618,6 +638,8 @@ class MemorySystem:
             settlement_min_utf8_bytes=frozen_min,
             settlement_min_saved_ratio=frozen_ratio,
             settlement_config_hash=config_hash,
+            settlement_argument_min_utf8_bytes=frozen_argument_min,
+            settlement_argument_preview_chars=frozen_argument_preview,
         )
         try:
             self.store.commit_turn_projection_settlement(
@@ -638,6 +660,8 @@ class MemorySystem:
                 settlement_min_utf8_bytes=frozen_min,
                 settlement_min_saved_ratio=frozen_ratio,
                 settlement_config_hash=config_hash,
+                settlement_argument_min_utf8_bytes=frozen_argument_min,
+                settlement_argument_preview_chars=frozen_argument_preview,
             )
             try:
                 self.store.commit_turn_projection_settlement(
@@ -749,6 +773,7 @@ class MemorySystem:
                 projection_rows = None
 
         messages: list[ProjectionMessage] = []
+        settlement_policies: set[str] = set()
         for record, id_key, prefix, turn_id in memory_records:
             messages.extend(
                 self._freeze_memory_record_projection(
@@ -777,6 +802,7 @@ class MemorySystem:
                         projection_rows.settled_rows_by_turn.get(turn_id, ()) if projection_rows is not None else None
                     ),
                     rows_preloaded=projection_rows is not None,
+                    settlement_policies=settlement_policies,
                 )
             )
 
@@ -801,6 +827,8 @@ class MemorySystem:
             compaction_generation=compaction_generation,
             projection_generation=projection_generation,
             has_compact_history=any(message.projection_status is ProjectionStatus.SETTLED for message in messages),
+            has_compact_arguments_history=OperationProjectionPolicy.COMPACT_ARGUMENTS_AFTER_TERMINAL.value
+            in settlement_policies,
         )
         return projection, entries
 
@@ -995,6 +1023,7 @@ class MemorySystem:
                 )
             ),
             has_compact_history=projection.has_compact_history,
+            has_compact_arguments_history=projection.has_compact_arguments_history,
             current_turn_id=current_turn_id,
             projection_version=projection.projection_version,
             compaction_generation=projection.compaction_generation,
@@ -1037,6 +1066,10 @@ class MemorySystem:
                     "settlement_min_utf8_bytes": int(settlement.get("settlement_min_utf8_bytes") or 256),
                     "settlement_min_saved_ratio": float(settlement.get("settlement_min_saved_ratio") or 0.5),
                     "settlement_config_hash": str(settlement.get("settlement_config_hash") or ""),
+                    "settlement_argument_min_utf8_bytes": int(
+                        settlement.get("settlement_argument_min_utf8_bytes") or 1024
+                    ),
+                    "settlement_argument_preview_chars": int(settlement.get("settlement_argument_preview_chars") or 96),
                 }
             )
         return metrics
@@ -1085,6 +1118,7 @@ class MemorySystem:
         settlement: Mapping[str, Any] | None = None,
         settled_rows: Sequence[Mapping[str, Any]] | None = None,
         rows_preloaded: bool = False,
+        settlement_policies: set[str] | None = None,
     ) -> list[ProjectionMessage]:
         from .settlement import load_settled_projection, settled_rows_to_messages
 
@@ -1094,12 +1128,15 @@ class MemorySystem:
                 if not settled_rows:
                     raise SchemaError("settled_projection_rows_missing")
                 settled = settled_rows_to_messages(settlement, settled_rows)
+                if settlement_policies is not None:
+                    settlement_policies.add(str(settlement.get("policy") or ""))
         else:
             settled = load_settled_projection(
                 self.store,
                 namespace=self.namespace,
                 turn_id=turn_id,
                 provider_profile=provider_profile,
+                settlement_policies=settlement_policies,
             )
         if settled is not None:
             return settled

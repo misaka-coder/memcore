@@ -78,7 +78,7 @@ class OperationProjectionPolicyTests(unittest.TestCase):
     def test_stable_wire_values(self) -> None:
         self.assertEqual(
             [item.value for item in OperationProjectionPolicy],
-            ["full_until_raw_compaction", "compact_after_terminal"],
+            ["full_until_raw_compaction", "compact_after_terminal", "compact_arguments_after_terminal"],
         )
         self.assertEqual(str(OperationProjectionPolicy.FULL_UNTIL_RAW_COMPACTION), "full_until_raw_compaction")
         self.assertEqual(str(OperationProjectionPolicy.COMPACT_AFTER_TERMINAL), "compact_after_terminal")

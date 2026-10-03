@@ -295,7 +295,12 @@ class SummaryCycleViaFacade(unittest.TestCase):
         self.assertEqual(second_tool["tool_result"]["memory_metadata"], {})
         self.assertEqual(first_tool["tool_result"]["kind"], "tool.web_search.result")
         self.assertEqual(mem.store.get_unsummarized_messages(namespace=mem.namespace), [])
-        visible = mem.store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10)
+        visible = list(
+            mem.store.get_retrieval_records(
+                namespace=mem.namespace,
+                source_ids=tuple(row[0] for row in mem.store._conn.execute("SELECT summary_id FROM summaries")),
+            ).values()
+        )
         operation = next(item for item in visible if item["kind"] == "memory.operation_digest")
         self.assertEqual(
             set(operation["source_ids"]),
@@ -409,7 +414,12 @@ class SummaryCycleViaFacade(unittest.TestCase):
         self.assertEqual(material.memory_metadata["memory_facets"], ["event"])
         self.assertEqual(out["summaries_created"], 2)
         self.assertEqual(mem.store.get_unsummarized_messages(namespace=mem.namespace), [])
-        visible = mem.store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10)
+        visible = list(
+            mem.store.get_retrieval_records(
+                namespace=mem.namespace,
+                source_ids=tuple(row[0] for row in mem.store._conn.execute("SELECT summary_id FROM summaries")),
+            ).values()
+        )
         episode = next(item for item in visible if item["kind"] == "memory.episode_summary")
         operation = next(item for item in visible if item["kind"] == "memory.operation_digest")
         self.assertEqual(episode["source_ids"], ["m0", "material-final"])

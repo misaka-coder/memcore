@@ -42,6 +42,7 @@ class ContextSurface:
     message_source_ids: tuple[tuple[str, ...], ...] = ()
     message_projection_metadata: tuple[Mapping[str, Any], ...] = ()
     has_compact_history: bool = False
+    has_compact_arguments_history: bool = False
     current_turn_id: str = ""
     projection_version: int = 1
     compaction_generation: int = 0
@@ -87,6 +88,7 @@ class ContextSurface:
             "message_source_ids": [list(item) for item in self.message_source_ids],
             "message_projection_metadata": [dict(item) for item in self.message_projection_metadata],
             "has_compact_history": self.has_compact_history,
+            "has_compact_arguments_history": self.has_compact_arguments_history,
             "current_turn_id": self.current_turn_id,
             "projection_version": self.projection_version,
             "compaction_generation": self.compaction_generation,

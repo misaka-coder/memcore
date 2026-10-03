@@ -100,6 +100,8 @@ class MemoryStore(ABC):
         operation_projection_policy: str = "full_until_raw_compaction",
         operation_settlement_min_utf8_bytes: int = 256,
         operation_settlement_min_saved_ratio: float = 0.5,
+        operation_argument_min_utf8_bytes: int = 1024,
+        operation_argument_preview_chars: int = 96,
     ) -> TurnHandle:
         raise NotImplementedError
 
@@ -114,6 +116,8 @@ class MemoryStore(ABC):
         operation_projection_policy: str = "full_until_raw_compaction",
         operation_settlement_min_utf8_bytes: int = 256,
         operation_settlement_min_saved_ratio: float = 0.5,
+        operation_argument_min_utf8_bytes: int = 1024,
+        operation_argument_preview_chars: int = 96,
     ) -> TurnHandle:
         """Open a turn by linking existing standalone timeline entries.
 
@@ -486,6 +490,15 @@ class MemoryStore(ABC):
     ) -> list[dict[str, Any]]:
         """Return overlapping episodic summaries; None bounds mean unbounded."""
         raise NotImplementedError
+
+    def get_previous_episodic_summary(
+        self, *, namespace: Namespace, before_seq_no: int, before_timestamp: int
+    ) -> dict[str, Any] | None:
+        """Read one chat summary whose owned sources precede this raw batch.
+
+        Stores without source-lineage support safely omit the reference.
+        """
+        return None
 
     def get_semantic_summaries_by_time_range(
         self,

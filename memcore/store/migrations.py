@@ -14,7 +14,7 @@ from typing import Any, Iterable
 
 from ..errors import SchemaError
 
-CURRENT_SCHEMA_VERSION = 9
+CURRENT_SCHEMA_VERSION = 10
 
 _CORE_TABLES = frozenset({"messages", "summaries", "semantic_summaries"})
 _TRACE_CATEGORIES = frozenset({"event_trace", "material_trace", "tool_trace"})
@@ -235,6 +235,8 @@ LATEST_SCHEMA_STATEMENTS = (
         operation_projection_policy TEXT NOT NULL DEFAULT 'full_until_raw_compaction',
         operation_settlement_min_utf8_bytes INTEGER NOT NULL DEFAULT 256,
         operation_settlement_min_saved_ratio REAL NOT NULL DEFAULT 0.5,
+        operation_argument_min_utf8_bytes INTEGER NOT NULL DEFAULT 1024,
+        operation_argument_preview_chars INTEGER NOT NULL DEFAULT 96,
         row_version INTEGER NOT NULL DEFAULT 1
     )
     """,
@@ -331,6 +333,8 @@ LATEST_SCHEMA_STATEMENTS = (
         settlement_min_utf8_bytes INTEGER NOT NULL DEFAULT 256,
         settlement_min_saved_ratio REAL NOT NULL DEFAULT 0.5,
         settlement_config_hash TEXT NOT NULL DEFAULT '',
+        settlement_argument_min_utf8_bytes INTEGER NOT NULL DEFAULT 1024,
+        settlement_argument_preview_chars INTEGER NOT NULL DEFAULT 96,
         PRIMARY KEY(
             tenant_id, user_id, domain_id, conversation_id,
             turn_id, provider_profile
@@ -542,6 +546,8 @@ _REQUIRED_COLUMNS = {
             "stimulus_source_ids_json",
             "annotation_target_ids_json",
             "final_source_id",
+            "operation_argument_min_utf8_bytes",
+            "operation_argument_preview_chars",
             "row_version",
         }
     ),
@@ -593,6 +599,16 @@ _REQUIRED_COLUMNS = {
             "created_at",
         }
     ),
+    "turn_projection_settlement": frozenset(
+        {
+            "turn_id",
+            "provider_profile",
+            "policy",
+            "settlement_config_hash",
+            "settlement_argument_min_utf8_bytes",
+            "settlement_argument_preview_chars",
+        }
+    ),
 }
 
 
@@ -618,7 +634,7 @@ def migrate_database(connection: sqlite3.Connection) -> int:
         else:
             if has_core != _CORE_TABLES:
                 raise SchemaError("sqlite_schema_partial_core_tables")
-            if version not in {0, 1, 2, 3, 4, 5, 6, 7, 8, CURRENT_SCHEMA_VERSION}:
+            if version not in set(range(CURRENT_SCHEMA_VERSION + 1)):
                 raise SchemaError("sqlite_schema_unsupported_version")
             if version < 2:
                 _migrate_v1_to_v2(connection)
@@ -637,6 +653,23 @@ def migrate_database(connection: sqlite3.Connection) -> int:
             if version < 8:
                 _add_missing_columns(
                     connection, "semantic_summaries", {"participant_refs_json": "TEXT NOT NULL DEFAULT '[]'"}
+                )
+            if version < 10:
+                _add_missing_columns(
+                    connection,
+                    "turns",
+                    {
+                        "operation_argument_min_utf8_bytes": "INTEGER NOT NULL DEFAULT 1024",
+                        "operation_argument_preview_chars": "INTEGER NOT NULL DEFAULT 96",
+                    },
+                )
+                _add_missing_columns(
+                    connection,
+                    "turn_projection_settlement",
+                    {
+                        "settlement_argument_min_utf8_bytes": "INTEGER NOT NULL DEFAULT 1024",
+                        "settlement_argument_preview_chars": "INTEGER NOT NULL DEFAULT 96",
+                    },
                 )
 
         _execute_statements(connection, _CATALOG_INDEX_STATEMENTS)

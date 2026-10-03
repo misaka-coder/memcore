@@ -514,6 +514,8 @@ class TurnHandle:
     operation_projection_policy: str = "full_until_raw_compaction"
     operation_settlement_min_utf8_bytes: int = 256
     operation_settlement_min_saved_ratio: float = 0.5
+    operation_argument_min_utf8_bytes: int = 1024
+    operation_argument_preview_chars: int = 96
 
 
 @dataclass(frozen=True)
@@ -541,6 +543,8 @@ class TurnProjectionSettlement:
     settlement_min_utf8_bytes: int = 256
     settlement_min_saved_ratio: float = 0.5
     settlement_config_hash: str = ""
+    settlement_argument_min_utf8_bytes: int = 1024
+    settlement_argument_preview_chars: int = 96
 
 
 @dataclass(frozen=True)

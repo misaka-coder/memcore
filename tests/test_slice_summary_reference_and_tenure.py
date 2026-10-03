@@ -50,6 +50,7 @@ class ReferenceSummaryContext(unittest.TestCase):
         store = SQLiteMemoryStore(":memory:")
         index = InMemoryVectorIndex(embedding=HashedEmbeddingProvider())
         ns = Namespace(user_id="u1", conversation_id="c1")
+        store.add_message(namespace=ns, role="user", content="earlier chat", timestamp=99, source_id="earlier")
         # 预置一条既有摘要,作为后续摘要的参考。
         store.add_summary(
             namespace=ns,
@@ -58,8 +59,11 @@ class ReferenceSummaryContext(unittest.TestCase):
                 "timestamp": 100,
                 "date_label": "2026-04-10",
                 "diary_summary": "之前聊过登山计划",
+                "source_ids": ["earlier"],
             },
         )
+        store._conn.execute("UPDATE messages SET is_summarized = 1 WHERE source_id = 'earlier'")
+        store._conn.commit()
         llm = CapturingSummaryLLM()
         cfg = MemoryConfig(raw_token_trigger=1)
         comp = Compaction(store=store, index=index, llm=llm, config=cfg, timezone="Asia/Shanghai")

@@ -610,7 +610,12 @@ class ToolPartitionAndAtomicityTests(CompactionV2Base):
             _complete_simple_turn(mem, 9)
             result = mem.compact_due_sync()
             self.assertEqual(result["status"], "compacted")
-            summaries = store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10)
+            summaries = list(
+                store.get_retrieval_records(
+                    namespace=mem.namespace,
+                    source_ids=tuple(row[0] for row in store._conn.execute("SELECT summary_id FROM summaries")),
+                ).values()
+            )
             by_kind = {item["kind"]: item for item in summaries}
             self.assertEqual(set(by_kind), {"memory.episode_summary", "memory.operation_digest"})
             episode_sources = set(by_kind["memory.episode_summary"]["source_ids"])
@@ -646,7 +651,12 @@ class ToolPartitionAndAtomicityTests(CompactionV2Base):
             _complete_simple_turn(mem, 9)
             result = mem.compact_due_sync()
             self.assertEqual(result["status"], "compacted")
-            summaries = store.get_visible_episodic_summaries(namespace=mem.namespace, limit=10)
+            summaries = list(
+                store.get_retrieval_records(
+                    namespace=mem.namespace,
+                    source_ids=tuple(row[0] for row in store._conn.execute("SELECT summary_id FROM summaries")),
+                ).values()
+            )
             operation = next(item for item in summaries if item["kind"] == "memory.operation_digest")
             retained = operation["trace_metadata"]["retention_anchors"]
             by_source = {item["source_id"]: item for item in retained}

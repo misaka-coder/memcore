@@ -640,6 +640,7 @@ class ContextProjection:
     compaction_generation: int
     projection_generation: int
     has_compact_history: bool = False
+    has_compact_arguments_history: bool = False
 
     @property
     def payloads(self) -> tuple[dict[str, Any], ...]:

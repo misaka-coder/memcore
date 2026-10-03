@@ -28,11 +28,12 @@ config = MemoryConfig(
 | --- | --- |
 | `full_until_raw_compaction` | 默认值。完整 action/observation 一直进入 provider 历史，直到统一 raw compaction 接替该 turn；不创建 settlement。 |
 | `compact_after_terminal` | turn 成功完成后，把足够大的 observation 正文替换成可回读紧凑卡片；action、已有 final 和 SQLite 原文不变。 |
+| `compact_arguments_after_terminal` | 同时收起合格的长字符串参数；保留调用结构、短字段、数组和 SQLite 原文。 |
 
 这些枚举值会持久化到 turn，并参与 settled hash。已发布值不得改名、删除、复用或
 改变语义；schema 升级只允许新增值。
 
-策略与两个收益门槛都在 `begin_turn()` 时冻结。运行中改变 `MemoryConfig` 不会改变已经开始的 turn：
+策略、结果门槛和参数门槛都在 `begin_turn()` 时冻结。运行中改变 `MemoryConfig` 不会改变已经开始的 turn：
 
 ```python
 handle = mem.begin_turn(stimuli=[...])
@@ -122,6 +123,33 @@ config = MemoryConfig(
 使用的有效收益比例最高为 `0.99`。正文达到字节门槛后仍需通过收益检查，恰好
 节省有效比例时仍保留全文。这些值与策略一起冻结；修改配置只影响新 turn。
 UTF-8 字节收益不等于 provider token 或总费用收益。
+
+### Long argument strings (opt-in)
+
+```python
+config = MemoryConfig(
+    operation_projection_policy="compact_arguments_after_terminal",
+    operation_argument_min_utf8_bytes=1024,
+    operation_argument_preview_chars=96,
+)
+```
+
+字典递归处理字符串叶子；数组整体不变。候选字符串保留前 96 字符并追加
+`[truncated source_id=<raw-action-id>]`，替换须严格超过冻结的收益比例
+（默认节省超过 50% 原字符串 UTF-8 字节）。参数仍是字符串，其他参数和
+原生调用配对保持完整。未发生替换的 OpenAI arguments 字符串逐字节保留。
+
+当前支持 OpenAI Chat、Anthropic Messages 和标准 canonical 的参数区块。
+未知形状、非法 JSON 和携带不可安全改写的签名的调用按 full_fallback 保留全文，
+审计原因不包含原文。旧策略的行为和配置指纹算法不变。
+
+回读参数使用 action ID：`open_memory(memory_id=source_id, view="content", detail="full")`。
+结果卡片继续引用 observation ID。两者都由原有命名空间权限检查保护。
+开放轮次保持全文；结束后只结算一次，不在后续请求或重启时反复改写历史。
+新策略只影响之后开始的回合，升级 schema 不批量重写旧回合。
+
+聊天摘要参考独立于可见窗口：只取本会话、有效来源全部早于当前压缩批次的
+最近一条聊天摘要，仅引用 diary 与日期。操作摘要仍可显式检索和回读。
 
 一个典型的 settled observation：
 
@@ -276,6 +304,8 @@ fallback_reason
 settlement_min_utf8_bytes
 settlement_min_saved_ratio
 settlement_config_hash
+settlement_argument_min_utf8_bytes
+settlement_argument_preview_chars
 ```
 
 `token_count_quality="exact"` 只表示宿主注入的 `TokenCounter` 声明自己使用精确
