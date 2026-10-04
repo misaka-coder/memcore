@@ -187,7 +187,12 @@ def open_keyword_sources(
     for sid in candidate_ids:
         # Raw utterances, including assistant speech, without protocol/debug
         # payloads. Attribution remains the actor recorded at that time.
-        entry = replace(by_id[sid], payload={}, trace_metadata={}, target_actor=None)
+        original = by_id[sid]
+        entry = replace(
+            original,
+            payload={"channel": original.payload["channel"]} if original.payload.get("channel") else {},
+            trace_metadata={},
+        )
         unit = build_timeline_read_units(
             [entry],
             projection="conversation",

@@ -92,6 +92,63 @@ methods `record_user_turn()` and `record_assistant_turn()` create standalone
 entries; they do not open a response turn and cannot own later tool calls or a
 `complete_turn()` final.
 
+## Completed history imports
+
+Use `import_completed_turn()` to append an exchange that has already completed
+elsewhere. This is a generic history write; channel policy, consent, source
+selection and delivery remain host responsibilities.
+
+```python
+from memcore import Actor, EntryOrigin, MemoryAnnotation, TimelineEntryInput, TurnRole
+
+actor = Actor("person:17", "Example user")
+result = mem.import_completed_turn(
+    turn_id="import.exchange17",
+    stimuli=[TimelineEntryInput(
+        source_id="import.exchange17.user", kind="message.user",
+        origin=EntryOrigin.USER, turn_role=TurnRole.STIMULUS,
+        semantic_text="Let's meet on Saturday.", timestamp=1770000000,
+        actor=actor, payload={"channel": "other_app"},
+    )],
+    final=TimelineEntryInput(
+        source_id="import.exchange17.final", kind="message.assistant",
+        origin=EntryOrigin.ASSISTANT, turn_role=TurnRole.FINAL,
+        semantic_text="See you then.", timestamp=1770000010,
+        target_actor=actor, payload={"channel": "other_app"},
+    ),
+    annotations=[MemoryAnnotation("import.exchange17.user", "missing")],
+    provider_output_raw='{"speech":"See you then."}',
+    defer_index=True,
+)
+```
+
+The SQLite implementation commits stimuli, annotations, the final and closed
+turn in one transaction, or commits nothing. The caller must supply stable
+turn/source IDs and original timestamps. IDs cannot collide with another
+namespace. An identical retry returns `already_completed`; conflicting content
+raises `SchemaError`. Imports append by sequence, even with older event times;
+they do not insert into or rewrite existing provider history.
+
+`annotation_target_ids` defaults to all imported stimuli. The final follows
+normal derived annotation and retrieval visibility rules. `provider_output_raw`
+is retained as original truth; the configured renderer freezes provider history
+on its first read. No past model request is fabricated and no payload is
+executed. Optional `channel` and `target_actor` preserve event attribution in
+summary and timeline reads without extending the model's output schema.
+
+Indexing is synchronous by default. `defer_index=True` leaves the normal durable
+index outbox pending; the host must schedule and supervise `reindex_pending()`
+and wait for its jobs before closing the store. A closed import remains valid
+if index repair needs to retry.
+
+`get_turn(turn_id)` reads one owned turn without changing its lifecycle.
+`get_turn_entries(turn_id, roles=(TurnRole.FINAL,))` reads only its final, and
+`get_turn_entries(turn_id, kinds=("message.user", "message.user.voice"))`
+selects user messages, including intermediate steering inputs, without loading
+tool bodies. Both optional filters combine and are applied by SQLite before
+deserialization. These reads also work after raw compaction and reject foreign
+namespace ownership.
+
 ## `TimelineEntryInput`
 
 Required constructor fields are:

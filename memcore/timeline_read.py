@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from .namespace import Namespace
 from .projection import RendererRegistry, canonical_json_bytes, sanitize_timeline_value, stable_projection_hash
-from .rendering import render_timeline
+from .rendering import message_channel, render_timeline
 from .timeline import TimelineEntry, TurnRole
 from .token_counter import estimate_text_tokens
 
@@ -192,6 +192,9 @@ def project_timeline_entry(
         "entry_type": "raw",
     }
     safe_record, _ = sanitize_timeline_value(record)
+    channel = message_channel(entry.payload.get("channel"))
+    if channel:
+        safe_record["channel"] = channel
     return dict(safe_record), detail
 
 

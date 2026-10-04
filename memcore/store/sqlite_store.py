@@ -171,6 +171,15 @@ class SQLiteMemoryStore(MemoryStore):
 
     # --- 内部工具 ---
     @contextmanager
+    def _write_transaction(self) -> Iterator[None]:
+        """Allow the completed-import transaction to own nested lifecycle writes."""
+        if self._conn.in_transaction:
+            yield
+        else:
+            with self._conn:
+                yield
+
+    @contextmanager
     def _read_transaction(self) -> Iterator[None]:
         """Hold one SQLite read snapshot without closing a caller's write transaction."""
         owned = not self._conn.in_transaction
@@ -283,7 +292,7 @@ class SQLiteMemoryStore(MemoryStore):
         if not set(targets).issubset(seen_source_ids):
             raise SchemaError("turn_annotation_target_not_in_stimuli")
 
-        with self._lock, self._conn:
+        with self._lock, self._write_transaction():
             existing_turn = self._conn.execute(
                 "SELECT * FROM turns WHERE turn_id = ?", (normalized_turn_id,)
             ).fetchone()
@@ -579,7 +588,7 @@ class SQLiteMemoryStore(MemoryStore):
         if not isinstance(completion, TurnCompletion):
             raise TypeError("completion must be a TurnCompletion")
 
-        with self._lock, self._conn:
+        with self._lock, self._write_transaction():
             turn = self._conn.execute("SELECT * FROM turns WHERE turn_id = ?", (completion.turn_id,)).fetchone()
             if turn is None:
                 return CompletionCommitResult(
@@ -711,6 +720,7 @@ class SQLiteMemoryStore(MemoryStore):
                     timestamp=completion.timestamp,
                     payload=final_payload,
                     reply_to_source_id=target_ids[0] if len(target_ids) == 1 else "",
+                    target_actor=completion.target_actor,
                     trace_metadata=completion.trace_metadata,
                     annotation_status=(
                         AnnotationStatus.DERIVED_TURN_FINAL if any_accepted else AnnotationStatus.UNANNOTATED
@@ -759,6 +769,65 @@ class SQLiteMemoryStore(MemoryStore):
                 updated_targets=tuple(updated_targets),
                 final_projection=final_projection,
             )
+
+    def import_completed_turn(
+        self,
+        *,
+        namespace: Namespace,
+        stimulus_entries: list[TimelineEntryInput],
+        annotation_target_ids: list[str],
+        completion: TurnCompletion,
+    ) -> CompletionCommitResult:
+        if not completion.append_final:
+            raise SchemaError("completed_import_final_required")
+        with self._lock, self._immediate_transaction():
+            previous = self.get_turn(namespace=namespace, turn_id=completion.turn_id)
+            if previous is not None:
+                final = self._final_entry_for_turn_locked(
+                    self._conn.execute("SELECT * FROM turns WHERE turn_id = ?", (completion.turn_id,)).fetchone()
+                )
+                matches = (
+                    previous.status is TurnStatus.CLOSED
+                    and final is not None
+                    and previous.annotation_target_ids == tuple(annotation_target_ids)
+                    and tuple(entry.source_id for entry in previous.stimuli)
+                    == tuple(entry.source_id for entry in stimulus_entries)
+                    and all(
+                        old.semantic_text == new.semantic_text
+                        and old.kind == new.kind
+                        and old.timestamp == new.timestamp
+                        and dict(old.payload) == dict(new.payload)
+                        and old.namespace.actor == new.actor
+                        and old.target_actor == new.target_actor
+                        for old, new in zip(previous.stimuli, stimulus_entries)
+                    )
+                    and final.source_id == completion.source_id
+                    and final.kind == completion.kind
+                    and final.semantic_text == completion.semantic_text
+                    and final.timestamp == completion.timestamp
+                    and final.target_actor == completion.target_actor
+                    and dict(final.payload)
+                    == {**completion.payload, "provider_output_raw": completion.provider_output_raw}
+                )
+                if not matches:
+                    raise SchemaError("completed_import_idempotency_conflict")
+                return CompletionCommitResult(
+                    status="already_completed",
+                    turn_id=completion.turn_id,
+                    final_entry=final,
+                    updated_targets=previous.stimuli,
+                )
+            self.begin_turn(
+                namespace=namespace,
+                stimulus_entries=stimulus_entries,
+                annotation_target_ids=annotation_target_ids,
+                turn_id=completion.turn_id,
+                opened_at=min(entry.timestamp for entry in stimulus_entries),
+            )
+            result = self.commit_turn_completion(namespace=namespace, completion=completion)
+            if not result.completed:
+                raise SchemaError(f"completed_import_rejected:{result.reason or result.status}")
+            return result
 
     def abort_turn(self, *, namespace: Namespace, turn_id: str, reason: str, closed_at: int) -> TurnAbortResult:
         normalized = self._normalize_relation_id(turn_id, field="turn_id")
@@ -2695,21 +2764,40 @@ class SQLiteMemoryStore(MemoryStore):
                 ),
             )
 
-    def get_turn_entries(self, *, namespace: Namespace, turn_id: str) -> list[TimelineEntry]:
+    def get_turn_entries(
+        self,
+        *,
+        namespace: Namespace,
+        turn_id: str,
+        roles: tuple[TurnRole, ...] | None = None,
+        kinds: tuple[str, ...] | None = None,
+    ) -> list[TimelineEntry]:
         """Return one turn in sequence order without allowing cross-owner fallback."""
 
         normalized = str(turn_id or "").strip()
         if not normalized:
             return []
         scope_clause, params = self._scope_clause(namespace, with_conversation=True)
+        role_clause = ""
+        role_params = []
+        if roles is not None:
+            if not roles or any(not isinstance(role, TurnRole) for role in roles):
+                raise SchemaError("turn_entry_roles_invalid")
+            role_clause = " AND turn_role IN (" + ",".join("?" for _ in roles) + ")"
+            role_params = [role.value for role in roles]
+        if kinds is not None:
+            if not kinds or any(not isinstance(kind, str) or not kind.strip() for kind in kinds):
+                raise SchemaError("turn_entry_kinds_invalid")
+            role_clause += " AND kind IN (" + ",".join("?" for _ in kinds) + ")"
+            role_params.extend(kinds)
         with self._lock:
             owner = self._relation_owner_row(turn_id=normalized)
             if owner is None:
                 return []
             self._assert_scope_owner(owner, namespace, id_label=f"turn_id={normalized!r}")
             rows = self._conn.execute(
-                f"SELECT * FROM messages WHERE {scope_clause} AND turn_id = ? ORDER BY seq_no",
-                [*params, normalized],
+                f"SELECT * FROM messages WHERE {scope_clause} AND turn_id = ?{role_clause} ORDER BY seq_no",
+                [*params, normalized, *role_params],
             ).fetchall()
         return [TimelineEntry.from_record(self._row_to_record(row, "messages")) for row in rows]
 

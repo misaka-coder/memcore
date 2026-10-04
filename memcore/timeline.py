@@ -563,6 +563,7 @@ class TurnCompletion:
     date_label: str = ""
     time_of_day: str = ""
     append_final: bool = True
+    target_actor: Actor | None = None
 
     def __post_init__(self) -> None:
         turn_id = str(self.turn_id or "").strip()
@@ -577,6 +578,8 @@ class TurnCompletion:
         provider_output_raw = str(self.provider_output_raw or "")
         if not isinstance(self.append_final, bool):
             raise SchemaError("turn_completion_invalid_append_final")
+        if self.target_actor is not None and not isinstance(self.target_actor, Actor):
+            raise TypeError("target_actor must be an Actor or None")
         if not self.append_final and (semantic_text or provider_output_raw or self.final_projection is not None):
             raise SchemaError("turn_completion_unexpected_final")
         if self.append_final and not semantic_text.strip() and not provider_output_raw.strip():

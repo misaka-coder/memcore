@@ -39,6 +39,7 @@ from ..timeline import (
     TurnAbortResult,
     TurnCompletion,
     TurnHandle,
+    TurnRole,
 )
 
 
@@ -135,6 +136,17 @@ class MemoryStore(ABC):
         raise NotImplementedError
 
     def commit_turn_completion(self, *, namespace: Namespace, completion: TurnCompletion) -> CompletionCommitResult:
+        raise NotImplementedError
+
+    def import_completed_turn(
+        self,
+        *,
+        namespace: Namespace,
+        stimulus_entries: list[TimelineEntryInput],
+        annotation_target_ids: list[str],
+        completion: TurnCompletion,
+    ) -> CompletionCommitResult:
+        """Publish an imported complete exchange in one transaction, or publish nothing."""
         raise NotImplementedError
 
     def abort_turn(self, *, namespace: Namespace, turn_id: str, reason: str, closed_at: int) -> TurnAbortResult:
@@ -375,7 +387,14 @@ class MemoryStore(ABC):
         """Idempotently persist one frozen settled provider message (first write wins)."""
         raise NotImplementedError
 
-    def get_turn_entries(self, *, namespace: Namespace, turn_id: str) -> list[TimelineEntry]:
+    def get_turn_entries(
+        self,
+        *,
+        namespace: Namespace,
+        turn_id: str,
+        roles: tuple[TurnRole, ...] | None = None,
+        kinds: tuple[str, ...] | None = None,
+    ) -> list[TimelineEntry]:
         """Read a complete turn only after validating namespace + conversation ownership."""
         raise NotImplementedError
 

@@ -67,6 +67,7 @@ from .timeline import (
     TurnAbortResult,
     TurnCompletion,
     TurnHandle,
+    TurnRole,
     TurnProjectionSettlement,
     TurnStatus,
     build_action_entry,
@@ -524,6 +525,90 @@ class MemorySystem:
             settled_at=completed_at,
         )
         return refreshed
+
+    def get_turn(self, turn_id: str) -> TurnHandle | None:
+        """Inspect one turn in this conversation without changing its lifecycle."""
+        return self.store.get_turn(namespace=self.namespace, turn_id=turn_id)
+
+    def get_turn_entries(
+        self, turn_id: str, *, roles: tuple[TurnRole, ...] | None = None, kinds: tuple[str, ...] | None = None
+    ) -> tuple[TimelineEntry, ...]:
+        """Read the original entries of one owned turn, including compacted truth."""
+        options = {} if roles is None else {"roles": roles}
+        if kinds is not None:
+            options["kinds"] = kinds
+        return tuple(self.store.get_turn_entries(namespace=self.namespace, turn_id=turn_id, **options))
+
+    def import_completed_turn(
+        self,
+        *,
+        turn_id: str,
+        stimuli: list[TimelineEntryInput],
+        final: TimelineEntryInput,
+        annotations: list[MemoryAnnotation],
+        annotation_target_ids: list[str] | None = None,
+        provider_output_raw: str = "",
+        defer_index: bool = False,
+    ) -> CompletionCommitResult:
+        """Atomically append an already completed exchange with caller-owned IDs.
+
+        This is a history import, not a model request. It does not copy tools,
+        execute payloads, or synthesize a past provider request. Provider history
+        is frozen normally on its first read, using the configured adapter.
+        """
+        if (
+            not turn_id
+            or not stimuli
+            or any(not isinstance(entry, TimelineEntryInput) or not entry.source_id for entry in stimuli)
+        ):
+            raise SchemaError("completed_import_stable_ids_required")
+        if not isinstance(final, TimelineEntryInput) or not final.source_id:
+            raise SchemaError("completed_import_final_required")
+        if final.origin is not EntryOrigin.ASSISTANT or final.turn_role is not TurnRole.FINAL:
+            raise SchemaError("completed_import_final_role_required")
+        prepared = []
+        for entry in stimuli:
+            if not isinstance(entry, TimelineEntryInput) or entry.turn_role is not TurnRole.STIMULUS:
+                raise SchemaError("completed_import_stimulus_role_required")
+            stamp = int(entry.timestamp or time.time())
+            prepared.append(
+                replace(
+                    self.renderer_registry.bind_input(entry),
+                    timestamp=stamp,
+                    date_label=entry.date_label or timestamp_to_date_label(stamp, self.timezone),
+                    time_of_day=entry.time_of_day or infer_time_of_day(stamp, self.timezone),
+                )
+            )
+        targets = (
+            annotation_target_ids if annotation_target_ids is not None else [entry.source_id for entry in prepared]
+        )
+        stamp = int(final.timestamp or time.time())
+        completion = TurnCompletion(
+            turn_id=turn_id,
+            source_id=final.source_id,
+            semantic_text=final.semantic_text,
+            provider_output_raw=provider_output_raw,
+            timestamp=stamp,
+            kind=final.kind,
+            payload=dict(final.payload),
+            trace_metadata=dict(final.trace_metadata),
+            target_actor=final.target_actor,
+            annotations=tuple(self._coerce_memory_annotation(item) for item in annotations),
+            date_label=timestamp_to_date_label(stamp, self.timezone),
+            time_of_day=infer_time_of_day(stamp, self.timezone),
+        )
+        try:
+            result = self.store.import_completed_turn(
+                namespace=self.namespace,
+                stimulus_entries=prepared,
+                annotation_target_ids=list(targets),
+                completion=completion,
+            )
+        except NotImplementedError as exc:
+            raise SchemaError("store_completed_turn_import_unsupported") from exc
+        if result.completed and defer_index:
+            return result
+        return self._refresh_completion_after_index(result) if result.completed else result
 
     def abort_turn(self, turn_id: str, *, reason: str, closed_at: int | None = None) -> TurnAbortResult:
         try:

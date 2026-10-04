@@ -487,7 +487,15 @@ def open_memory_sources(
             if speakers:
                 # Excerpts contain the recorded utterance, not host payloads,
                 # trace state or a receiver's identity.
-                entries = tuple(replace(entry, payload={}, trace_metadata={}, target_actor=None) for entry in entries)
+                entries = tuple(
+                    replace(
+                        entry,
+                        payload={"channel": entry.payload["channel"]} if entry.payload.get("channel") else {},
+                        trace_metadata={},
+                        target_actor=None,
+                    )
+                    for entry in entries
+                )
             unit = build_timeline_read_units(
                 entries, projection=projection, renderer_registry=renderer_registry, timezone=timezone
             )[0]

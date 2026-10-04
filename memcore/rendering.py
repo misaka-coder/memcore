@@ -418,7 +418,8 @@ def render_raw_snippet(context_rows: list[dict[str, Any]], *, tz: str) -> str:
         stamp = timestamp_to_datetime_weekday_label(ts, tz) if ts is not None else ""
         period = TIME_PERIOD_LABELS.get(str(row.get("time_of_day") or ""), "")
         speaker = render_speaker_label(row)
-        head = " | ".join(p for p in (stamp, period) if p)
+        channel = message_channel(row.get("channel") or (row.get("payload") or {}).get("channel"))
+        head = " | ".join(p for p in (stamp, period, channel) if p)
         _append_raw_message_line(
             lines,
             head=head,
@@ -433,7 +434,7 @@ def render_summary_chat_entry(entry: TimelineEntry, *, tz: str) -> str:
     """Semantic chat transcript for compaction, independent of provider wire."""
 
     payload = dict(entry.payload)
-    channel = message_channel(payload.get("channel")) if entry.origin.value == "user" else ""
+    channel = message_channel(payload.get("channel"))
     is_observed = str(entry.kind or "") == "message.user.observed"
     is_voice = str(entry.kind or "").endswith(".voice")
     has_relations = bool(
