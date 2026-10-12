@@ -342,6 +342,10 @@ Every value must be a string of at most 4000 characters. Invalid types or
 oversized slots raise `PromptError`. These slots cannot remove or replace the
 welded JSON, metadata, time-anchor, attribution, or anti-fabrication rules.
 
+An eligible `chat_prefix` request already contains the character background,
+so its memory tail omits the duplicate persona slot. Independent requests,
+including fallback for missing prefix coverage, still include it.
+
 ## Configuration ownership and exposure boundaries
 
 MemCore is a library, not a service. Nothing here is a runtime control surface,

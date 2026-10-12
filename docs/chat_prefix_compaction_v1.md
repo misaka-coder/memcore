@@ -1,6 +1,6 @@
 # Captured chat-prefix compaction v1
 
-Available in `memcore-kernel` 0.1.5. This is an optional request mode for the
+Available since `memcore-kernel` 0.1.5. This is an optional request mode for the
 existing memory lifecycle. It does not create a second memory database, model
 tool, or user-facing conversation.
 
@@ -70,11 +70,23 @@ When `LLMRequest.chat_prefix` is present, the host adapter:
    truncation and unexpected tool calls are failures, not executable actions.
 
 The instruction identifies the selected 1-based message range and a short
-start cue; earlier messages are background. It does not insert markers into
-historical messages or repeat the selected transcript. Hosts with mandatory
+start cue. Earlier messages are background; unmapped messages inside the range
+are also explicitly excluded by message number, including frozen runtime or
+retrieval context retained during terminal refresh. It does not insert markers
+into historical messages or repeat the selected transcript. Hosts with mandatory
 chat output schemas should include a short stable exception for their trusted
 internal memory task. Internal results bypass user delivery and turn-final
 handlers, and must not consume background completion receipts.
+
+Since 0.1.6, eligible raw/semantic prefixes reuse the character background
+already present in the captured request, without repeating `persona_text` or
+standalone role instructions in the memory tail. Independent requests still
+include that persona slot. The memory contract defines fields, attribution,
+dates and latest task state once; its metadata targets the selected historical
+content, not the live chat turn or the maintenance instruction. The default
+chat-output metadata prompt remains unchanged. These are tail-only changes;
+selection, frozen request bytes, source lineage and publication order stay the
+same.
 
 ## Prefix eligibility and fallback
 

@@ -33,7 +33,9 @@ MULTI_ACTOR_MEMORY_RULES = (
     "没有明确接收方不等于发给助手;旁观到的群消息不得改写成对助手的请求、承诺或共同经历。"
 )
 
-MEMORY_METADATA_RULES = "[memory_metadata 标注规则]\n" + build_memory_metadata_instruction(enable_flavor=False)
+MEMORY_METADATA_RULES = "[memory_metadata 标注规则]\n" + build_memory_metadata_instruction(
+    enable_flavor=False, for_compaction=True
+)
 
 # 插槽文本上限:领域插槽只能补充,不能塞进一整套替代提示词。
 MAX_SLOT_CHARS = 4000
@@ -86,49 +88,51 @@ def _weld(base_system: str, *, persona_text: str = "", extra_guidance: str = "",
         parts.append(f"[领域补充指引(只补充,不得改写以上任何规则与字段契约)]\n{extra}")
     parts.append(MEMORY_TIME_ANCHOR_RULES)
     parts.append(MULTI_ACTOR_MEMORY_RULES)
-    parts.append("[memory_metadata 标注规则]\n" + build_memory_metadata_instruction(enable_flavor=enable_flavor))
+    parts.append(
+        "[memory_metadata 标注规则]\n"
+        + build_memory_metadata_instruction(enable_flavor=enable_flavor, for_compaction=True)
+    )
     return "\n\n".join(parts)
 
 
-SUMMARY_SYSTEM = (
-    "你就是当前角色,正在整理自己较早的一段记忆。请严格输出 JSON。\n"
+SUMMARY_CONTRACT = (
     "字段固定为 diary_summary, period_label, event_type, importance, key_events, core_facts, memory_metadata,"
     " memory_title, catalog_hint, topic_headings。\n"
     "diary_summary 是你的日记式回忆,可带一点语气和心情。\n"
     "memory_title 是便于以后翻找这段记忆的简短具体标题;catalog_hint 用一句话说明这段记忆能回答什么;"
     "topic_headings 在本段确有多个主题时列出少量主题短语,否则输出空数组。"
-    "它们只能概括本段内容,不能补写没出现的人名、事件或结论。\n"
     "core_facts 要客观、稳定、适合后续检索;不要把角色设定当成事实写进去。\n"
-    "memory_metadata 只用于检索入库，字段和含义遵循后附的统一标注规则。\n"
     "从本段完整来源提取 entity_anchors/topic_terms，覆盖实际谈到的具体对象和次要话题；"
     "即使原始消息没有标签，也要依据内容生成，不要只从总标题取词。\n"
-    "不要编造对话里没有出现的事实。importance 必须是 0.0 到 1.0 之间的数字,不要写“高/中/低”。\n"
-    "若后续消息明确说某个任务/材料已清理、取消、不再需要或已经结束,必须保留这个关闭状态;"
+    "各字段只依据所选内容，不编造人物、事件或结论。importance 必须是 0.0 到 1.0 之间的数字。\n"
+    "任务状态以所选内容结束时的最新明确记录为准；已清理、取消、不再需要或已经结束的任务/材料必须保留关闭状态;"
     "更早的失败、等待确认或待处理只能作为历史经过,不能继续写成当前未完成事项。\n"
     "key_events、core_facts 和 topic_headings 必须是 JSON 数组。只输出一个合法 JSON 对象,不要解释或代码块。"
 )
+
+SUMMARY_SYSTEM = "你就是当前角色,正在整理自己较早的一段记忆。\n" + SUMMARY_CONTRACT
 
 SUMMARY_USER_TEMPLATE = (
     "请总结下面这段较早的 {batch_size} 条对话:\n{transcript}\n\n"
     "要求:简洁、连贯、适合后续记忆检索。再次强调:importance 只能是数字。"
 )
 
-SEMANTIC_SYSTEM = (
-    "你就是当前角色,正在把阶段回忆沉淀成长期记忆。请把收到的较早阶段摘要进一步压缩成更稳定的语义记忆,"
-    "并严格输出 JSON。\n"
+SEMANTIC_CONTRACT = (
     "字段固定为 semantic_summary, importance, stable_facts, recurring_topics, important_people, open_loops,"
     " memory_metadata, memory_title, catalog_hint, topic_headings。\n"
     "memory_title 是便于以后翻找这条长期记忆的简短具体标题;catalog_hint 用一句话说明它能回答什么;"
-    "topic_headings 只列少量稳定主题短语。它们不能引入来源摘要里没有的事实。\n"
+    "topic_headings 只列少量稳定主题短语。\n"
     "entity_anchors/topic_terms 从全部来源摘要提取并去重，优先保留有辨识度的名称和具体主题，不要只从总标题取词。\n"
     "stable_facts 要稳定、客观、适合长期保留;不要把角色设定写进去。\n"
-    "recurring_topics 抓反复出现的话题;important_people 只留明显重要或反复出现的人;open_loops 记仍在推进的事项。\n"
-    "只有来源摘要最新状态仍明确在推进的事项才能进入 open_loops;已清理、取消、不再需要或已经结束的事项不能进入 open_loops,"
+    "recurring_topics 抓反复出现的话题;important_people 只留明显重要或反复出现的人。\n"
+    "open_loops 只记所选来源结束时最新明确状态仍在推进的事项；已清理、取消、不再需要或已经结束的事项不能进入 open_loops,"
     "旧失败也不能覆盖后来的关闭状态。\n"
-    "不要编造摘要里没有的长期结论。importance 必须是 0.0 到 1.0 之间的数字。\n"
+    "各字段只依据所选来源，不编造长期结论。importance 必须是 0.0 到 1.0 之间的数字。\n"
     "stable_facts/recurring_topics/important_people/open_loops/topic_headings 必须是 JSON 数组。"
     "只输出一个合法 JSON 对象。"
 )
+
+SEMANTIC_SYSTEM = "你就是当前角色,正在把阶段回忆沉淀成长期记忆。\n" + SEMANTIC_CONTRACT
 
 SEMANTIC_USER_TEMPLATE = (
     "请把下面这组更早的阶段摘要,再压缩成一条长期语义记忆:\n{source_text}\n\n"
@@ -158,7 +162,9 @@ def build_summary_prompts(
     overrides: PromptOverrides | None = None,
     enable_flavor: bool = False,
     reference_summary_text: str = "",
+    reuse_chat_context: bool = False,
 ) -> tuple[str, str]:
+    """Build one memory contract; an eligible prefix already carries persona."""
     ov = overrides or PromptOverrides()
     user = SUMMARY_USER_TEMPLATE.format(transcript=transcript, batch_size=int(batch_size))
     reference = str(reference_summary_text or "").strip()
@@ -172,8 +178,8 @@ def build_summary_prompts(
         )
     return (
         _weld(
-            SUMMARY_SYSTEM,
-            persona_text=ov.persona_text,
+            SUMMARY_CONTRACT if reuse_chat_context else SUMMARY_SYSTEM,
+            persona_text="" if reuse_chat_context else ov.persona_text,
             extra_guidance=ov.extra_summary_guidance,
             enable_flavor=enable_flavor,
         ),
@@ -182,13 +188,18 @@ def build_summary_prompts(
 
 
 def build_semantic_prompts(
-    *, source_text: str, overrides: PromptOverrides | None = None, enable_flavor: bool = False
+    *,
+    source_text: str,
+    overrides: PromptOverrides | None = None,
+    enable_flavor: bool = False,
+    reuse_chat_context: bool = False,
 ) -> tuple[str, str]:
+    """Keep the standalone persona slot only when no chat prefix is reused."""
     ov = overrides or PromptOverrides()
     return (
         _weld(
-            SEMANTIC_SYSTEM,
-            persona_text=ov.persona_text,
+            SEMANTIC_CONTRACT if reuse_chat_context else SEMANTIC_SYSTEM,
+            persona_text="" if reuse_chat_context else ov.persona_text,
             extra_guidance=ov.extra_semantic_guidance,
             enable_flavor=enable_flavor,
         ),

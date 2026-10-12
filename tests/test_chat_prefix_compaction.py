@@ -47,7 +47,7 @@ class MemoryLLM(LLMClient):
         return LLMResult(ok=True, data={"diary_summary": "Completed work and conversation."})
 
 
-def make_memory(policy="compact_after_terminal", store=None, **overrides):
+def make_memory(policy="compact_after_terminal", store=None, persona_text="", **overrides):
     llm = MemoryLLM()
     cfg = dict(
         retrieval_mode="navigation",
@@ -66,13 +66,17 @@ def make_memory(policy="compact_after_terminal", store=None, **overrides):
         store=store or SQLiteMemoryStore(),
         token_counter=LengthTokenCounter(),
         config=MemoryConfig(**cfg),
+        persona_text=persona_text,
     )
     return mem, llm
 
 
 def capture(mem):
     projection = mem.build_context_projection(provider_profile="openai_chat")
-    messages = ({"role": "system", "content": "stable persona/tools"}, *projection.payloads)
+    messages = (
+        {"role": "system", "content": "stable persona/tools " + mem.prompt_overrides.persona_text},
+        *projection.payloads,
+    )
     groups = ((), *(message.source_ids for message in projection.messages))
     mem.capture_chat_context(ChatContextSnapshot("openai_chat", tuple(messages), tuple(groups), object()))
     return projection
@@ -237,7 +241,8 @@ class ChatPrefixCompactionTests(unittest.TestCase):
                 restarted.store.close()
 
     def test_completed_large_latest_turn_catches_up_in_one_batch(self):
-        mem, llm = self.memory(raw_token_trigger=1200, working_token_trigger=0)
+        persona = "fixture character with a diary voice"
+        mem, llm = self.memory(raw_token_trigger=1200, working_token_trigger=0, persona_text=persona)
         _begin(mem, "old", "older dialogue" * 80)
         _complete(mem, "old")
         _begin(mem, "new", "large completed task" * 150)
@@ -248,7 +253,42 @@ class ChatPrefixCompactionTests(unittest.TestCase):
         self.assertEqual(stats["source_turn_count"], 2)
         self.assertEqual(stats["summary_request_mode"], "chat_prefix")
         self.assertEqual(len(llm.calls), 1)
+        request = llm.calls[0]
+        self.assertIn(persona, request.chat_prefix.snapshot.messages[0]["content"])
+        self.assertNotIn(persona, request.system_prompt)
+        self.assertNotIn("CHARACTER MEMORY SELF", request.system_prompt)
+        self.assertIn("diary_summary", request.system_prompt)
+        self.assertIn("memory_metadata 标注本次选中的历史内容", request.system_prompt)
         self.assertEqual(mem.compact_due_sync(provider_profile="openai_chat")["status"], "not_due")
+
+    def test_raw_prefix_excludes_runtime_context_inside_selected_range_without_rewriting_sources(self):
+        mem, llm = self.memory(raw_token_trigger=100, working_token_trigger=0)
+        _begin(mem, "t", "a recorded conversation " * 50)
+        _complete(mem, "t")
+        projection = mem.build_context_projection(provider_profile="openai_chat")
+        messages = (
+            {"role": "system", "content": "stable persona/tools"},
+            projection.payloads[0],
+            {"role": "user", "content": "ephemeral runtime/retrieval context"},
+            *projection.payloads[1:],
+        )
+        groups = ((), projection.messages[0].source_ids, (), *(m.source_ids for m in projection.messages[1:]))
+        snapshot = ChatContextSnapshot("openai_chat", messages, groups, object())
+        mem.capture_chat_context(snapshot)
+        stats = mem.compact_due_sync(provider_profile="openai_chat")
+        self.assertEqual(stats["summary_request_mode"], "chat_prefix", stats)
+        request = llm.calls[0]
+        prefix = request.chat_prefix
+        self.assertEqual((prefix.source_start, prefix.prefix_end), (1, len(messages)))
+        self.assertIn(
+            "request messages 3 are background, not memory sources", prefix.instruction(request.system_prompt)
+        )
+        self.assertEqual(prefix.snapshot.messages, messages)
+        self.assertEqual(prefix.snapshot.message_source_ids, groups)
+        episode = mem.store.get_visible_episodic_summaries(namespace=mem.namespace, limit=1, cross_conversation=False)[
+            0
+        ]
+        self.assertEqual(set(episode["source_ids"]), {sid for m in projection.messages for sid in m.source_ids})
 
     def test_provider_wait_does_not_lock_append_or_context_read(self):
         mem, llm = self.memory()
@@ -302,7 +342,8 @@ class ChatPrefixCompactionTests(unittest.TestCase):
     def test_terminal_fallback_keeps_working_note_before_later_dialogue(self):
         for mode in ("chat_prefix", "independent"):
             with self.subTest(mode=mode):
-                mem, llm = self.memory()
+                persona = "fixture standalone character"
+                mem, llm = self.memory(persona_text=persona)
                 _begin(mem, "t", "original task")
                 _add_tool(mem, "t", "a", LONG_BODY)
                 capture(mem)
@@ -316,6 +357,8 @@ class ChatPrefixCompactionTests(unittest.TestCase):
                 self.assertEqual(stats["summary_request_mode"], "independent", stats)
                 self.assertEqual(stats["status"], "compacted", stats)
                 transcript = llm.calls[-1].user_prompt
+                self.assertIn(persona, llm.calls[-1].system_prompt)
+                self.assertIn("CHARACTER MEMORY SELF", llm.calls[-1].system_prompt)
                 note = "A has completed. Continue with B; the pending job ID remains valid."
                 self.assertEqual(transcript.count(note), 1)
                 self.assertLess(transcript.index("original task"), transcript.index(note))
@@ -373,6 +416,7 @@ class ChatPrefixCompactionTests(unittest.TestCase):
                     episodic_compact_trigger_count=3,
                     episodic_compact_batch_size=2,
                     working_token_trigger=0,
+                    persona_text="fixture semantic character",
                 )
                 for i in range(3):
                     sid, eid = f"raw-{i}", f"episode-{i}"
@@ -394,6 +438,11 @@ class ChatPrefixCompactionTests(unittest.TestCase):
                 self.assertEqual(stats["semantic_created"], 1, stats)
                 self.assertEqual(len(llm.calls), 1)
                 self.assertEqual(llm.calls[0].chat_prefix is not None, visible == 8)
+                request = llm.calls[0]
+                self.assertEqual("fixture semantic character" in request.system_prompt, visible == 1)
+                self.assertEqual("CHARACTER MEMORY SELF" in request.system_prompt, visible == 1)
+                self.assertIn("memory_metadata 标注本次选中的历史内容", request.system_prompt)
+                self.assertIn("stable_facts", request.system_prompt)
                 semantic = mem.store.get_recent_semantic_summaries(
                     namespace=mem.namespace, limit=1, cross_conversation=False
                 )[0]

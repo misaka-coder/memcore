@@ -152,13 +152,15 @@ def build_memory_metadata_instruction(
     *,
     enable_flavor: bool = False,
     require_disabled_mood_field: bool = False,
+    for_compaction: bool = False,
 ) -> str:
     """Build the one model-facing metadata explanation used by every writer.
 
     Compaction prompts omit the optional flavor field entirely while flavor is
     disabled. The chat-output JSON contract has a fixed shape, so it can ask
     for an empty ``mood_tags`` array through ``require_disabled_mood_field``.
-    Both forms still come from this single field contract.
+    Both forms still come from this single field contract. Internal compaction
+    annotates the selected historical content, not the live turn/instruction.
     """
 
     mood_rule = ""
@@ -166,10 +168,15 @@ def build_memory_metadata_instruction(
         mood_rule = f"[情感温度(已启用)] mood_tags：情感余温，可从以下枚举选择 0-3 个：{' / '.join(MOOD_TAGS)}。"
     elif require_disabled_mood_field:
         mood_rule = "mood_tags：输出空数组。"
-    return (
-        "memory_metadata 标注宿主指定的本轮记忆目标，不描述回复；无关字段留空。"
+    target_rule = (
+        "memory_metadata 标注本次选中的历史内容；无关字段留空。"
+        "turn_intent：所选内容在查询历史时填 memory_query，否则留空。"
+        if for_compaction
+        else "memory_metadata 标注宿主指定的本轮记忆目标，不描述回复；无关字段留空。"
         "turn_intent：目标在查询历史时填 memory_query，否则留空。"
-        f"memory_facets：内容未来可回答的问题类型，选 {' / '.join(MEMORY_FACETS)}。"
+    )
+    return (
+        target_rule + f"memory_facets：内容未来可回答的问题类型，选 {' / '.join(MEMORY_FACETS)}。"
         f"about_roles：内容主要描述谁或什么（不是发言参与者），选 {' / '.join(ABOUT_ROLES)}。"
         "entity_anchors：已知且未来正常聊天可能追问的准确名称或别名；未知答案和宽泛上位词不填。"
         "topic_terms：优先保留具体、便于检索的名词和主题短语，也可保留关键动作、关系、属性，不写句子。"

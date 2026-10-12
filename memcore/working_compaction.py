@@ -14,8 +14,9 @@ from .timeline import TurnRole
 
 
 WORKING_CONTRACT = (
-    'Return JSON {"summary":"..."}. Preserve completed changes, evidence/results, '
-    "decisions, constraints and remaining work as of the selected range. Keep "
+    'Return only JSON {"summary":"..."}. Keep speakers, channels and dates distinct. '
+    "Preserve completed changes, evidence/results, decisions, constraints and remaining work "
+    "as of the selected range. Keep "
     "failure, cancellation and completion distinct; do not invent success. "
     "Keep useful task/artifact IDs verbatim. Be concise but sufficient to continue."
 )

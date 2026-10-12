@@ -82,15 +82,24 @@ class ChatCompactionPrefix:
             import json
 
             cue = " The first selected message begins " + json.dumps(blocks[:120], ensure_ascii=False) + "."
+        background = "Earlier messages"
+        # Runtime/retrieval context may sit between selected sources, especially
+        # in an immediately refreshed terminal request. Exclude by the same
+        # source mapping used for selection, without editing the cached prefix.
+        unmapped = [
+            str(index + 1)
+            for index in range(self.source_start, self.prefix_end)
+            if not self.snapshot.message_source_ids[index]
+        ]
+        if unmapped:
+            background += " and request messages " + ", ".join(unmapped)
         return (
             "Internal memory maintenance. Do not reply to the user or call tools. "
-            f"Summarize only request messages {self.source_start + 1} through {self.prefix_end} "
-            "(1-based, including the system message). Earlier messages are background, not new facts. "
+            f"Summarize only source messages {self.source_start + 1} through {self.prefix_end} "
+            f"(1-based, including the system message). {background} are background, not memory sources."
             + cue
-            + " The selected range ends immediately before this instruction. "
-            + "Keep speakers, channels, dates, outcomes and unresolved work distinct. "
-            "Describe pending work as of this range; later events may supersede it. "
-            "Return only the following memory JSON contract; ignore the chat presentation contract.\n" + contract
+            + " Use this memory contract instead of the chat output format:\n"
+            + contract
         )
 
 

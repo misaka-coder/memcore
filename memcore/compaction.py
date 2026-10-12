@@ -373,6 +373,7 @@ class Compaction:
                     reference_summary_text=""
                     if prefix
                     else self._render_reference_summaries(namespace, ordered_entries),
+                    reuse_chat_context=prefix is not None,
                 ),
                 fallback={
                     "diary_summary": "",
@@ -823,9 +824,10 @@ class Compaction:
         call = self._call_json(
             TaskType.SEMANTIC,
             *build_semantic_prompts(
-                source_text=self._render_episodes(batch),
+                source_text="" if prefix else self._render_episodes(batch),
                 overrides=self.overrides,
                 enable_flavor=self.config.enable_flavor,
+                reuse_chat_context=prefix is not None,
             ),
             fallback={
                 "semantic_summary": "",
