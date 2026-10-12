@@ -521,20 +521,23 @@ class MemorySystem:
             time_of_day=infer_time_of_day(completed_at, self.timezone),
             append_final=append_final,
         )
-        try:
-            result = self.store.commit_turn_completion(namespace=self.namespace, completion=completion)
-        except NotImplementedError as exc:
-            raise SchemaError("store_timeline_v2_unsupported") from exc
-        if not result.completed:
-            return result
-        refreshed = self._refresh_completion_after_index(result)
-        self._settle_turn_after_completion(
-            turn_id=normalized_turn_id,
-            provider_profile=provider_profile,
-            terminal_source_id=str(getattr(refreshed.final_entry, "source_id", "") or ""),
-            settled_at=completed_at,
-        )
-        return refreshed
+        with self.runtime.completing_turn(
+            store_identity=self.store.runtime_identity(), namespace=self.namespace, turn_id=normalized_turn_id
+        ):
+            try:
+                result = self.store.commit_turn_completion(namespace=self.namespace, completion=completion)
+            except NotImplementedError as exc:
+                raise SchemaError("store_timeline_v2_unsupported") from exc
+            if not result.completed:
+                return result
+            refreshed = self._refresh_completion_after_index(result)
+            self._settle_turn_after_completion(
+                turn_id=normalized_turn_id,
+                provider_profile=provider_profile,
+                terminal_source_id=str(getattr(refreshed.final_entry, "source_id", "") or ""),
+                settled_at=completed_at,
+            )
+            return refreshed
 
     def get_turn(self, turn_id: str) -> TurnHandle | None:
         """Inspect one turn in this conversation without changing its lifecycle."""

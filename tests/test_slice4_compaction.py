@@ -425,7 +425,7 @@ class SummaryCycleViaFacade(unittest.TestCase):
         self.assertEqual(episode["source_ids"], ["m0", "material-final"])
         self.assertEqual(operation["source_ids"], ["mat1"])
 
-    def test_open_turn_blocks_compaction_instead_of_splitting_it(self) -> None:
+    def test_open_turn_does_not_trigger_ordinary_compaction(self) -> None:
         cfg = MemoryConfig(
             raw_token_trigger=10,
             raw_token_batch_ratio=0.6,
@@ -456,7 +456,9 @@ class SummaryCycleViaFacade(unittest.TestCase):
 
         out = mem.compact_due_sync()
 
-        self.assertEqual(out["status"], "blocked_by_open_turn")
+        self.assertEqual(out["status"], "not_due")
+        self.assertEqual(out["before_terminal_raw_projected_tokens"], 0)
+        self.assertEqual(out["planned_source_tokens"], 0)
         self.assertEqual(out["summaries_created"], 0)
         self.assertEqual(len(mem.store.get_unsummarized_messages(namespace=mem.namespace)), 1)
 

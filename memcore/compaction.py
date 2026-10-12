@@ -240,6 +240,10 @@ class Compaction:
         profile = provider_profile
         generation, _ = self.store.get_conversation_generations(namespace=namespace)
         result["compaction_generation"] = generation
+        completing = self.runtime.completing_turn_ids(store_identity=self.store.runtime_identity(), namespace=namespace)
+        terminal_ids = {
+            bundle.turn_id for bundle in bundles if bundle.status.terminal and bundle.turn_id not in completing
+        }
         projections: dict[str, list[ProjectionMessage]] = {}
         bundle_tokens: dict[str, int] = {}
         token_quality = self.token_counter.quality if self.token_counter is not None else "estimated"
@@ -253,38 +257,49 @@ class Compaction:
             )
 
         raw_projected_tokens = sum(bundle_tokens.values())
+        # Open turns remain visible for request/working-budget diagnostics, but
+        # only terminal effective history drives ordinary raw compaction. In
+        # particular, a growing full tool trace must not consume the old tail
+        # before its final response and configured terminal settlement.
+        terminal_raw_projected_tokens = sum(bundle_tokens[turn_id] for turn_id in terminal_ids)
         memory_tokens = self._visible_memory_projection_tokens(namespace, profile)
         before_tokens = memory_tokens + raw_projected_tokens
         result["before_projected_tokens"] = before_tokens
         result["before_raw_projected_tokens"] = raw_projected_tokens
+        result["before_terminal_raw_projected_tokens"] = terminal_raw_projected_tokens
+        result["after_terminal_raw_projected_tokens"] = terminal_raw_projected_tokens
         result["token_count_quality"] = token_quality
         components = self._bundle_components(bundles)
         due, removal_target = self._compaction_due_target(
-            bundles=bundles,
-            raw_projected_tokens=raw_projected_tokens,
+            terminal_raw_projected_tokens=terminal_raw_projected_tokens,
         )
         result["planned_source_tokens"] = removal_target if due else 0
         if not due:
             result["status"] = "not_due"
+            if completing:
+                result["reason"] = "terminal_settlement_in_progress"
             result["after_projected_tokens"] = before_tokens
             result["after_raw_projected_tokens"] = raw_projected_tokens
             return
 
         selected: list[TurnBundle] = []
         selected_tokens = 0
-        total_bundle_count = len(bundles)
+        terminal_bundle_count = len(terminal_ids)
         blocked_reason = ""
         for component in components:
             if any(not bundle.status.terminal for bundle in component):
                 blocked_reason = "open_turn_in_prefix"
                 break
+            if any(bundle.turn_id in completing for bundle in component):
+                blocked_reason = "terminal_settlement_in_progress"
+                break
             retained_target = self.config.raw_token_trigger * (1 - self.config.raw_token_batch_ratio)
             catch_up = (
                 self.config.compaction_request_mode == "chat_prefix"
-                and raw_projected_tokens - selected_tokens > retained_target
+                and terminal_raw_projected_tokens - selected_tokens > retained_target
             )
             if (
-                total_bundle_count - len(selected) - len(component) < self.config.compaction_min_recent_turns
+                terminal_bundle_count - len(selected) - len(component) < self.config.compaction_min_recent_turns
                 and not catch_up
             ):
                 blocked_reason = "recent_turn_window"
@@ -294,18 +309,19 @@ class Compaction:
             if selected_tokens >= removal_target:
                 break
 
-        # V1's oversized-first-turn escape hatch, upgraded to V2 terminal
-        # components.  A complete history with no legal recent tail must not
-        # remain permanently above the token trigger merely because
-        # compaction_min_recent_turns is non-zero.
-        if (
-            not selected
-            and blocked_reason == "recent_turn_window"
-            and all(bundle.status.terminal for bundle in bundles)
-        ):
-            selected = list(bundles)
-            selected_tokens = raw_projected_tokens
-            blocked_reason = ""
+        # A completed history with no legal recent tail may compact as a whole.
+        # Starting a new open turn must not disable that terminal escape hatch;
+        # an open component inside the old history still blocks the prefix.
+        if not selected and blocked_reason == "recent_turn_window":
+            terminal_prefix: list[TurnBundle] = []
+            for component in components:
+                if any(bundle.turn_id not in terminal_ids for bundle in component):
+                    break
+                terminal_prefix.extend(component)
+            if len(terminal_prefix) == terminal_bundle_count:
+                selected = terminal_prefix
+                selected_tokens = terminal_raw_projected_tokens
+                blocked_reason = ""
 
         if not selected:
             result["status"] = "blocked_by_open_turn" if blocked_reason == "open_turn_in_prefix" else "not_due"
@@ -445,6 +461,7 @@ class Compaction:
         result["summaries_created"] += len(committed.summaries)
         result["after_projected_tokens"] = max(0, before_tokens - selected_tokens) + summary_tokens
         result["after_raw_projected_tokens"] = max(0, raw_projected_tokens - selected_tokens)
+        result["after_terminal_raw_projected_tokens"] = max(0, terminal_raw_projected_tokens - selected_tokens)
 
     @staticmethod
     def _is_episode_entry(entry: TimelineEntry) -> bool:
@@ -536,15 +553,14 @@ class Compaction:
     def _compaction_due_target(
         self,
         *,
-        bundles: list[TurnBundle],
-        raw_projected_tokens: int,
+        terminal_raw_projected_tokens: int,
     ) -> tuple[bool, int]:
         trigger = self.config.raw_token_trigger
         planned = max(1, math.ceil(trigger * float(self.config.raw_token_batch_ratio)))
         if self.config.compaction_request_mode == "chat_prefix":
             retained = max(0, trigger - planned)
-            planned = max(planned, raw_projected_tokens - retained)
-        return (raw_projected_tokens >= trigger, planned)
+            planned = max(planned, terminal_raw_projected_tokens - retained)
+        return (terminal_raw_projected_tokens >= trigger, planned)
 
     def _count_projection_tokens(self, message: ProjectionMessage) -> int:
         text = canonical_json_bytes(message.payload).decode("utf-8")

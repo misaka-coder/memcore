@@ -6,6 +6,7 @@ import tempfile
 import threading
 import sqlite3
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
@@ -88,6 +89,215 @@ class ChatPrefixCompactionTests(unittest.TestCase):
         self.addCleanup(mem.store.close)
         self.addCleanup(mem.close)
         return mem, llm
+
+    def test_open_tool_volume_does_not_trigger_ordinary_compaction(self):
+        for mode in ("chat_prefix", "independent"):
+            for policy in ("compact_arguments_after_terminal", "full_until_raw_compaction"):
+                with self.subTest(mode=mode, policy=policy):
+                    mem, llm = self.memory(
+                        policy=policy, compaction_request_mode=mode, raw_token_trigger=3000, working_token_trigger=0
+                    )
+                    _begin(mem, "old", "completed conversation " * 40)
+                    _complete(mem, "old")
+                    _begin(mem, "active")
+                    _add_tool(mem, "active", "a", LONG_BODY)
+                    before = capture(mem)
+                    terminal_tokens = sum(
+                        mem._compaction._count_projection_tokens(message)
+                        for message in before.messages
+                        if message.turn_id == "old"
+                    )
+                    self.assertLess(terminal_tokens, mem.config.raw_token_trigger)
+                    stats = mem.compact_due_sync(provider_profile="openai_chat")
+                    self.assertEqual(stats["status"], "not_due", stats)
+                    self.assertGreater(stats["before_raw_projected_tokens"], mem.config.raw_token_trigger)
+                    self.assertEqual(stats["before_terminal_raw_projected_tokens"], terminal_tokens)
+                    self.assertEqual(stats["after_terminal_raw_projected_tokens"], terminal_tokens)
+                    self.assertEqual(stats["planned_source_tokens"], 0)
+                    self.assertEqual(llm.calls, [])
+                    after = mem.build_context_projection(provider_profile="openai_chat")
+                    self.assertEqual(after.payloads, before.payloads)
+                    self.assertEqual(after.compaction_generation, before.compaction_generation)
+
+    def test_terminal_threshold_uses_selected_history_policy(self):
+        for policy in ("compact_arguments_after_terminal", "full_until_raw_compaction"):
+            with self.subTest(policy=policy):
+                mem, llm = self.memory(policy=policy, raw_token_trigger=3000, working_token_trigger=0)
+                _begin(mem, "task")
+                _add_tool(mem, "task", "a", LONG_BODY)
+                capture(mem)
+                self.assertEqual(mem.compact_due_sync(provider_profile="openai_chat")["status"], "not_due")
+                self.assertEqual(llm.calls, [])
+                _complete(mem, "task")
+                terminal = capture(mem)
+                terminal_tokens = sum(mem._compaction._count_projection_tokens(m) for m in terminal.messages)
+                stats = mem.compact_due_sync(provider_profile="openai_chat")
+                self.assertEqual(stats["before_terminal_raw_projected_tokens"], terminal_tokens)
+                if policy == "full_until_raw_compaction":
+                    self.assertEqual(stats["status"], "compacted", stats)
+                    self.assertEqual(len(llm.calls), 1)
+                else:
+                    self.assertLess(terminal_tokens, mem.config.raw_token_trigger)
+                    self.assertEqual(stats["status"], "not_due", stats)
+                    self.assertEqual(llm.calls, [])
+
+    def test_closed_turn_waits_for_terminal_settlement_before_trigger_accounting(self):
+        for mode in ("chat_prefix", "independent"):
+            with self.subTest(mode=mode):
+                mem, llm = self.memory(
+                    policy="compact_arguments_after_terminal",
+                    compaction_request_mode=mode,
+                    raw_token_trigger=3000,
+                    working_token_trigger=0,
+                )
+                _begin(mem, "task")
+                _add_tool(mem, "task", "a", LONG_BODY)
+                capture(mem)
+                entered, release = threading.Event(), threading.Event()
+                observer = MemorySystem(
+                    llm=llm,
+                    namespace=mem.namespace,
+                    timezone=mem.timezone,
+                    config=mem.config,
+                    store=mem.store,
+                    runtime=mem.runtime,
+                    token_counter=mem.token_counter,
+                )
+                self.addCleanup(observer.close)
+                settle = mem._settle_turn_after_completion
+
+                def paused_settlement(**kwargs):
+                    entered.set()
+                    if not release.wait(5):
+                        raise RuntimeError("fixture timed out")
+                    return settle(**kwargs)
+
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    with patch.object(mem, "_settle_turn_after_completion", side_effect=paused_settlement):
+                        final = executor.submit(_complete, mem, "task")
+                        try:
+                            self.assertTrue(entered.wait(2))
+                            stats = observer.compact_due_sync(provider_profile="openai_chat")
+                            self.assertEqual(stats["status"], "not_due", stats)
+                            self.assertEqual(stats["before_terminal_raw_projected_tokens"], 0)
+                            self.assertEqual(llm.calls, [])
+                        finally:
+                            release.set()
+                        final.result(timeout=3)
+                stats = mem.compact_due_sync(provider_profile="openai_chat")
+                self.assertEqual(stats["status"], "not_due", stats)
+                self.assertGreater(stats["before_terminal_raw_projected_tokens"], 0)
+                self.assertEqual(llm.calls, [])
+
+    def test_failed_terminal_write_does_not_leave_history_excluded(self):
+        mem, llm = self.memory(policy="full_until_raw_compaction", raw_token_trigger=1000, working_token_trigger=0)
+        _begin(mem, "task", "completed conversation " * 100)
+        capture(mem)
+        with patch.object(mem.store, "commit_turn_completion", side_effect=RuntimeError("fixture write failed")):
+            with self.assertRaisesRegex(RuntimeError, "fixture write failed"):
+                _complete(mem, "task")
+        _complete(mem, "task")
+        capture(mem)
+        stats = mem.compact_due_sync(provider_profile="openai_chat")
+        self.assertEqual(stats["status"], "compacted", stats)
+        self.assertGreater(stats["before_terminal_raw_projected_tokens"], mem.config.raw_token_trigger)
+        self.assertEqual(len(llm.calls), 1)
+
+    def test_open_volume_does_not_change_ordinary_removal_or_retained_target(self):
+        for with_open in (False, True):
+            with self.subTest(with_open=with_open):
+                mem, _ = self.memory(raw_token_trigger=5000, raw_token_batch_ratio=0.5, working_token_trigger=0)
+                for number in range(3):
+                    _begin(mem, f"old-{number}", "completed conversation " * 100)
+                    _complete(mem, f"old-{number}")
+                closed = capture(mem)
+                closed_tokens = sum(mem._compaction._count_projection_tokens(m) for m in closed.messages)
+                if with_open:
+                    _begin(mem, "active")
+                    _add_tool(mem, "active", "a", LONG_BODY)
+                    capture(mem)
+                stats = mem.compact_due_sync(provider_profile="openai_chat")
+                self.assertEqual(stats["status"], "compacted", stats)
+                self.assertEqual(stats["before_terminal_raw_projected_tokens"], closed_tokens)
+                self.assertEqual(stats["planned_source_tokens"], closed_tokens - 2500)
+                self.assertEqual(stats["source_turn_count"], 2)
+                self.assertNotIn("old-2-u", stats["summary_source_ids"])
+                self.assertNotIn("active-u", stats["summary_source_ids"])
+
+    def test_prior_terminal_summary_commits_during_next_open_tool_turn(self):
+        for mode in ("chat_prefix", "independent"):
+            with self.subTest(mode=mode):
+                mem, llm = self.memory(compaction_request_mode=mode, raw_token_trigger=1000, working_token_trigger=0)
+                _begin(mem, "old", "completed conversation " * 100)
+                _complete(mem, "old")
+                capture(mem)
+                entered, release = threading.Event(), threading.Event()
+
+                def wait():
+                    entered.set()
+                    if not release.wait(5):
+                        raise RuntimeError("fixture timed out")
+
+                llm.during_call = wait
+                future = mem.compact_due_background(provider_profile="openai_chat")
+                try:
+                    self.assertTrue(entered.wait(2))
+                    _begin(mem, "active")
+                    _add_tool(mem, "active", "a", LONG_BODY)
+                    current = capture(mem)
+                    active_payloads = [m.payload for m in current.messages if m.turn_id == "active"]
+                finally:
+                    release.set()
+                stats = future.result(timeout=3)
+                self.assertEqual(stats["status"], "compacted", stats)
+                self.assertEqual(len(llm.calls), 1)
+                self.assertNotIn("active-u", stats["summary_source_ids"])
+                after = mem.build_context_projection(provider_profile="openai_chat")
+                self.assertEqual([m.payload for m in after.messages if m.turn_id == "active"], active_payloads)
+                self.assertGreater(after.compaction_generation, current.compaction_generation)
+                self.assertIn("Completed work and conversation.", str(after.payloads))
+
+    def test_oversized_terminal_prefix_remains_due_with_next_turn_open(self):
+        for mode in ("chat_prefix", "independent"):
+            with self.subTest(mode=mode):
+                mem, llm = self.memory(compaction_request_mode=mode, raw_token_trigger=1000, working_token_trigger=0)
+                _begin(mem, "old", "completed conversation " * 100)
+                _complete(mem, "old")
+                _begin(mem, "active")
+                _add_tool(mem, "active", "a", LONG_BODY)
+                before = capture(mem)
+                active_payloads = [m.payload for m in before.messages if m.turn_id == "active"]
+                stats = mem.compact_due_sync(provider_profile="openai_chat")
+                self.assertEqual(stats["status"], "compacted", stats)
+                self.assertEqual(stats["source_turn_count"], 1)
+                self.assertEqual(stats["after_terminal_raw_projected_tokens"], 0)
+                self.assertNotIn("active-u", stats["summary_source_ids"])
+                self.assertEqual(len(llm.calls), 1)
+                after = mem.build_context_projection(provider_profile="openai_chat")
+                self.assertEqual([m.payload for m in after.messages if m.turn_id == "active"], active_payloads)
+
+    def test_open_turn_does_not_count_as_a_retained_terminal_turn(self):
+        for with_open in (False, True):
+            with self.subTest(with_open=with_open):
+                mem, _ = self.memory(
+                    compaction_request_mode="independent", compaction_min_recent_turns=2, working_token_trigger=0
+                )
+                for number in range(3):
+                    _begin(mem, f"old-{number}", "completed conversation " * 20)
+                    _complete(mem, f"old-{number}")
+                closed = capture(mem)
+                mem.config.raw_token_trigger = (
+                    sum(mem._compaction._count_projection_tokens(m) for m in closed.messages) - 1
+                )
+                if with_open:
+                    _begin(mem, "active")
+                    _add_tool(mem, "active", "a", LONG_BODY)
+                    capture(mem)
+                stats = mem.compact_due_sync(provider_profile="openai_chat")
+                self.assertEqual(stats["status"], "compacted", stats)
+                self.assertEqual(stats["source_turn_count"], 1)
+                self.assertNotIn("old-1-u", stats["summary_source_ids"])
+                self.assertNotIn("old-2-u", stats["summary_source_ids"])
 
     def test_actual_prefix_crops_new_tail_and_rejects_changed_source(self):
         mem, _ = self.memory()

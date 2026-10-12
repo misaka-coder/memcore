@@ -96,6 +96,8 @@ class CompactionResult:
     after_projected_tokens: int = 0
     before_raw_projected_tokens: int = 0
     after_raw_projected_tokens: int = 0
+    before_terminal_raw_projected_tokens: int = 0
+    after_terminal_raw_projected_tokens: int = 0
     planned_source_tokens: int = 0
     selected_projected_tokens: int = 0
     token_count_quality: str = "not_counted"
@@ -119,6 +121,8 @@ class CompactionResult:
             "after_projected_tokens": self.after_projected_tokens,
             "before_raw_projected_tokens": self.before_raw_projected_tokens,
             "after_raw_projected_tokens": self.after_raw_projected_tokens,
+            "before_terminal_raw_projected_tokens": self.before_terminal_raw_projected_tokens,
+            "after_terminal_raw_projected_tokens": self.after_terminal_raw_projected_tokens,
             "planned_source_tokens": self.planned_source_tokens,
             "selected_projected_tokens": self.selected_projected_tokens,
             "token_count_quality": self.token_count_quality,

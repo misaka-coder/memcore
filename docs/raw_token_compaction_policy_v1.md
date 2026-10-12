@@ -4,11 +4,13 @@ This document describes the current and only raw compaction policy.
 
 ## Policy
 
-MemCore measures the unsummarized raw timeline as the exact provider-visible
-projection selected for the conversation. Compaction becomes due when:
+Since 0.1.7, ordinary raw compaction measures only terminal, unsummarized
+history using its current provider-visible projection. An open turn's full
+tool calls/results do not contribute to its trigger or retained-tail target.
+Compaction becomes due when:
 
 ```text
-raw_projected_tokens >= raw_token_trigger
+terminal_raw_projected_tokens >= raw_token_trigger
 ```
 
 It then plans to remove:
@@ -22,11 +24,40 @@ complete terminal turn/relation components choose the actual cut point. A
 component may exceed the planned amount. MemCore never cuts a user stimulus
 away from its final response or splits correlated action/observation lineage.
 
+In `chat_prefix` mode a large completed backlog removes at least the current
+terminal raw volume minus the target retained tail:
+
+```text
+retained = raw_token_trigger - ceil(raw_token_trigger * raw_token_batch_ratio)
+planned = max(ceil(raw_token_trigger * raw_token_batch_ratio),
+              terminal_raw_projected_tokens - retained)
+```
+
+Open volume is excluded from both quantities. Complete the turn, apply its
+configured terminal settlement, then call `compact_due_background()`; a full
+history policy continues counting the full completed projection. Maintenance
+may still run during later tool requests for independently due older history.
+
 The recent tail is controlled by `compaction_min_recent_turns`. One oversized
-terminal turn is still allowed to compact by itself, so a complete history
-cannot remain permanently over the trigger merely because no second turn exists.
-An open oldest component returns `blocked_by_open_turn` instead of guessing a
-boundary.
+terminal turn is still allowed to compact by itself, even if a new turn has
+started, so a complete history cannot remain permanently over the trigger
+merely because no completed recent tail exists. Only terminal turns count
+toward that recent-tail protection. If independently due terminal history
+lies behind an open oldest component, it returns `blocked_by_open_turn`
+instead of guessing a boundary. Open-only pressure returns `not_due`.
+
+`complete_turn()` has a short process-local completion boundary shared by
+systems on the same store/conversation runtime. A turn already marked closed
+but still applying its terminal settlement is not yet eligible for ordinary
+triggering or selection. Other completed history may proceed; no database
+flag, task queue, wait for a conversation to become idle, or provider lock is
+added. The boundary clears on success and failure. Restart does not retain it.
+
+Open tools still count toward the complete provider request budget and the
+separate `working_token_trigger` mechanism. Those mechanisms do not borrow
+the ordinary raw threshold. An older summary can commit while a later turn
+is running and appear at its next request boundary; it does not consume the
+later open turn or mutate an already sent request.
 
 ## Configuration
 
@@ -106,10 +137,18 @@ Important fields returned by `compact_due_sync()` / the background future:
   `stale_projection` when two bounded reads both lose a race to a valid request
   append;
 - `before_raw_projected_tokens` / `after_raw_projected_tokens`;
+- `before_terminal_raw_projected_tokens` / `after_terminal_raw_projected_tokens`;
 - `planned_source_tokens` / `selected_projected_tokens`;
 - `source_turn_count` / `source_entry_count`;
 - `compaction_generation`;
 - `token_count_quality`.
+
+The raw before/after diagnostics still include the visible open-turn projection;
+the terminal raw before/after fields are the ordinary trigger/removal basis.
+`before_projected_tokens` / `after_projected_tokens` also include visible memory.
+These are counts of the captured maintenance snapshot, not a promise that no
+new messages arrived while the provider was generating a summary. A completion
+still settling may return `not_due` with `reason=terminal_settlement_in_progress`.
 
 One call advances at most one raw generation and one semantic batch. Repeated
 background scheduling drains a backlog without a single request loop calling

@@ -15,6 +15,11 @@ config = MemoryConfig(
 ```
 
 Raw triggering and episodic/semantic windows keep their existing settings.
+Since 0.1.7, the ordinary raw trigger, removal amount and recent-tail target
+use only completed effective history, after configured terminal settlement.
+An open turn's full trace cannot push older chat history over that threshold.
+Complete provider input and open working pressure remain separate measures;
+see [raw token policy](raw_token_compaction_policy_v1.md).
 `working_token_trigger` is a soft threshold for an open turn's effective
 projection. It must leave room for stable prompts, tools, retained history,
 output and newly arriving results. The host still enforces the complete
@@ -25,6 +30,12 @@ Turning the mode off prevents new working segments. Existing segments remain
 readable. Terminal settlement policies and their frozen thresholds keep their
 published meanings; working overlays are a separate, explicitly enabled
 maintenance operation using those policies.
+
+An independently due older summary may still commit during a new turn and
+be read at its next request boundary. There is no requirement to delay that
+summary until the new turn finishes. The new open turn is neither selected
+nor charged to the ordinary trigger; its own working compaction remains
+available under the working threshold or actual request budget.
 
 ## Host capture and adapter
 

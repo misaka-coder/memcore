@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import threading
+from contextlib import contextmanager
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from .namespace import Namespace
 
@@ -47,6 +48,33 @@ class MemCoreRuntime:
         )
         self._closed = False
         self._guard = threading.RLock()
+        self._completing_turns: dict[tuple[str, str, str, str, str], dict[str, int]] = {}
+
+    @contextmanager
+    def completing_turn(self, *, store_identity: str, namespace: Namespace, turn_id: str) -> Iterator[None]:
+        """Exclude a turn from ordinary planning until its completion/settlement finishes.
+
+        This is a process-local write boundary, not a queue or a conversation
+        lock. Other completed history and active tool work remain available.
+        """
+        key = (store_identity, *namespace.hard_key(), namespace.conversation_id or "")
+        with self._guard:
+            active = self._completing_turns.setdefault(key, {})
+            active[turn_id] = active.get(turn_id, 0) + 1
+        try:
+            yield
+        finally:
+            with self._guard:
+                active[turn_id] -= 1
+                if not active[turn_id]:
+                    active.pop(turn_id)
+                if not active:
+                    self._completing_turns.pop(key)
+
+    def completing_turn_ids(self, *, store_identity: str, namespace: Namespace) -> frozenset[str]:
+        key = (store_identity, *namespace.hard_key(), namespace.conversation_id or "")
+        with self._guard:
+            return frozenset(self._completing_turns.get(key, ()))
 
     def submit_compaction(self, fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Future:
         with self._guard:

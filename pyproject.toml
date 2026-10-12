@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 # 发行版名。PyPI 上的 `memcore` 已被他人占用(空壳包),因此加 -kernel 后缀。
 # import 名仍是 `memcore`,不随之改变。
 name = "memcore-kernel"
-version = "0.1.6"
+version = "0.1.7"
 description = "Domain-agnostic layered memory core with unified timelines, layered compaction, and deterministic hybrid retrieval."
 readme = "README.md"
 requires-python = ">=3.10"
