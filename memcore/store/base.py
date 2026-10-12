@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -85,6 +86,16 @@ class ContextProjectionRows:
 
 
 class MemoryStore(ABC):
+    def context_projection_scope(self):
+        """Keep one request's memory generations coherent; network calls stay outside."""
+        return nullcontext()
+
+    def get_working_segments(self, *, namespace: Namespace, provider_profile: str) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    def commit_working_segment(self, **kwargs: Any) -> dict[str, Any]:
+        raise NotImplementedError
+
     def runtime_identity(self) -> str:
         """Safe process-local identity; must never expose a database path."""
         return f"{type(self).__module__}.{type(self).__qualname__}:{id(self)}"

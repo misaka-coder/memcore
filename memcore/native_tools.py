@@ -13,6 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from .errors import ConfigError
 from .memory_receipt import build_memory_operation_receipt
 from .schema import ABOUT_ROLES, MEMORY_FACETS
 
@@ -46,6 +47,7 @@ def build_native_memory_tool_specs(
     include_material_tool: bool = True,
     tool_format: str = "openai",
     strict: bool = True,
+    retrieval_mode: str = "hybrid",
 ) -> list[dict[str, Any]]:
     """Build provider-native tool declarations for memcore memory tools.
 
@@ -56,12 +58,15 @@ def build_native_memory_tool_specs(
     - "plain": {"name","description","parameters"}
     """
 
+    if retrieval_mode not in ("hybrid", "navigation"):
+        raise ConfigError("retrieval_mode must be 'hybrid' or 'navigation'")
     tools = [
-        _tool_spec("retrieve_for_turn", _retrieve_description(), _retrieve_schema()),
         _tool_spec("browse_memory", _browse_description(), _browse_schema()),
         _tool_spec("open_memory", _open_description(), _open_schema()),
         _tool_spec("read_timeline", _timeline_description(), _timeline_schema()),
     ]
+    if retrieval_mode == "hybrid":
+        tools.insert(0, _tool_spec("retrieve_for_turn", _retrieve_description(), _retrieve_schema()))
     if include_material_tool:
         tools.append(_tool_spec("load_material", _material_description(), _material_schema()))
     return [_format_tool(tool, tool_format=tool_format, strict=strict) for tool in tools]
@@ -852,7 +857,7 @@ def _timeline_description() -> str:
         "reloadable compact evidence for large operation/material records; expand one with open_memory(content). If "
         "status is partial, inspect selected/returned volume and either call again with only next_cursor or use "
         "browse_memory for an overview. Native reads always use a host-configured finite complete-unit page; one "
-        "oversized turn is returned whole. A raw retrieval source id can anchor complete nearby turns."
+        "oversized turn is returned whole. A raw source id from a memory read can anchor complete nearby turns."
     )
 
 
@@ -1006,7 +1011,7 @@ def _timeline_schema() -> dict[str, Any]:
             },
             "anchor_source_id": {
                 "type": "string",
-                "description": "Raw source_id returned by retrieve_for_turn; mutually exclusive with date fields.",
+                "description": "Raw source_id returned by a memory read; mutually exclusive with date fields.",
             },
             "before_turns": {"type": "integer", "minimum": 0},
             "after_turns": {"type": "integer", "minimum": 0},

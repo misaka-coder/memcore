@@ -17,6 +17,7 @@ from typing import Any, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 from .compaction import Compaction
+from .chat_compaction import ChatContextSnapshot
 from .config import MemoryConfig, OperationProjectionPolicy
 from .context_contract import CONTEXT_SURFACE_VERSION, ContextDiagnostic, ContextSurface
 from .embedding.base import EmbeddingProvider
@@ -135,10 +136,14 @@ class MemorySystem:
         self._owns_runtime = runtime is None
 
         # 依赖装配:缺省自带 SQLite + 内存索引;embedding 必须显式(生产不静默退 hashed,见 §13.1)。
-        self.embedding = self._resolve_embedding(embedding)
+        if self.config.retrieval_mode == "navigation" and (embedding is not None or index is not None):
+            raise ValueError("navigation mode does not accept an embedding or search index")
+        self.embedding = self._resolve_embedding(embedding) if self.config.retrieval_mode == "hybrid" else None
         self.token_counter = token_counter
         self.store: MemoryStore = store or SQLiteMemoryStore(storage_dir or ":memory:")
-        self.index: VectorIndex = index or InMemoryVectorIndex(embedding=self.embedding)
+        self.index: VectorIndex | None = (
+            (index or InMemoryVectorIndex(embedding=self.embedding)) if self.embedding is not None else None
+        )
         self._projection_ledger = ProjectionLedger(
             store=self.store,
             adapter=self._projection,
@@ -176,6 +181,11 @@ class MemorySystem:
         if persona_text and not ov.persona_text:  # 便捷参数只在 overrides 没填 persona 时生效
             ov = dataclasses.replace(ov, persona_text=persona_text)
         return ov
+
+    @property
+    def retrieval_mode(self) -> str:
+        """Construction-bound mode; restoring hybrid retrieval requires a fresh system."""
+        return "hybrid" if self.index is not None else "navigation"
 
     @staticmethod
     def _resolve_embedding(embedding: EmbeddingProvider | str | None) -> EmbeddingProvider:
@@ -800,6 +810,14 @@ class MemorySystem:
         *,
         provider_profile: str,
     ) -> tuple[ContextProjection, list[TimelineEntry]]:
+        with self.store.context_projection_scope():
+            return self._assemble_context_projection_with_entries(provider_profile=provider_profile)
+
+    def _assemble_context_projection_with_entries(
+        self,
+        *,
+        provider_profile: str,
+    ) -> tuple[ContextProjection, list[TimelineEntry]]:
         """Build one projection and return the exact entries used by it.
 
         ``ContextSurface`` needs both products.  Returning the owned snapshot
@@ -903,6 +921,13 @@ class MemorySystem:
                 provider_profile=profile,
             )
         )
+        from .working_compaction import apply_working_segments
+
+        try:
+            segments = self.store.get_working_segments(namespace=self.namespace, provider_profile=profile)
+        except (AttributeError, NotImplementedError):
+            segments = []
+        messages = apply_working_segments(messages, segments)
         projection = ContextProjection(
             provider_profile=profile,
             messages=tuple(messages),
@@ -911,9 +936,16 @@ class MemorySystem:
             entry_projection_hashes=build_entry_projection_hashes(messages),
             compaction_generation=compaction_generation,
             projection_generation=projection_generation,
-            has_compact_history=any(message.projection_status is ProjectionStatus.SETTLED for message in messages),
+            has_compact_history=bool(settlement_policies)
+            or any(
+                segment["policy"] != OperationProjectionPolicy.FULL_UNTIL_RAW_COMPACTION.value for segment in segments
+            ),
             has_compact_arguments_history=OperationProjectionPolicy.COMPACT_ARGUMENTS_AFTER_TERMINAL.value
-            in settlement_policies,
+            in settlement_policies
+            or any(
+                segment["policy"] == OperationProjectionPolicy.COMPACT_ARGUMENTS_AFTER_TERMINAL.value
+                for segment in segments
+            ),
         )
         return projection, entries
 
@@ -1381,6 +1413,8 @@ class MemorySystem:
         return replace(result, final_entry=final_entry, updated_targets=targets)
 
     def _index_timeline_entry(self, entry: TimelineEntry) -> TimelineEntry:
+        if self.index is None:
+            return entry
         try:
             self._reindex_record(entry.to_record())
         except Exception:
@@ -1740,7 +1774,8 @@ class MemorySystem:
         )
         rec = entry.to_record()
         if not index_in_vector:
-            self.index.delete([source_id])
+            if self.index is not None:
+                self.index.delete([source_id])
             self.store.set_index_status(source_id, "skipped")
             rec["index_status"] = "skipped"
         return rec
@@ -1754,6 +1789,10 @@ class MemorySystem:
             conversation_id=ns.conversation_id,
             actor=actor,
         )
+
+    def capture_chat_context(self, context: ChatContextSnapshot) -> None:
+        """Provide a host-owned immutable request for optional prefix compaction."""
+        self._compaction.capture_chat_context(context)
 
     def compact_due_sync(self, *, provider_profile: str = "") -> dict[str, Any]:
         """同步压缩(阻塞直到完成)。
@@ -1811,8 +1850,10 @@ class MemorySystem:
             "也不要把『首次留下记录』夸张成你能证明的现实起点。"
         )
 
-    def reindex_pending(self, *, limit: int = 100, batch_size: int = 64) -> dict[str, int]:
+    def reindex_pending(self, *, limit: int = 100, batch_size: int = 64) -> dict[str, Any]:
         """outbox 自愈:把 index_status=pending 的记录补做向量 upsert。可定期/启动时调用。"""
+        if self.index is None:
+            return {"status": "disabled", "reason": "retrieval_disabled", "scanned": 0, "repaired": 0, "failed": 0}
         cleanup = self._repair_index_cleanup(self.namespace)
         pending = self.store.list_pending_index(limit=limit)
         repaired = failed = 0
@@ -1823,6 +1864,8 @@ class MemorySystem:
         return {"scanned": len(pending), "repaired": repaired, "failed": failed, **cleanup}
 
     def _repair_index_cleanup(self, namespace: Namespace) -> dict[str, int]:
+        if self.index is None:
+            return {}
         try:
             pending = self.store.list_semantic_index_cleanup(namespace=namespace)
         except NotImplementedError:
@@ -1964,6 +2007,8 @@ class MemorySystem:
             return self._finish_semantic_history_change(result, result["restored_memory_ids"])
 
     def _finish_semantic_history_change(self, result: dict[str, Any], memory_ids: list[str]) -> dict[str, Any]:
+        if self.index is None:
+            return {**result, "index_repaired": 0, "index_failed": 0, "index_status": "disabled"}
         cleanup = self._repair_index_cleanup(self.namespace)
         records = self.store.get_retrieval_records(namespace=self.namespace, source_ids=tuple(memory_ids))
         indexed, failed = self._reindex_batch(list(records.values()))
@@ -1982,7 +2027,7 @@ class MemorySystem:
         limit: int | None = None,
         current_conversation_only: bool = False,
         batch_size: int = 64,
-    ) -> dict[str, int]:
+    ) -> dict[str, Any]:
         """从 SQLite 真相源补建/热加载三层向量索引。
 
         默认按硬隔离边界(tenant/user/domain)upsert 全部会话,这样换会话后的长期记忆仍可被 retrieve 搜到。
@@ -1990,6 +2035,8 @@ class MemorySystem:
         该方法不会清空 index 里的旧条目;已有污染/陈旧向量库应由接入方先创建空 index 或使用后端管理工具清理。
         失败的记录会标回 pending,可交给 reindex_pending 重试。
         """
+        if self.index is None:
+            return {"status": "disabled", "reason": "retrieval_disabled", "scanned": 0, "reindexed": 0, "failed": 0}
         target = namespace or self.namespace
         cleanup = self._repair_index_cleanup(target)
         records = self.store.list_index_records(
@@ -2075,6 +2122,8 @@ class MemorySystem:
         return builders.get(str(record.get("entry_type")), build_raw_entry)(record)
 
     def _reindex_record(self, record: dict[str, Any]) -> None:
+        if self.index is None:
+            return
         entry = self._build_index_entry(record)
         if str(record.get("retrieval_visibility") or "") == RetrievalVisibility.NEVER.value:
             self.index.delete([entry["source_id"]])
@@ -2137,7 +2186,8 @@ class MemorySystem:
                 "reason": "source_id_not_found",
             }
         try:
-            self.index.delete([sid])
+            if self.index is not None:
+                self.index.delete([sid])
         except Exception as exc:
             return {
                 "ok": False,
@@ -2152,7 +2202,7 @@ class MemorySystem:
             "status": "staged",
             "source_id": sid,
             "memory_metadata": metadata,
-            "index_status": "pending",
+            "index_status": "pending" if self.index is not None else "disabled",
             "reason": "",
         }
 
@@ -2212,6 +2262,15 @@ class MemorySystem:
                 "index_status": "skipped",
                 "reason": "index_in_vector_disabled",
             }
+        if self.index is None:
+            return {
+                "ok": True,
+                "status": "updated",
+                "source_id": sid,
+                "memory_metadata": metadata,
+                "index_status": "disabled",
+                "reason": "",
+            }
         try:
             self.index.upsert([build_raw_entry(rec)])
             self.store.set_index_state(
@@ -2241,6 +2300,16 @@ class MemorySystem:
             }
 
     def embedding_status(self) -> dict[str, Any]:
+        if self.embedding is None:
+            return {
+                "provider": "",
+                "version": "",
+                "dimension": 0,
+                "degraded": False,
+                "status": "disabled",
+                "reason": "retrieval_disabled",
+                "retrieval_mode": "navigation",
+            }
         return {
             "provider": self.embedding.name,
             "version": self.embedding.version,
@@ -2250,6 +2319,8 @@ class MemorySystem:
 
     def verify_embedding(self, **kwargs: Any) -> dict[str, Any]:
         """语义自检:确认当前 embedding 真有语义(近义词更近)。上线前调用,ok=False 说明已降级。"""
+        if self.embedding is None:
+            return {"ok": False, "status": "disabled", "reason": "retrieval_disabled"}
         from .embedding.verify import verify_embedding as _verify
 
         return _verify(self.embedding, **kwargs)
@@ -2338,6 +2409,8 @@ class MemorySystem:
         **filters: Any,
     ) -> RetrievalResult:
         """Structured retrieval with every prompt-visible source excluded before scoring."""
+        if self.index is None:
+            return RetrievalResult(status="unavailable", reason="retrieval_disabled")
         filters.setdefault("cross_conversation", True)
         exclude_ids = {str(item).strip() for item in (exclude_source_ids or ()) if str(item or "").strip()}
         now_ts = int((current or {}).get("timestamp") or 0)
@@ -3437,6 +3510,15 @@ class MemorySystem:
         """定向遗忘:删除 store 记录,并尽力同步清 VectorIndex;失败时结构化报告 partial。"""
         target = namespace or self.namespace
         deleted_ids = self.store.delete_namespace(namespace=target)
+        if self.index is None:
+            return {
+                "ok": True,
+                "status": "deleted",
+                "deleted_count": len(deleted_ids),
+                "source_ids": deleted_ids,
+                "index_deleted": False,
+                "index_status": "disabled",
+            }
         try:
             self.index.delete(deleted_ids)
         except Exception as exc:

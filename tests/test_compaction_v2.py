@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 import unittest
 from typing import Any
+from unittest.mock import patch
 
 from memcore import (
     CANONICAL_PROFILE,
@@ -286,6 +287,101 @@ class CompactionV2Base(unittest.TestCase):
 
 
 class ClosedTurnPlanningTests(CompactionV2Base):
+    @staticmethod
+    def _retire_frozen_material(mem: MemorySystem, store: SQLiteMemoryStore) -> tuple[str, list[Any]]:
+        mem.append_standalone_entry(
+            TimelineEntryInput(
+                source_id="retired-notice",
+                kind="material.runtime_context.retired_notice",
+                origin=EntryOrigin.ENVIRONMENT,
+                turn_role=None,
+                semantic_text="obsolete instruction " * 300,
+                payload={},
+                timestamp=999,
+                semanticize=False,
+                prompt_visible=True,
+            )
+        )
+        mem.build_context_projection(provider_profile=OPENAI_PROFILE)
+        bundle = store.list_compaction_bundles(namespace=mem.namespace)[0]
+        frozen = store.get_turn_projections(
+            namespace=mem.namespace, turn_id=bundle.turn_id, provider_profile=OPENAI_PROFILE
+        )
+        with store._conn:
+            store._conn.execute(
+                "UPDATE messages SET prompt_visible = 0, row_version = row_version + 1 WHERE source_id = ?",
+                ("retired-notice",),
+            )
+        return bundle.turn_id, frozen
+
+    def test_retired_frozen_material_does_not_trigger_compaction(self) -> None:
+        mem, store, llm = self.make_mem(config=_projected_config(raw_token_trigger=10_000))
+        try:
+            turn_id, frozen = self._retire_frozen_material(mem, store)
+            self.assertTrue(frozen)
+            result = mem.compact_due_sync(provider_profile=OPENAI_PROFILE)
+            self.assertEqual(result["status"], "not_due", result)
+            self.assertEqual(result["before_raw_projected_tokens"], 0)
+            self.assertEqual(llm.summary_calls, 0)
+            self.assertEqual(
+                store.get_turn_projections(namespace=mem.namespace, turn_id=turn_id, provider_profile=OPENAI_PROFILE),
+                frozen,
+            )
+        finally:
+            mem.close()
+            store.close()
+
+    def test_retired_frozen_material_compacts_with_visible_dialogue(self) -> None:
+        mem, store, llm = self.make_mem(config=_projected_config(raw_token_trigger=100))
+        try:
+            turn_id, frozen = self._retire_frozen_material(mem, store)
+            _complete_simple_turn(mem, 0)
+            _complete_simple_turn(mem, 1)
+            result = mem.compact_due_sync(provider_profile=OPENAI_PROFILE)
+            self.assertEqual(result["status"], "compacted", result)
+            self.assertEqual(llm.summary_calls, 1)
+            self.assertIn("retired-notice", result["summary_source_ids"])
+            self.assertNotIn(
+                "retired-notice",
+                {row["source_id"] for row in store.get_unsummarized_messages(namespace=mem.namespace)},
+            )
+            self.assertIsNotNone(store.get_entry(namespace=mem.namespace, source_id="retired-notice"))
+            self.assertEqual(
+                store.get_turn_projections(namespace=mem.namespace, turn_id=turn_id, provider_profile=OPENAI_PROFILE),
+                frozen,
+            )
+        finally:
+            mem.close()
+            store.close()
+
+    def test_retired_projection_change_still_rejects_atomic_commit(self) -> None:
+        mem, store, llm = self.make_mem(config=_projected_config(raw_token_trigger=100))
+        try:
+            turn_id, _ = self._retire_frozen_material(mem, store)
+            _complete_simple_turn(mem, 0)
+            _complete_simple_turn(mem, 1)
+            original_call = llm.call
+
+            def change_projection(request: LLMRequest) -> LLMResult:
+                response = original_call(request)
+                with store._conn:
+                    store._conn.execute(
+                        "UPDATE prompt_projections SET payload_hash = ? WHERE turn_id = ?",
+                        ("concurrently-changed", turn_id),
+                    )
+                return response
+
+            with patch.object(llm, "call", side_effect=change_projection):
+                result = mem.compact_due_sync(provider_profile=OPENAI_PROFILE)
+            self.assertEqual(result["status"], "stale_batch", result)
+            self.assertEqual(result["reason"], "projection_changed")
+            self.assertTrue(
+                all(not row["is_summarized"] for row in store.get_unsummarized_messages(namespace=mem.namespace))
+            )
+        finally:
+            mem.close()
+            store.close()
+
     def test_request_projection_append_reloads_stale_compaction_snapshot(self) -> None:
         store = ProjectionRaceStore()
         mem, _, _ = self.make_mem(

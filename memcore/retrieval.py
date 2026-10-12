@@ -193,6 +193,11 @@ class RetrievalResult:
 
     @property
     def suggested_next_actions(self) -> list[str]:
+        if self.reason == "retrieval_disabled":
+            return [
+                "browse_memory_for_known_keywords_or_participants",
+                "read_timeline_for_exact_time_or_original_evidence",
+            ]
         if not self.rendered_texts:
             return ["answer_uncertain_unless_new_search_evidence_exists"]
         layers = {match.layer for match in self.matches}
@@ -243,7 +248,7 @@ class ReadPipeline:
         self,
         *,
         store: MemoryStore,
-        index: VectorIndex,
+        index: VectorIndex | None,
         config: MemoryConfig,
         timezone: str,
         token_counter: TokenCounter | None = None,
@@ -338,6 +343,8 @@ class ReadPipeline:
     # --- public retrieval ---
 
     def retrieve_result(self, *, namespace: Namespace, request: RetrievalRequest) -> RetrievalResult:
+        if self.index is None:
+            return RetrievalResult(status="unavailable", reason="retrieval_disabled")
         try:
             plan = self._compile_plan(namespace=namespace, request=request)
         except _RetrievalUnavailableError as exc:

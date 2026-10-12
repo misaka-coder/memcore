@@ -34,10 +34,38 @@ mem = MemorySystem(
 compaction tasks; MemCore retrieval does not call a verifier
 LLM. `timezone` is required and must be a valid IANA timezone name.
 
-`embedding` is always required. MemCore never silently falls back to hashed
+With the default `retrieval_mode="hybrid"`, `embedding` is required. MemCore never silently falls back to hashed
 vectors. `store` defaults to `SQLiteMemoryStore(storage_dir or ":memory:")`, and
 `index` defaults to `InMemoryVectorIndex(embedding=embedding)`. When a host
 injects its own store or index, it owns that dependency's lifecycle.
+
+For directory navigation without vector/BM25 retrieval, construct explicitly:
+
+```python
+mem = MemorySystem(
+    llm=memory_llm,
+    namespace=Namespace(user_id="user-1", conversation_id="chat-1"),
+    timezone="Asia/Shanghai",
+    config=MemoryConfig(retrieval_mode="navigation"),
+    store=store,
+)
+```
+
+Navigation mode creates neither an embedding provider nor a search index;
+passing either dependency is rejected. Dialogue persistence, context surfaces,
+summary/semantic compaction, directory keyword matching, source opening, and
+timeline pagination remain available. Semantic compaction uses the memory LLM,
+not embeddings. Retrieval returns `unavailable` with `reason="retrieval_disabled"`,
+never a misleading `empty` result; embedding diagnostics and reindex operations
+report `disabled`. New indexable truth retains its pending index state, and
+existing index/deletion repair metadata is preserved.
+
+The mode is bound at construction (`mem.retrieval_mode`). To restore hybrid
+retrieval, close the old system, construct a fresh hybrid system with a real
+embedding/index, and call `reindex_all()` against the same SQLite truth. No
+database migration or deletion is required. Generate tool declarations with
+`build_native_memory_tool_specs(retrieval_mode=mem.retrieval_mode, ...)` so a
+navigation host exposes only the tools it can actually execute.
 
 `MemorySystem.close()` closes only a runtime created by that `MemorySystem`; it
 does not close an injected store, index, embedding client, or shared runtime.
@@ -64,7 +92,10 @@ class MyMemoryLLM(LLMClient):
 
 `LLMRequest` fields are `task_type`, `system_prompt`, `user_prompt`,
 `response_format` (currently `json`), `timeout_s`, `max_retries`,
-`temperature`, optional `fallback`, and provider-specific `extra`.
+`temperature`, optional `fallback`, provider-specific `extra`, and optional
+`chat_prefix`. When the latter is present, the adapter uses its frozen host
+transport and appends the internal memory contract instead of re-rendering
+`user_prompt`; see [chat-prefix compaction](chat_prefix_compaction_v1.md).
 `TaskType` values are `summary`, `semantic`, and legacy `reinforcement`.
 The current pipeline never invokes reinforcement: each continuous episode batch
 creates an independent semantic record. Legacy enum/prompt slots remain readable.
@@ -88,6 +119,7 @@ values raise `ConfigError`; construction does not clamp them into valid values.
 
 | Field | Default | Contract |
 | --- | ---: | --- |
+| `retrieval_mode` | `"hybrid"` | Exactly `hybrid` or `navigation`; construction-bound dependency and tool capability choice. |
 | `raw_token_trigger` | `12000` | Positive integer. Trigger threshold for unsummarized raw provider-projection tokens. |
 | `raw_token_batch_ratio` | `0.67` | Finite number strictly between `0` and `1`; target ratio of oldest raw tokens selected after triggering. |
 | `episodic_visible_max` | `8` | Positive integer; maximum visible episodic summaries. |
@@ -102,6 +134,8 @@ values raise `ConfigError`; construction does not clamp them into valid values.
 | `compaction_min_recent_turns` | `1` | Positive integer; minimum recent terminal turns retained outside the selected raw batch. |
 | `compaction_schema_version` | `2` | Positive integer; compaction contract generation. |
 | `summary_profile` | `timeline_v2` | Non-empty string identifying the summary contract/profile. |
+| `compaction_request_mode` | `independent` | Exactly `independent` or `chat_prefix`. The latter can reuse a captured eligible chat request; raw/semantic requests without eligible coverage retain independent input. |
+| `working_token_trigger` | `0` | Non-negative integer; zero disables open-turn maintenance. A positive value with `chat_prefix` enables paired old tool-segment summaries before final delivery. |
 | `semantic_reinforcement_lookback` | `None` | Deprecated compatibility input. Explicit positive integers warn and have no effect. |
 | `semantic_reinforcement_min_overlap` | `None` | Deprecated compatibility input. Explicit positive integers warn and have no effect. |
 | `retrieval_limit` | `6` | Positive integer; default number of retrieval matches for trusted Python calls. It is not model-controlled in native tool schemas. |
@@ -129,6 +163,11 @@ values raise `ConfigError`; construction does not clamp them into valid values.
   bodies; native action arguments remain byte-identical.
 - `compact_arguments_after_terminal`: additionally shorten eligible string argument
   values while preserving native call structure, keys and types. Arrays stay full.
+
+Optional [working compaction](chat_prefix_compaction_v1.md) is separate from
+terminal settlement. It can publish a source-addressed overlay before final
+without changing a turn's frozen policy or the original ledger. Card policies
+use cards plus a working summary; full policy uses a summary only.
 
 These enum strings are persisted and enter settled hashes. Published values are
 stable wire values: do not rename, delete, reuse, or change their meaning. A

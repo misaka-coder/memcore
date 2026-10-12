@@ -457,6 +457,14 @@ path so summary-model latency does not block the visible reply. One call advance
 at most one raw generation and one semantic batch. Important result states and
 fields are documented in `raw_token_compaction_policy_v1.md`.
 
+Since 0.1.5, optional `compaction_request_mode="chat_prefix"` can reuse the
+host's actual request snapshot via `capture_chat_context(ChatContextSnapshot)`.
+Positive `working_token_trigger` also enables paired old segments of open
+tool turns: summarize first, then atomically publish cards/summary before new
+tail messages. It keeps the original turn open and original evidence intact.
+See [chat-prefix compaction](chat_prefix_compaction_v1.md) for capture,
+adapter requirements, fallback, states, budgets and schema-11 rollback.
+
 `MemorySystem.close(wait=True)` closes only an internally created runtime. A
 host that injected a shared `MemCoreRuntime` must close that runtime itself.
 Store/index lifecycle remains host-owned.

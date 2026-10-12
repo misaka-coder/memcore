@@ -55,6 +55,8 @@ Folding applies only to the **active context projection**, not storage. Raw outp
 * **Post-Final (Settlement Phase)**: With `compact_after_terminal` enabled, verbose observation bodies collapse into compact reference cards (~100 tokens) documenting execution status, timestamps, and a `source_id`.
 * **On-Demand Lineage Reloading**: Routine chat stays light. If a user later asks *"What was the exact stack trace on line 42?"*, the model invokes `open_memory(memory_id=..., view="content")` to restore the full 25,000-character raw trace back into focus.
 
+Version 0.1.5 adds optional [chat-prefix compaction](docs/chat_prefix_compaction_v1.md): reuse a captured chat request for memory generation. At a working threshold, an open tool turn can summarize a paired old segment before atomically publishing cards and a working summary, with new steps kept behind it. Independent summarization remains the default; original evidence stays intact.
+
 ### 2. Multi-Path Agentic Memory Navigation
 MemCore asserts that **semantic embeddings are an acceleration index, never the sole bottleneck of retrieval accessibility**. The model is equipped with a complementary suite of native tools:
 * `retrieve_for_turn`: Hybrid dense vector + BM25 retrieval with Reciprocal Rank Fusion (RRF), hard attribute/entity pre-filters, and timezone-aware temporal bounds. Excludes visible context to prevent redundant recall.
@@ -63,6 +65,8 @@ MemCore asserts that **semantic embeddings are an acceleration index, never the 
 * `read_timeline`: Exact chronological verification answering absolute or relative queries (*"yesterday afternoon"*, *"last Tuesday"*) with lossless turn-level pagination.
 
 All four tools **share one time-anchor scheme**, which is why they chain into each other instead of operating in isolation: `browse_memory` cards carry `period_start_at` / `period_end_at`, every `retrieve_for_turn` match carries a `timestamp`, `read_timeline` and the raw tier render as `[日期 2026-04-10 周五]`, and summaries and long-term memory render with a `[time range | ...]` prefix. Time evidence obtained from any one entry point is directly usable as a query condition for the next.
+
+The default `hybrid` mode retains these capabilities. Explicit `MemoryConfig(retrieval_mode="navigation")` creates no embedding or search index while preserving directory keyword matching, original evidence reads, dialogue persistence and summary/semantic compaction. Pass `retrieval_mode=mem.retrieval_mode` to `build_native_memory_tool_specs(...)` to omit fuzzy retrieval. Restore hybrid retrieval by constructing a fresh system with a real embedding and rebuilding the index from the same SQLite truth. See the [configuration contract](docs/configuration_api_v1.md).
 
 ### 2.5 Timestamps Are a Dimension of Memory, Not Just Metadata
 
@@ -314,6 +318,7 @@ MemCore enforces rigorous engineering guarantees:
 * In-depth technical rationale and design specifications:
   * [`docs/design_highlights_v1.md`](docs/design_highlights_v1.md) — System highlights and deep-dive mechanics
   * [`docs/operation_projection_settlement_v1.md`](docs/operation_projection_settlement_v1.md) — Terminal settlement and reload specification
+  * [`docs/chat_prefix_compaction_v1.md`](docs/chat_prefix_compaction_v1.md) — Optional captured-prefix requests and open-tool segments
   * [`docs/configuration_api_v1.md`](docs/configuration_api_v1.md) — Authoritative configuration and constructor contracts
   * [`docs/memory_read_api_v1.md`](docs/memory_read_api_v1.md) — Authoritative navigation and read API signatures
 
@@ -324,4 +329,3 @@ MemCore enforces rigorous engineering guarantees:
 MemCore is open-source software licensed under the [Apache License 2.0](LICENSE), with SPDX identifier `Apache-2.0`.
 
 Subject to the license terms, you may use, modify, distribute, and commercially deploy MemCore, including inside proprietary applications and SaaS products. Apache-2.0 also includes explicit copyright and patent grants; redistributions must retain the license and applicable copyright, patent, and attribution notices.
-

@@ -13,6 +13,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
+from ..chat_compaction import ChatCompactionPrefix
 
 
 class TaskType(str, Enum):
@@ -46,6 +47,7 @@ class LLMRequest:
     temperature: float = 0.2
     fallback: dict[str, Any] | None = None
     extra: dict[str, Any] = field(default_factory=dict)
+    chat_prefix: ChatCompactionPrefix | None = None
 
 
 class LLMClient(ABC):

@@ -25,6 +25,8 @@ Read these files in order before coding:
 12. `docs/raw_token_compaction_policy_v1.md` — the single token/ratio raw compaction policy.
 13. `docs/operation_projection_settlement_v1.md` — optional final-after-tool
     settlement, reload API, prompt rule, metrics, and migration behavior.
+14. `docs/chat_prefix_compaction_v1.md` — optional captured-prefix requests and
+    paired open-turn working segments (0.1.5); default lifecycle stays unchanged.
 
 If you are changing memcore itself, inspect nearby tests first and run the validation commands at the end of this file.
 
@@ -50,7 +52,8 @@ ctx = mem.build_prompt_context(current=cur)
 ctx_text = mem.render_prompt_context(ctx)
 
 # Put ctx_text into the final chat model prompt.
-# Expose retrieve_for_turn, browse_memory, open_memory, and read_timeline as model tools.
+# Expose browse_memory, open_memory, and read_timeline as model tools.
+# Expose retrieve_for_turn only in hybrid mode; pass mem.retrieval_mode to the native tool builder.
 # If using memcore_json, append build_chat_output_contract_prompt(...).
 
 result = call_chat_model(...)
@@ -307,6 +310,9 @@ the stable readback prompt rule and expose `open_memory(content)` as specified i
 `docs/operation_projection_settlement_v1.md`. Store the receipt beside that body
 as a small `retention_anchor` for IDs, coverage, cursor, and hashes; a receipt
 never replaces the observation.
+Optional `chat_prefix` with a positive working threshold can also fold a paired
+old open-turn segment after generating a working summary. Follow
+`docs/chat_prefix_compaction_v1.md`; the original turn and evidence stay intact.
 Do not serialize the same body into both `semantic_text` and a second rendered
 structure in the provider result, and never persist credentials, local paths,
 or binary file content.
@@ -434,7 +440,7 @@ When only integrating memcore into a host project, at minimum run the host app's
 
 - first message records raw memory;
 - rendered prompt contains visible memory with time anchors;
-- model can call `retrieve_for_turn`;
+- in hybrid mode the model can call `retrieve_for_turn`; in navigation mode it is absent and explicit calls report `retrieval_disabled`;
 - model can browse compact history with `browse_memory`, batch-open card/content/sources IDs with `open_memory`, and continue each source tree with its own cursor;
 - optional `speaker_ids` reads actual user utterances, preserves historical attribution, and reports excerpts, missing identity and incomplete evidence correctly;
 - model can call `read_timeline`;

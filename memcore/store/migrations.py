@@ -14,7 +14,7 @@ from typing import Any, Iterable
 
 from ..errors import SchemaError
 
-CURRENT_SCHEMA_VERSION = 10
+CURRENT_SCHEMA_VERSION = 11
 
 _CORE_TABLES = frozenset({"messages", "summaries", "semantic_summaries"})
 _TRACE_CATEGORIES = frozenset({"event_trace", "material_trace", "tool_trace"})
@@ -22,6 +22,20 @@ _SAFE_KIND_SEGMENT = re.compile(r"[^a-z0-9_-]+")
 
 
 LATEST_SCHEMA_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS working_compaction_segments (
+        segment_id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL DEFAULT '', user_id TEXT NOT NULL,
+        domain_id TEXT NOT NULL DEFAULT '', conversation_id TEXT NOT NULL DEFAULT '',
+        turn_id TEXT NOT NULL, provider_profile TEXT NOT NULL, end_seq_no INTEGER NOT NULL,
+        policy TEXT NOT NULL, source_ids_json TEXT NOT NULL, messages_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_working_segments_scope
+    ON working_compaction_segments(tenant_id, user_id, domain_id, conversation_id, provider_profile, end_seq_no)
+    """,
     """
     CREATE TABLE IF NOT EXISTS semantic_history_repairs (
         repair_id TEXT PRIMARY KEY,

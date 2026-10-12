@@ -67,6 +67,7 @@ from ..timeline import (
 )
 from .base import ContextProjectionRows, LineageClosure, MemoryStore, RawTurnWindow
 from .migrations import migrate_database, project_legacy_role
+from .working_segments import WorkingSegmentsStoreMixin
 
 _JSON_FIELDS = {
     "messages": {
@@ -120,7 +121,10 @@ def _has_semantic_metadata(value: Any) -> bool:
     return str(metadata.get("retrieval_priority") or "normal").strip().lower() in {"high", "critical"}
 
 
-class SQLiteMemoryStore(MemoryStore):
+class SQLiteMemoryStore(WorkingSegmentsStoreMixin, MemoryStore):
+    def context_projection_scope(self):
+        return self._lock
+
     def __init__(self, db_path: str = ":memory:") -> None:
         path_text = str(db_path or ":memory:")
         self._runtime_identity = (
@@ -1447,6 +1451,11 @@ class SQLiteMemoryStore(MemoryStore):
                 if cursor.rowcount != len(item.source_ids):
                     raise SchemaError("compaction_atomic_source_update_failed")
             generation = self._increment_compaction_generation_locked(namespace)
+            for bundle in snapshot.bundles:
+                self._conn.execute(
+                    "DELETE FROM working_compaction_segments WHERE turn_id = ?",
+                    [bundle.turn_id],
+                )
             return SummaryBatchCommitResult(
                 status="committed",
                 summaries=tuple(saved),
@@ -1553,33 +1562,50 @@ class SQLiteMemoryStore(MemoryStore):
     ) -> dict[str, tuple[str, ...]]:
         scope_clause, params = self._scope_clause(namespace, with_conversation=True)
         wanted = set(source_ids)
-        # settled 历史投影优先: 已冻结的 compact turn 的权威 hash 在 settled 账本,
-        # 与 request builder / compaction 的 _freeze_bundle_projection 一致。
-        settled_hashes: dict[str, list[str]] = {}
-        for row in self._conn.execute(
-            "SELECT source_ids_json, payload_hash FROM settled_prompt_projection WHERE provider_profile = ?",
-            (provider_profile,),
-        ).fetchall():
-            for source_id in self._json_list(row["source_ids_json"]):
-                if source_id in wanted:
-                    settled_hashes.setdefault(source_id, []).append(str(row["payload_hash"] or ""))
-        if set(settled_hashes) == wanted:
-            return {source_id: tuple(values) for source_id, values in settled_hashes.items()}
-        remaining = wanted - set(settled_hashes)
-        hashes: dict[str, list[str]] = {source_id: list(values) for source_id, values in settled_hashes.items()}
-        rows = self._conn.execute(
-            f"""
-            SELECT source_ids_json, payload_hash FROM prompt_projections
-            WHERE {scope_clause} AND provider_profile = ?
-            ORDER BY turn_id, projection_index
-            """,
-            [*params, provider_profile],
-        ).fetchall()
-        for row in rows:
-            for source_id in self._json_list(row["source_ids_json"]):
-                if source_id in remaining:
-                    hashes.setdefault(source_id, []).append(str(row["payload_hash"] or ""))
-        return {source_id: tuple(values) for source_id, values in hashes.items()}
+        turn_ids: set[str] = set()
+        for offset in range(0, len(source_ids), 400):
+            chunk = source_ids[offset : offset + 400]
+            marks = ",".join("?" for _ in chunk)
+            rows = self._conn.execute(
+                f"SELECT source_id, turn_id FROM messages WHERE {scope_clause} AND source_id IN ({marks})",
+                [*params, *chunk],
+            ).fetchall()
+            for row in rows:
+                turn_ids.add(
+                    str(row["turn_id"])
+                    if row["turn_id"]
+                    else "legacy." + stable_projection_hash({"source_id": str(row["source_id"])})
+                )
+        try:
+            preloaded = self.get_context_projection_rows(
+                namespace=namespace,
+                turn_ids=tuple(sorted(turn_ids)),
+                provider_profile=provider_profile,
+            )
+        except SchemaError as exc:
+            if str(exc) == "projection_payload_hash_mismatch":
+                return {sid: ("invalid_projection",) for sid in wanted}
+            raise
+        from ..settlement import settled_rows_to_messages
+        from ..working_compaction import apply_working_segments
+
+        messages = []
+        for turn_id in sorted(turn_ids):
+            settlement = preloaded.settlements_by_turn.get(turn_id)
+            if settlement and settlement.get("settlement_status") == "settled":
+                messages.extend(settled_rows_to_messages(settlement, preloaded.settled_rows_by_turn.get(turn_id, ())))
+            else:
+                messages.extend(preloaded.projections_by_turn.get(turn_id, ()))
+        messages = apply_working_segments(
+            messages,
+            self.get_working_segments(namespace=namespace, provider_profile=provider_profile),
+        )
+        hashes: dict[str, list[str]] = {}
+        for message in messages:
+            for sid in message.source_ids:
+                if sid in wanted:
+                    hashes.setdefault(sid, []).append(message.payload_hash)
+        return {sid: tuple(values) for sid, values in hashes.items()}
 
     def _compaction_generation_locked(self, namespace: Namespace) -> int:
         scope_clause, params = self._scope_clause(namespace, with_conversation=True)
@@ -3883,7 +3909,7 @@ class SQLiteMemoryStore(MemoryStore):
                   )
                 ORDER BY (
                     SELECT MAX(m.seq_no) FROM json_each(s.source_ids_json) j
-                    JOIN messages m ON {owned}
+                    CROSS JOIN messages m ON {owned}
                 ) DESC, s.summary_id ASC LIMIT 1
                 """,
                 [*params, int(before_timestamp), int(before_seq_no), int(before_timestamp)],
@@ -4700,6 +4726,7 @@ class SQLiteMemoryStore(MemoryStore):
                 "prompt_projections",
                 "projection_audits",
                 "semantic_history_repairs",
+                "working_compaction_segments",
             ):
                 self._conn.execute(f"DELETE FROM {table} WHERE {scope_clause}", params)
         return list(dict.fromkeys(deleted_ids))

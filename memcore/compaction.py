@@ -23,6 +23,7 @@ from .compaction_v2 import (
     TurnBundle,
 )
 from .config import MemoryConfig
+from .chat_compaction import ChatContextSnapshot, ChatCompactionPrefix
 from .errors import SchemaError, StaleSnapshotError
 from .index.base import VectorIndex
 from .index.entry_builder import build_semantic_entry, build_summary_entry
@@ -81,7 +82,7 @@ class Compaction:
         self,
         *,
         store: MemoryStore,
-        index: VectorIndex,
+        index: VectorIndex | None,
         llm: LLMClient,
         config: MemoryConfig,
         timezone: str,
@@ -110,6 +111,47 @@ class Compaction:
         )
         self.runtime = runtime or MemCoreRuntime()
         self._shutdown_requested = threading.Event()
+        self._chat_context: ChatContextSnapshot | None = None
+        self._context_lock = threading.Lock()
+
+    def capture_chat_context(self, context: ChatContextSnapshot) -> None:
+        if not isinstance(context, ChatContextSnapshot):
+            raise TypeError("context must be a ChatContextSnapshot")
+        with self._context_lock:
+            self._chat_context = context
+
+    def _select_chat_prefix(self, projections: list[ProjectionMessage], purpose: str) -> ChatCompactionPrefix | None:
+        if self.config.compaction_request_mode != "chat_prefix":
+            return None
+        with self._context_lock:
+            context = self._chat_context
+        if context is None:
+            return None
+        prefix = context.select(projections, purpose=purpose)
+        if prefix is not None or purpose != "raw" or context.terminal_context_refresh is None:
+            return prefix
+        # Completion adds a final source and can settle the last tool pairs
+        # after the most recent provider request. Ask the host to prepare the
+        # current terminal projection locally, keeping its frozen transport.
+        # Open-turn and semantic reuse must still come from actual captures.
+        try:
+            refreshed = context.terminal_context_refresh(context, tuple(projections))
+        except Exception:
+            return None
+        if not isinstance(refreshed, ChatContextSnapshot):
+            return None
+        prefix = refreshed.select(projections, purpose=purpose)
+        if prefix is None:
+            return None
+        with self._context_lock:
+            if self._chat_context is context:
+                self._chat_context = refreshed
+            else:
+                # A normal request captured during preparation owns the new
+                # boundary. Never replace it with an older refreshed route.
+                latest = self._chat_context
+                return latest.select(projections, purpose=purpose) if latest is not None else None
+        return prefix
 
     def request_shutdown(self) -> None:
         """Cooperatively stop this MemorySystem's compaction work.
@@ -155,6 +197,14 @@ class Compaction:
                         bundles = []
                     if bundles:
                         self._summarize_timeline(namespace, bundles, result, provider_profile=profile)
+                        if (
+                            result["status"] in {"not_due", "blocked_by_open_turn"}
+                            and self.config.working_token_trigger
+                            and self.config.compaction_request_mode == "chat_prefix"
+                        ):
+                            from .working_compaction import compact_working_turn
+
+                            compact_working_turn(self, namespace, bundles, result, provider_profile=profile)
                     if self._stop_if_shutdown(result):
                         return result
                     self._semanticize_episodic(namespace, result)
@@ -196,7 +246,11 @@ class Compaction:
         for bundle in bundles:
             frozen = self._freeze_bundle_projection(namespace, bundle, profile)
             projections[bundle.turn_id] = frozen
-            bundle_tokens[bundle.turn_id] = sum(self._count_projection_tokens(item) for item in frozen)
+            bundle_tokens[bundle.turn_id] = (
+                sum(self._count_projection_tokens(item) for item in frozen)
+                if any(entry.prompt_visible for entry in bundle.entries)
+                else 0
+            )
 
         raw_projected_tokens = sum(bundle_tokens.values())
         memory_tokens = self._visible_memory_projection_tokens(namespace, profile)
@@ -224,7 +278,15 @@ class Compaction:
             if any(not bundle.status.terminal for bundle in component):
                 blocked_reason = "open_turn_in_prefix"
                 break
-            if total_bundle_count - len(selected) - len(component) < self.config.compaction_min_recent_turns:
+            retained_target = self.config.raw_token_trigger * (1 - self.config.raw_token_batch_ratio)
+            catch_up = (
+                self.config.compaction_request_mode == "chat_prefix"
+                and raw_projected_tokens - selected_tokens > retained_target
+            )
+            if (
+                total_bundle_count - len(selected) - len(component) < self.config.compaction_min_recent_turns
+                and not catch_up
+            ):
                 blocked_reason = "recent_turn_window"
                 break
             selected.extend(component)
@@ -291,14 +353,26 @@ class Compaction:
         operation_entries = [entry for entry in ordered_entries if entry not in episode_entries]
         summary_inputs: list[SummaryRecordInput] = []
         if episode_entries:
+            selected_projections = [
+                message
+                for bundle in selected
+                for message in projections[bundle.turn_id]
+                if not all(sid.startswith("prompt-context:") for sid in message.source_ids)
+            ]
+            prefix = self._select_chat_prefix(selected_projections, "raw")
+            result["summary_request_mode"] = "chat_prefix" if prefix else "independent"
             call = self._call_json(
                 TaskType.SUMMARY,
                 *build_summary_prompts(
-                    transcript=self._render_transcript([entry.to_record() for entry in episode_entries]),
+                    transcript=""
+                    if prefix
+                    else self._render_summary_transcript(episode_entries, ordered_entries, selected_projections),
                     batch_size=len(episode_entries),
                     overrides=self.overrides,
                     enable_flavor=self.config.enable_flavor,
-                    reference_summary_text=self._render_reference_summaries(namespace, ordered_entries),
+                    reference_summary_text=""
+                    if prefix
+                    else self._render_reference_summaries(namespace, ordered_entries),
                 ),
                 fallback={
                     "diary_summary": "",
@@ -309,6 +383,7 @@ class Compaction:
                     "catalog_hint": "",
                     "topic_headings": [],
                 },
+                chat_prefix=prefix,
             )
             if self._stop_if_shutdown(result):
                 return
@@ -388,14 +463,30 @@ class Compaction:
             turn_id=bundle.turn_id,
             provider_profile=provider_profile,
         )
+        from .working_compaction import apply_working_segments
+
+        try:
+            segments = self.store.get_working_segments(namespace=namespace, provider_profile=provider_profile)
+        except (AttributeError, NotImplementedError):
+            segments = []
         if settled is not None:
-            return settled
-        return self.projection_ledger.freeze_turn_entries(
+            return apply_working_segments(settled, segments)
+        if not any(entry.prompt_visible for entry in bundle.entries):
+            # Retired entries can still have immutable request projections.
+            # Keep their hashes for atomic commit validation, without replaying
+            # or charging history that is no longer provider-visible.
+            return self.store.get_turn_projections(
+                namespace=namespace,
+                turn_id=bundle.turn_id,
+                provider_profile=provider_profile,
+            )
+        messages = self.projection_ledger.freeze_turn_entries(
             namespace=namespace,
             turn_id=bundle.turn_id,
             entries=bundle.entries,
             provider_profile=provider_profile,
         )
+        return apply_working_segments(messages, segments)
 
     def _visible_memory_projection_tokens(self, namespace: Namespace, provider_profile: str) -> int:
         episodic = self.store.get_visible_episodic_summaries(
@@ -449,6 +540,9 @@ class Compaction:
     ) -> tuple[bool, int]:
         trigger = self.config.raw_token_trigger
         planned = max(1, math.ceil(trigger * float(self.config.raw_token_batch_ratio)))
+        if self.config.compaction_request_mode == "chat_prefix":
+            retained = max(0, trigger - planned)
+            planned = max(planned, raw_projected_tokens - retained)
         return (raw_projected_tokens >= trigger, planned)
 
     def _count_projection_tokens(self, message: ProjectionMessage) -> int:
@@ -707,6 +801,25 @@ class Compaction:
     def prepare_semantic_record(self, *, namespace: Namespace, batch: list[dict[str, Any]]) -> dict[str, Any] | None:
         """Generate one complete record without publishing or consuming sources."""
         cfg = self.config
+        with self._context_lock:
+            context = self._chat_context
+        profile = context.provider_profile if context is not None else cfg.projection_profile
+        projections = (
+            [
+                message
+                for record in batch
+                for message in self.projection_ledger.freeze_memory_record(
+                    namespace=namespace,
+                    record=record,
+                    id_key="summary_id",
+                    turn_prefix="summary",
+                    provider_profile=profile,
+                )
+            ]
+            if cfg.compaction_request_mode == "chat_prefix"
+            else []
+        )
+        prefix = self._select_chat_prefix(projections, "semantic")
         call = self._call_json(
             TaskType.SEMANTIC,
             *build_semantic_prompts(
@@ -722,6 +835,7 @@ class Compaction:
                 "catalog_hint": "",
                 "topic_headings": [],
             },
+            chat_prefix=prefix,
         )
         if not call.ok or not _has_semantic_content(call.data):
             return None
@@ -816,7 +930,13 @@ class Compaction:
     # --- 工具 ---
 
     def _call_json(
-        self, task_type: TaskType, system_prompt: str, user_prompt: str, *, fallback: dict
+        self,
+        task_type: TaskType,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        fallback: dict,
+        chat_prefix: ChatCompactionPrefix | None = None,
     ) -> JsonCallResult:
         res = self.llm.call(
             LLMRequest(
@@ -827,14 +947,17 @@ class Compaction:
                 timeout_s=self.config.llm_timeout_s,
                 max_retries=self.config.llm_max_retries,
                 fallback=fallback,
+                chat_prefix=chat_prefix,
             )
         )
         if res.ok and isinstance(res.data, dict):
             return JsonCallResult(ok=True, data=res.data)
         return JsonCallResult(ok=False, data=fallback)
 
-    def _index(self, entry: dict[str, Any], source_id: str) -> bool:
+    def _index(self, entry: dict[str, Any], source_id: str) -> bool | None:
         # outbox:库已 pending,upsert 成功才置 indexed;失败保持 pending,留给 reindex_pending 自愈。
+        if self.index is None:
+            return None
         try:
             self.index.upsert([entry])
             self.store.set_index_state(
@@ -848,8 +971,10 @@ class Compaction:
         return True
 
     @staticmethod
-    def _record_index_result(result: dict[str, Any], indexed: bool) -> None:
-        if not indexed:
+    def _record_index_result(result: dict[str, Any], indexed: bool | None) -> None:
+        if indexed is None:
+            result["index_status"] = "disabled"
+        elif not indexed:
             result["index_status"] = "pending"
         elif result.get("index_status") != "pending":
             result["index_status"] = "indexed"
@@ -870,6 +995,31 @@ class Compaction:
             return ""
         label = str(previous.get("date_label") or "")
         return f"- [{label}] {diary}" if label else diary
+
+    def _render_summary_transcript(
+        self,
+        episode_entries: list[TimelineEntry],
+        ordered_entries: list[TimelineEntry],
+        projections: list[ProjectionMessage],
+    ) -> str:
+        # Derived working notes have no timeline row. Include only these
+        # notes in the independent fallback, at their actual source boundary;
+        # operation bodies remain in the code-generated operation partition.
+        notes = [
+            message
+            for message in projections
+            if message.turn_id.startswith("working.")
+            and message.payload.get("role") == "user"
+            and str(message.payload.get("content") or "").startswith("[working summary;")
+        ]
+        if not notes:
+            return self._render_transcript([entry.to_record() for entry in episode_entries])
+        source_positions = {entry.source_id: entry.seq_no for entry in ordered_entries}
+        parts = [(entry.seq_no, self._render_transcript([entry.to_record()])) for entry in episode_entries]
+        for message in notes:
+            boundary = max(source_positions[sid] for sid in message.source_ids)
+            parts.append((boundary, str(message.payload["content"])))
+        return "\n".join(text for _, text in sorted(parts, key=lambda item: item[0]) if text)
 
     def _render_transcript(self, batch: list[dict[str, Any]]) -> str:
         rendered: list[str] = []

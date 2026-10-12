@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from .config import MemoryConfig, OperationProjectionPolicy
+from .chat_compaction import ChatContextSnapshot, ChatCompactionPrefix
 from .conformance import (
     ConformanceCheck,
     ConformanceReport,
@@ -74,6 +75,7 @@ from .projection import (
     default_renderer_registry,
     is_strict_message_prefix,
     stable_projection_hash,
+    sanitize_projection_payload,
 )
 from .provider_adapters import (
     AnthropicMessagesContextAdapter,
@@ -156,9 +158,11 @@ from .timeline import (
     build_observation_entry,
 )
 
-__version__ = "0.1.2"
+__version__ = "0.1.5"
 
 __all__ = [
+    "ChatContextSnapshot",
+    "ChatCompactionPrefix",
     "__version__",
     # 门面
     "MemorySystem",
@@ -291,6 +295,7 @@ __all__ = [
     "default_renderer_registry",
     "is_strict_message_prefix",
     "stable_projection_hash",
+    "sanitize_projection_payload",
     # Provider adapters
     "AnthropicMessagesContextAdapter",
     "ContextProviderAdapter",

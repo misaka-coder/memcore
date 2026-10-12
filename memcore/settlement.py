@@ -472,6 +472,8 @@ def build_settlement_plan(
     if observation_decider is classify_observation:
         observation_decider = partial(
             classify_observation,
+            min_inline_bytes=settlement_min_utf8_bytes,
+            required_savings_ratio=settlement_min_saved_ratio,
             timezone=str(timezone or "").strip(),
             include_call_id=provider_profile == CANONICAL_PROFILE,
         )

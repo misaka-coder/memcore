@@ -63,12 +63,15 @@ class MemoryConfig:
     compaction_min_recent_turns: int = 1
     compaction_schema_version: int = 2
     summary_profile: str = "timeline_v2"
+    compaction_request_mode: str = "independent"  # optional actual chat-prefix reuse
+    working_token_trigger: int = 0  # 0 disables open-turn maintenance
 
     # Deprecated constructor inputs: new semantic records never merge old batches.
     semantic_reinforcement_lookback: int | None = None
     semantic_reinforcement_min_overlap: int | None = None
 
     # --- 检索 ---
+    retrieval_mode: str = "hybrid"  # navigation: SQLite navigation without embedding/index resources
     retrieval_limit: int = 6  # 默认返回片段数
     relaxation_stop_candidate_count: int = 12  # 候选达到多少就停止放宽
     retrieval_min_dense_score: float = 0.0
@@ -104,9 +107,19 @@ class MemoryConfig:
     operation_argument_preview_chars: int = 96
 
     def __post_init__(self) -> None:
+        if self.compaction_request_mode not in {"independent", "chat_prefix"}:
+            raise ConfigError("compaction_request_mode must be independent or chat_prefix")
+        if (
+            isinstance(self.working_token_trigger, bool)
+            or not isinstance(self.working_token_trigger, int)
+            or self.working_token_trigger < 0
+        ):
+            raise ConfigError("working_token_trigger must be a non-negative int")
         self.validate()
 
     def validate(self) -> None:
+        if self.retrieval_mode not in ("hybrid", "navigation"):
+            raise ConfigError("retrieval_mode must be 'hybrid' or 'navigation'")
         positives = {
             "raw_token_trigger": self.raw_token_trigger,
             "episodic_visible_max": self.episodic_visible_max,

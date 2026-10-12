@@ -73,7 +73,7 @@ entries. See `examples/non_native_operation_timeline.py`.
 | Rule | Correct behavior | Failure when omitted |
 | --- | --- | --- |
 | Inject `LLMClient` | Return `LLMResult`; never raw text/dict or a bare provider exception. | Construction/type failure or compaction cannot distinguish retry/fallback. |
-| Inject an embedding | Use a real local/API `EmbeddingProvider` in production. | `MemorySystem` rejects missing embedding; hashed vectors have no real semantics. |
+| Choose retrieval mode | Default `hybrid` requires a real local/API `EmbeddingProvider`. Explicit `navigation` omits both embedding and index; pass `mem.retrieval_mode` to the native tool builder. | Missing embedding in hybrid or injected search dependencies in navigation are rejected; stale retrieval tools misrepresent available capabilities. |
 | Pass `timezone` | Use a valid IANA name such as `Asia/Shanghai`. | Construction raises `ValueError`; relative dates cannot be anchored safely. |
 | Pass `Namespace.user_id` | Map tenant/user/domain to hard product ownership. | Missing user raises `NamespaceError`; wrong mapping can mix or hide memory. |
 | Treat Actor as soft | `Actor(stable_id=platform_id, display_name=nickname)` for group attribution only. | Actor cannot isolate tenants/users; nickname IDs break attribution after rename. |
@@ -290,7 +290,8 @@ normal raw compaction. It is the safest compatibility mode.
 
 Use `compact_after_terminal` only when the host also:
 
-- keeps the full result during every open tool round;
+- keeps the full result during open tool rounds, except explicitly enabled
+  [working-segment compaction](chat_prefix_compaction_v1.md);
 - exposes `open_memory(memory_id=source_id, view="content")`;
 - injects the stable `[compact_reloadable]` readback instruction;
 - builds later history through `build_context_projection()`;
@@ -349,8 +350,10 @@ Before claiming integration complete, verify with real host request construction
 - [ ] If using Context Surface or a Session wrapper, the current input and tool
       round appear once, and the final transport capture passes
       `validate_provider_wire_capture(...)`.
-- [ ] If settlement is enabled, the open turn stays full, the next turn sees a
-      reloadable card, and `open_memory(content)` restores the original result.
+- [ ] If settlement is enabled, unselected open-turn history stays full, the
+      next turn sees reloadable cards, and `open_memory(content)` restores the
+      original result. If working compaction is enabled, verify paired A,
+      cards/summary(A)/B order and continuation without closing the turn.
 - [ ] Cross-user/hard-namespace reads and writes are rejected.
 - [ ] The host rejects secrets and binary media before write; host-internal path
       fields (`cached_path`, `storage_relpath`, `database_path`, …) do not enter

@@ -55,6 +55,8 @@ flowchart LR
 * **终局完成后（Post-Final）**：启用 `compact_after_terminal` 策略后，庞大的结果自动折叠为一张**结算卡片**——包含时间、来源与 `source_id`，平均仅 100 Token。
 * **按需瞬间回溯**：后续日常闲聊不受长文本干扰；某天用户突然追问“当时那个报错具体是哪一行”，模型可通过 `open_memory(memory_id=...)` 沿精准的 Lineage 血缘，瞬间把 25,000 字的原始执行轨迹调回前台！
 
+0.1.5 增加可选的 [`chat_prefix` 整理模式](docs/chat_prefix_compaction_v1.md)：复用实际聊天请求前缀生成记忆；开放长任务达到工作阈值时，先总结已配对旧段，再一次应用卡片与工作摘要，新增步骤留在其后。默认仍为独立摘要，原始证据保留。
+
 ### 2. 多路径自主记忆导航（Agentic Memory Navigation）
 MemCore 坚信：**语义向量只是检索的加速器，绝不是记忆可达性的唯一通道。** 面对真实复杂提问，系统提供了一套互补的模型可调用工具箱：
 * `retrieve_for_turn`：向量/BM25 混合检索 + RRF 融合重排，具备实体与属性的前置硬过滤（Prefilter），带时区裁剪。
@@ -63,6 +65,8 @@ MemCore 坚信：**语义向量只是检索的加速器，绝不是记忆可达�
 * `read_timeline`：解决“昨天下午”、“上周二”等绝对或相对时间的精确时序核查，完整 Turn 无损分页。
 
 四个工具**共用同一套时间锚**，这是它们能互相接力而不是各自为政的原因：`browse_memory` 卡片返回 `period_start_at` / `period_end_at`，`retrieve_for_turn` 的每条命中带 `timestamp`，`read_timeline` 与原始层渲染统一成 `[日期 2026-04-10 周五]` 格式，摘要与长期记忆则渲染成 `[时间范围 | ...]` 前缀。模型从任一入口拿到的时间证据，都能直接用于下一个入口的查询条件。
+
+默认 `hybrid` 模式保留以上能力。可显式选择 `MemoryConfig(retrieval_mode="navigation")`：不创建 Embedding 或搜索索引，只暴露目录、原文展开和时间线读取；目录关键词匹配、对话保存及摘要/长期记忆压缩继续可用。调用 `build_native_memory_tool_specs(retrieval_mode=mem.retrieval_mode, ...)` 使工具声明与实际模式一致。切回混合检索时，用同一 SQLite 新建带真实 Embedding 的系统并重建索引，无需删除记忆。见[配置契约](docs/configuration_api_v1.md)。
 
 ### 2.5 时间戳是记忆的一个维度，不只是元数据
 
@@ -333,6 +337,7 @@ MemCore 拥有极其严苛的工程自检防线：
   * [`docs/design_story_and_video_v1.md`](docs/design_story_and_video_v1.md) — 设计思路与视频讲解底稿
   * [`docs/design_highlights_v1.md`](docs/design_highlights_v1.md) — 系统亮点与机制深度说明
   * [`docs/operation_projection_settlement_v1.md`](docs/operation_projection_settlement_v1.md) — 终局投影结算与回读规范
+  * [`docs/chat_prefix_compaction_v1.md`](docs/chat_prefix_compaction_v1.md) — 可选聊天前缀整理与开放工具轮分段
   * [`docs/agentic_memory_navigation_evaluation_20260806.md`](docs/agentic_memory_navigation_evaluation_20260806.md) — 线上真实导航审计报告
 
 ---

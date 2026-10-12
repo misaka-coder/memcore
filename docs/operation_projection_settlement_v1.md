@@ -22,7 +22,7 @@ config = MemoryConfig(
 )
 ```
 
-`operation_projection_policy` 有两个稳定 wire value：
+`operation_projection_policy` 有三个稳定 wire value：
 
 | Value | Behavior |
 | --- | --- |
@@ -48,6 +48,11 @@ assert handle.operation_projection_policy == "compact_after_terminal"
 settlement 只在成功的 `complete_turn()` 之后发生，包括使用 `append_final=False`
 完成工具工作且没有新增回复的轮次。当前开放 turn 的每轮工具调用仍
 完整可见，因此多轮工具链不会因为压缩而丢失中间证据。
+
+以上描述终局 settlement 的默认生命周期。0.1.5 可另外开启
+[`chat_prefix` 工作分段](chat_prefix_compaction_v1.md)：达到工作阈值时先用当前有效
+旧段生成摘要，再按该轮冻结策略一次发布卡片/摘要投影。它不提前完成 turn，
+不改变原始参数与结果；已有公开终局策略和冻结记录仍保持原语义。
 
 ```python
 handle = mem.begin_turn(stimuli=[user_entry])
@@ -224,7 +229,7 @@ settled ledger，因此“实际发给 provider 的历史”和“用于判断 r
 部分已完成轮次的历史工具结果会显示为紧凑回执，而不是完整正文。
 这不代表结果丢失。回执保留原工具名、调用参数、状态与 source_id。
 若当前问题依赖其中的具体内容，可以按 source_id 单个或批量打开完整结果；
-若旧结果不足，可以继续调用相应工具。当前开放轮次中的工具结果始终完整可见；
+若旧结果不足，可以继续调用相应工具。未被工作分段收起的当前工具结果仍完整可见；
 不要在已有信息足够时机械回读。
 ```
 

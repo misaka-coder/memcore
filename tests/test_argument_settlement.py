@@ -12,6 +12,7 @@ from pathlib import Path
 
 from memcore import ConfigError, MemoryConfig, Namespace, SQLiteMemoryStore, SchemaError
 from memcore.settlement import build_settlement_plan, compact_argument_value, settlement_config_hash
+from memcore.store.migrations import CURRENT_SCHEMA_VERSION
 from tests.test_settlement_threshold_config import _complete, _shared_mem, _turn_with_tools
 
 POLICY = "compact_arguments_after_terminal"
@@ -135,7 +136,10 @@ class ArgumentSettlementTests(unittest.TestCase):
         )
         for key, value in row.items():
             self.assertEqual(updated[key], value)
-        self.assertEqual(reopened._conn.execute("PRAGMA user_version").fetchone()[0], 10)
+        self.assertEqual(reopened._conn.execute("PRAGMA user_version").fetchone()[0], CURRENT_SCHEMA_VERSION)
+        self.assertIsNotNone(
+            reopened._conn.execute("SELECT name FROM sqlite_master WHERE name='working_compaction_segments'").fetchone()
+        )
         mem2, store2, _, _ = self.open_long_turn()
         _complete(mem2, "t1")
 
